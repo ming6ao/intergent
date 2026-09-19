@@ -76,18 +76,13 @@ Agents declare intent, commit, finish, and verify; a human runs
 
 ### Install as an agent skill
 
-This repository **is** an Agent Skill (the root [`SKILL.md`](./SKILL.md) bundles
-the CLI), so it installs exactly like `archify`:
-
 ```bash
-npx skills add <owner>/intergent -g -y     # global, all detected agents
-npx skills add <owner>/intergent -a claude-code -g -y
-npx skills add . -g -y                     # from a local checkout
+npx skills add ming6ao/intergent -g -y
 ```
 
-The installed skill directory contains `bin/intergent` and the `intergent/`
-package, so no separate `pip install` is required; the skill runs the bundled
-CLI with `python3`. See [docs/agents.md](./docs/agents.md).
+This repository **is** an Agent Skill: the root [`SKILL.md`](./SKILL.md) bundles
+the CLI (`bin/intergent` + the `intergent/` package), so no separate
+`pip install` is required. See [docs/agents.md](./docs/agents.md).
 
 ```
 CLI:     intergent  (alias: ig)

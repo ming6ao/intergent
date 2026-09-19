@@ -36,20 +36,16 @@ sessions get different worktrees; scope leases stop them authoring conflicts.
 
 This repository is a self-contained Agent Skill: the root
 [`SKILL.md`](../SKILL.md) describes the workflow and the repo ships the CLI it
-calls (`bin/intergent` + the `intergent/` Python package). Install it like any
-other skill:
+calls (`bin/intergent` + the `intergent/` Python package). Install it globally:
 
 ```bash
-npx skills add <owner>/intergent -g -y            # global, all detected agents
-npx skills add <owner>/intergent -a claude-code -g -y
-npx skills add <owner>/intergent --list           # list skills in the repo
-npx skills add . -g -y                            # from a local checkout
+npx skills add ming6ao/intergent -g -y
 ```
 
 Because the whole repo is installed as the skill, `bin/intergent` and the
 `intergent/` package are present in the installed directory. The skill runs the
-bundled CLI with `python3 <skill-dir>/bin/intergent`, so a separate
-`pip install` is optional (nice for a stable `intergent` on `PATH`).
+bundled CLI with `python3 <skill-dir>/bin/intergent`, so no separate
+`pip install` is required.
 
 > Discovery note: the `skills` CLI returns the root `SKILL.md` immediately and
 > will not descend into subdirectories unless you pass `--full-depth`. Keep the
@@ -67,8 +63,7 @@ bundled CLI with `python3 <skill-dir>/bin/intergent`, so a separate
 ### Claude Code
 
 ```bash
-pip install -e .                                  # optional: puts `intergent` on PATH
-npx skills add <owner>/intergent -a claude-code -g -y
+npx skills add ming6ao/intergent -g -y
 cp integrations/claude/.mcp.json /path/to/repo/   # project MCP server
 cd <unit-worktree> && claude
 ```
@@ -82,8 +77,7 @@ pi intentionally has no MCP. Install the extension that exposes `ig_*` tools,
 and/or the bundled skill:
 
 ```bash
-pip install -e .
-npx skills add <owner>/intergent -g -y
+npx skills add ming6ao/intergent -g -y
 cp integrations/pi/intergent.ts ~/.pi/agent/extensions/intergent.ts
 cd <unit-worktree> && pi
 ```

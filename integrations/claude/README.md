@@ -50,16 +50,7 @@ The repository root **is** the Agent Skill (root `SKILL.md` + bundled
 `bin/intergent`). Install it with the skills CLI:
 
 ```bash
-npx skills add <owner>/intergent -a claude-code -g -y
-# or, from a local checkout:
-npx skills add . -a claude-code -g -y
-```
-
-Alternatively symlink the repo root into your project skills directory:
-
-```bash
-mkdir -p .claude/skills
-ln -s /path/to/intergent .claude/skills/intergent
+npx skills add ming6ao/intergent -g -y
 ```
 
 Claude loads it on demand and will declare intent before editing, surface

@@ -52,12 +52,10 @@ launching pi, e.g. `INTERGENT_BIN=/home/me/intergent/bin/intergent pi`.
 ## Alternative: the skill (CLI only, no extension)
 
 The repository root is a self-contained Agent Skill with the CLI bundled. Install
-it globally (pi is auto-detected) or link it project-locally:
+it globally (pi is auto-detected):
 
 ```bash
-npx skills add <owner>/intergent -g -y
-# or project-local:
-mkdir -p .pi/skills && ln -s /path/to/intergent .pi/skills/intergent
+npx skills add ming6ao/intergent -g -y
 ```
 
 Pi then discovers `intergent` and, when a task matches, follows the CLI workflow
