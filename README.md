@@ -77,7 +77,7 @@ Agents declare intent, commit, finish, and verify; a human runs
 ### Install as an agent skill
 
 ```bash
-npx skills add ming6ao/intergent -g -y
+npx skills add ming6ao/intergent -g -y -a claude-code -a pi
 ```
 
 This repository **is** an Agent Skill: the root [`SKILL.md`](./SKILL.md) bundles

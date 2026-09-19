@@ -1,8 +1,8 @@
 """Guards the repository-root Agent Skill package contract.
 
-The repo is installable with `npx skills add ming6ao/intergent -g -y`, which
-means the root must contain a valid ``SKILL.md`` and the CLI it references must
-be bundled. These tests fail if that structure regresses.
+The repo is installable with `npx skills add ming6ao/intergent -g -y -a claude-code`
+which means the root must contain a valid ``SKILL.md`` and the CLI it references
+must be bundled. These tests fail if that structure regresses.
 """
 
 import re

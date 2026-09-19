@@ -55,7 +55,7 @@ The repository root is a self-contained Agent Skill with the CLI bundled. Instal
 it globally (pi is auto-detected):
 
 ```bash
-npx skills add ming6ao/intergent -g -y
+npx skills add ming6ao/intergent -g -y -a pi
 ```
 
 Pi then discovers `intergent` and, when a task matches, follows the CLI workflow

@@ -50,7 +50,7 @@ The repository root **is** the Agent Skill (root `SKILL.md` + bundled
 `bin/intergent`). Install it with the skills CLI:
 
 ```bash
-npx skills add ming6ao/intergent -g -y
+npx skills add ming6ao/intergent -g -y -a claude-code
 ```
 
 Claude loads it on demand and will declare intent before editing, surface

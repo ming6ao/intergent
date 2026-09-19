@@ -36,11 +36,17 @@ sessions get different worktrees; scope leases stop them authoring conflicts.
 
 This repository is a self-contained Agent Skill: the root
 [`SKILL.md`](../SKILL.md) describes the workflow and the repo ships the CLI it
-calls (`bin/intergent` + the `intergent/` Python package). Install it globally:
+calls (`bin/intergent` + the `intergent/` Python package). Install it globally
+for the agents you use:
 
 ```bash
-npx skills add ming6ao/intergent -g -y
+npx skills add ming6ao/intergent -g -y -a claude-code -a pi
 ```
+
+Target the agent(s) explicitly (`-a`) rather than relying on detection: with
+`-y` the `skills` CLI also counts PromptScript, which is project-only, and prints
+a ``PromptScript does not support global skill installation`` failure. Naming
+the agents skips that path and installs cleanly.
 
 Because the whole repo is installed as the skill, `bin/intergent` and the
 `intergent/` package are present in the installed directory. The skill runs the
@@ -63,7 +69,7 @@ bundled CLI with `python3 <skill-dir>/bin/intergent`, so no separate
 ### Claude Code
 
 ```bash
-npx skills add ming6ao/intergent -g -y
+npx skills add ming6ao/intergent -g -y -a claude-code
 cp integrations/claude/.mcp.json /path/to/repo/   # project MCP server
 cd <unit-worktree> && claude
 ```
@@ -77,7 +83,7 @@ pi intentionally has no MCP. Install the extension that exposes `ig_*` tools,
 and/or the bundled skill:
 
 ```bash
-npx skills add ming6ao/intergent -g -y
+npx skills add ming6ao/intergent -g -y -a pi
 cp integrations/pi/intergent.ts ~/.pi/agent/extensions/intergent.ts
 cd <unit-worktree> && pi
 ```
