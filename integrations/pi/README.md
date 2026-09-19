@@ -3,10 +3,13 @@
 pi has **no built-in MCP** by design. It recommends either CLI tools documented
 by a skill, or an extension that adds the tools. This directory provides both.
 
-## Recommended: the extension (native tools)
+## Recommended: the extension (one `ig` tool)
 
-The extension `intergent.ts` registers `ig_*` tools that call the `intergent`
-CLI, resolving the current unit from pi's working directory.
+The extension `intergent.ts` registers a **single** native tool, `ig`,
+parameterized by an `action` enum — the same action surface as the CLI and MCP
+server (`intergent/surface.py`). It is a thin forwarder to the `intergent` CLI
+and is cwd-native: once a session is bound to a unit worktree, every call runs
+there.
 
 1. Install the CLI so `intergent` is on `PATH`:
 
@@ -23,31 +26,36 @@ CLI, resolving the current unit from pi's working directory.
    mkdir -p .pi/extensions && cp integrations/pi/intergent.ts .pi/extensions/
    ```
 
-3. Start pi **inside the Intergent unit worktree** and reload:
+3. Start pi **anywhere in the repository** and reload (`/reload` if already
+   running).
 
-   ```bash
-   intergent workspace create auth-fix --agent pi
-   cd "$(intergent --json workspace current | python3 -c 'import sys,json;print(json.load(sys.stdin)["worktree"])')"
-   pi            # then /reload if pi was already running
-   ```
+   **Bootstrapping is tag-gated.** On the first prompt that mentions Intergent
+   (e.g. `intergent: add a scope check to Login`), the extension runs
+   `intergent start --agent pi` (idempotent plane + unit), binds its tools to the
+   returned worktree, and injects the required lifecycle into the turn. Set
+   `INTERGENT_AUTO_BOOTSTRAP=1` to bootstrap on every session start, or `=0` to
+   disable. pi cannot change a live session's cwd, so the built-in
+   `read`/`bash`/`edit`/`write`/`grep`/`find`/`ls` tools are rebound to the unit
+   worktree.
 
 If the binary is not on `PATH`, set `INTERGENT_BIN` in the environment before
 launching pi, e.g. `INTERGENT_BIN=/home/me/intergent/bin/intergent pi`.
 
-### Tools
+### `ig` actions
 
-| Tool | Purpose |
+| Action | Purpose |
 |---|---|
-| `ig_current` | show the unit for this worktree |
-| `ig_declare` | declare scopes + operation, acquire leases |
-| `ig_check` | dry-run conflict check |
-| `ig_heartbeat` / `ig_release` | renew / release leases |
-| `ig_commit` / `ig_finish` | commit, register candidate |
-| `ig_verify` | fingerprint-pinned trusted checks |
-| `ig_review` | review packet for the human |
-| `ig_status` / `ig_simulate` | status and combined-tree wave plan |
+| `start` | bootstrap the plane + a unit for this directory (idempotent) |
+| `status` | units, candidates, leases, waves (`simulate`, `health`, `gc`, `short`) |
+| `declare` | declare scopes + acquire leases; `dry_run`, `renew`, `release`, `decide` |
+| `commit` | commit the worktree and register the candidate (`sync` rebases first) |
+| `verify` | fingerprint-pinned trusted checks |
+| `review` | review packet for the human |
+| `submit` | **human-gated**: show the packet, ask for confirmation, then approve + land |
 
-`approve` and `land` are intentionally not exposed; they are human actions.
+`submit` is the only landing path in the tool, and it always asks the human via
+an interactive confirmation; without a UI it refuses. `review --approve`,
+`--reject`, and `--land` are not exposed to the model.
 
 ## Alternative: the skill (CLI only, no extension)
 

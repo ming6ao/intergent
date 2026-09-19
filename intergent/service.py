@@ -57,7 +57,7 @@ class Service:
     # Bootstrap
     # ------------------------------------------------------------------
     @classmethod
-    def init(
+    def init_plane(
         cls,
         root: Path,
         *,
@@ -67,6 +67,7 @@ class Service:
         lease_ttl_seconds: int = 1800,
         force: bool = False,
     ) -> dict[str, Any]:
+        """Create the on-disk plane (config + state db) for a git repo."""
         from .util import ensure_parent, state_dir
 
         if not gitutil.is_git_repo(root):
@@ -102,26 +103,93 @@ class Service:
         _ensure_gitignore(root)
         return config
 
-    # ------------------------------------------------------------------
-    # Agents / sessions / units
-    # ------------------------------------------------------------------
-    def register_agent(
-        self, name: str, *, model: str | None = None, parent: str | None = None
+    @classmethod
+    def init(
+        cls,
+        path: str | os.PathLike[str] | None = None,
+        *,
+        name: str | None = None,
+        agent: str | None = None,
+        session: str | None = None,
+        base: str | None = None,
+        kind: str = "worker",
+        main_branch: str | None = None,
+        checks: list[dict[str, Any]] | None = None,
+        lease_ttl_seconds: int = 1800,
+        force: bool = False,
     ) -> dict[str, Any]:
-        parent_id = None
-        if parent:
-            existing = self.store.get_agent(parent)
-            if existing is None:
-                parent_id = self.store.upsert_agent(parent, None, None)
-            else:
-                parent_id = int(existing["id"])
-        agent_id = self.store.upsert_agent(name, model, parent_id)
-        self.store.conn.commit()
-        agent = self.store.get_agent(name)
-        assert agent is not None
-        self.store.event("agent.registered", data={"name": name})
-        return agent
+        """Bootstrap the plane and a unit for *path* (default cwd), idempotently.
 
+        Safe to call on every session start:
+
+        1. If no plane is found walking up from *path*, create it at the git root.
+        2. If *path* is not already inside a unit worktree, create one.
+
+        Returns a summary including ``worktree`` so the caller can bind its
+        tools to the unit (the running process cwd is not changed).
+        """
+        start = Path(path or os.getcwd()).resolve()
+
+        root: Path | None = None
+        for candidate in [start, *start.parents]:
+            if config_path(candidate).is_file():
+                root = candidate
+                break
+
+        initialized = False
+        if root is None or force:
+            if not gitutil.is_git_repo(start):
+                raise IntergentError(f"{start} is not a git repository")
+            root = gitutil.toplevel(start)
+            cls.init_plane(
+                root,
+                main_branch=main_branch,
+                base=base,
+                checks=checks,
+                lease_ttl_seconds=lease_ttl_seconds,
+                force=force,
+            )
+            initialized = True
+
+        # Keep the exclude entry fresh even when the plane already existed and
+        # the repo's .git/info/exclude was reset (e.g. re-cloned metadata).
+        _ensure_gitignore(root)
+
+        service = cls(root)
+        try:
+            unit = service.current_unit(start)
+            created = False
+        except IntergentError:
+            existing = {u["name"] for u in service.list_units()}
+            base_name = name or slugify(start.name) or "session"
+            unit_name = base_name
+            counter = 2
+            while unit_name in existing:
+                unit_name = f"{base_name}-{counter}"
+                counter += 1
+            unit = service.create_workspace(
+                unit_name,
+                session=session,
+                kind=kind,
+                base=base,
+                agent=agent,
+            )
+            created = True
+        finally:
+            service.close()
+
+        return {
+            "root": str(root),
+            "initialized": initialized,
+            "created": created,
+            "unit": unit["name"],
+            "branch": unit.get("branch"),
+            "worktree": unit.get("worktree"),
+        }
+
+    # ------------------------------------------------------------------
+    # Sessions / units
+    # ------------------------------------------------------------------
     def create_session(
         self, name: str, *, task: str | None = None, attachment: str = DEFAULT_ATTACHMENT
     ) -> dict[str, Any]:

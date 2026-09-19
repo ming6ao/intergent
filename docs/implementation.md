@@ -23,8 +23,9 @@ Config:  .intergent/config.json
 
 | Module | Responsibility |
 |---|---|
-| `intergent/cli.py` | `argparse` CLI (`intergent` / `ig`), human + `--json` output |
-| `intergent/mcp.py` | MCP stdio server exposing the agent hot loop |
+| `intergent/cli.py` | generated `argparse` CLI (`intergent` / `ig`), human + `--json` output |
+| `intergent/surface.py` | **single source of truth**: action registry, validation, dispatch |
+| `intergent/mcp.py` | MCP stdio server exposing one `ig` action tool |
 | `intergent/service.py` | **Single owner of state**: sessions, units, intents, leases, candidates, landing |
 | `intergent/store.py` | SQLite persistence (schema mirrors `docs/operations.md`) |
 | `intergent/gitutil.py` | Git plumbing (`worktree`, `merge-tree`, `merge`, `rebase`, `commit-tree`) |
@@ -52,41 +53,45 @@ Session ──► Unit (worktree + branch) ──► Intent (scopes + operation)
                      granted │                          queued │ needs_decision
                     (leases) │                                 │
                              ▼                                 ▼
-                 commit → finish → verify ──► candidate ──► simulate waves
+                 commit → verify ──► candidate ──► simulate waves
                                                               │
                                                     approve ──► land → main
 ```
 
-## 3. CLI reference
+## 3. Action reference
+
+There are seven actions. The CLI renders them as subcommands, MCP as one `ig`
+tool with an `action` enum, and the pi extension as one `ig` tool — all from
+`surface.py`.
 
 ### Bootstrap
 
 ```bash
-intergent init [--main main] [--base main] [--check NAME=COMMAND ...] [--lease-ttl 1800]
-intergent doctor
+intergent start [--agent NAME] [--name N] [--path DIR] [--main main] [--base main]
+                [--check NAME=COMMAND ...] [--lease-ttl 1800] [--force]
 intergent mcp
 ```
 
-`init` writes `.intergent/config.json` and `.intergent/state.db` and adds
-`.intergent/` to the repo-local `.git/info/exclude` so the main worktree stays
-clean.
+`start` (alias `init`) is idempotent and the single bootstrap entry point: it
+writes `.intergent/config.json` and `.intergent/state.db` (and adds
+`.intergent/` to the repo-local `.git/info/exclude`) if the plane is missing,
+then creates a unit for the directory unless it is already inside one.
+Re-running it from a unit worktree is a no-op. The programmatic plane-only
+helper is `Service.init_plane(root, ...)`.
 
 ### Authoring (agents)
 
 ```bash
-intergent agent register NAME [--model M] [--parent NAME]
-intergent session create NAME [--task T] [--attachment terminal|tmux|background]
-intergent workspace create NAME [--session S] [--kind session|worker] [--base REF] [--agent NAME]
-intergent workspace list | show UNIT
-
 intergent declare --unit U --operation OP --scope "KIND:KEY[=OP]" [--scope ...]
-intergent check   --unit U --operation OP --scope "KIND:KEY"        # dry run
-intergent heartbeat --unit U
-intergent release   --unit U
-intergent decide INTENT_ID --action wait|override|redesign [--reason R]
-intergent override --unit U --reason R                              # audited
-intergent rebase --unit U [--onto REF]
+intergent declare --unit U --dry-run --operation OP --scope "KIND:KEY"   # check only
+intergent declare --unit U --renew                                       # heartbeat
+intergent declare --unit U --release                                     # release leases
+intergent declare --unit U --decide wait|override|redesign [--reason R]  # resolve conflict
+intergent commit --unit U -m "message" [--summary S] [--sync] [--onto REF]
 ```
+
+Agents and sessions are created implicitly: `start` registers the agent/session
+named by `--agent`/`--session`.
 
 Scope syntax is `kind:key[=operation]`, e.g. `file:src/app.py=modify`,
 `symbol:src/app.py#Login.run=replace`, `config:app.timeout=extend`. The
@@ -98,21 +103,18 @@ intent-level `--operation` is the default per scope.
 - `queued` — `{position, blocker, blocker_node, eta_seconds}`; the agent may
   wait, switch to non-conflicting work, or proceed optimistically and rebase;
 - `needs_decision` — destructive-vs-additive on an exact scope; choose `wait`,
-  `redesign`, or `override` (audited).
+  `redesign`, or `override` (audited) with `declare --decide`.
 
 ### Candidate lifecycle
 
 ```bash
-intergent commit --unit U -m "message"
-intergent finish --unit U [--summary S]        # records the candidate
-intergent verify CANDIDATE [--force]           # fingerprint-pinned checks
-intergent simulate [--no-checks]               # wave plan + combined-tree checks
-intergent review CANDIDATE                     # review packet
-intergent approve CANDIDATE [--reason R]
-intergent reject  CANDIDATE [--reason R]
-intergent land [CANDIDATE ...] [--all] [--no-checks] [--cleanup]
-intergent status
-intergent gc
+intergent commit -m "message" [--summary S] [--sync]   # commit + register candidate
+intergent verify CANDIDATE [--force]                   # fingerprint-pinned checks
+intergent status --simulate [--no-checks]              # wave plan + combined-tree checks
+intergent review CANDIDATE                             # review packet
+intergent review --land [--all] [--no-checks] [--cleanup]
+intergent submit CANDIDATE [--cleanup]                 # approve + land (human)
+intergent status [--health] [--gc] [--short] [--unit U]
 ```
 
 `land` is transactional per candidate: the merge is materialized and verified in
@@ -191,12 +193,13 @@ failure so main and later candidates stay consistent.
 
 ## 5. MCP tool surface
 
-`register_agent`, `create_workspace`, `register_child`, `declare_intent`,
-`check_conflicts`, `claim_scope` (alias of `declare_intent`), `heartbeat`,
-`release`, `commit_workspace`, `finish_workspace`, `verify`, `status`,
-`current_workspace`, `submit` (builds the review packet; landing still requires
-human approval). `unit` is optional when the server runs inside a unit
-worktree. For Claude Code, pi, and generic agents see
+The server exposes exactly one tool, `ig`, with an `action` enum
+(`start`, `status`, `declare`, `commit`, `verify`, `review`). The tool schema —
+enum, properties, types, choices — is generated from `surface.py`, and the same
+module implements dispatch, so the MCP and CLI surfaces cannot drift.
+`unit` is optional when the server runs inside a unit worktree. Human-only
+actions and flags (`submit`, `review --approve/--reject/--land`) are absent from
+the schema and rejected if invoked by name. For pi and generic agents see
 [Agent integration](./agents.md).
 
 ## 6. Tests

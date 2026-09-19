@@ -39,8 +39,8 @@ claude mcp add intergent -- intergent mcp
 > Claude from a unit worktree:
 >
 > ```bash
-> intergent workspace create auth-fix --agent claude-code
-> cd "$(intergent --json workspace current | python3 -c 'import sys,json;print(json.load(sys.stdin)["worktree"])')"
+> intergent start --name auth-fix --agent claude-code
+> cd "$(intergent --json start | python3 -c 'import sys,json;print(json.load(sys.stdin)["worktree"])')"
 > claude
 > ```
 
@@ -59,14 +59,16 @@ Claude loads it on demand and will declare intent before editing, surface
 ## 4. Workflow
 
 ```
-agent: declare_intent -> edit -> commit_workspace -> finish_workspace -> verify -> submit
-human: intergent review <candidate> ; intergent approve <candidate> ; intergent land --all
+agent: declare -> edit -> commit -> verify -> review
+human: intergent review <candidate> --approve ; intergent review --land --all
+       # or in one step: intergent submit <candidate>
 ```
 
-The MCP surface deliberately excludes `approve`/`land`; landing is a human act.
+The MCP surface deliberately excludes landing; `submit` and the `review`
+approval flags are human actions.
 
 ## Available MCP tools
 
-`register_agent`, `create_workspace`, `register_child`, `declare_intent`,
-`check_conflicts`, `claim_scope`, `heartbeat`, `release`, `commit_workspace`,
-`finish_workspace`, `verify`, `status`, `current_workspace`, `submit`.
+Exactly one tool, `ig`, with an `action` enum: `start`, `status`, `declare`,
+`commit`, `verify`, `review`. The schema is generated from
+`intergent/surface.py`, so it matches the CLI exactly. Human actions are absent.

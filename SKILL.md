@@ -3,7 +3,7 @@ name: intergent
 description: Coordinate this session with other coding agents on one repository using the Intergent local plane (git worktree per session, declared scope leases, fingerprint-pinned verification, approval-gated landing). Use when the repository has .intergent/config.json, when the user mentions Intergent/ig/scope conflicts/wave landing, or before editing files in a coordinated multi-agent repo. Bundles the intergent CLI. Not for read-only research.
 license: Apache-2.0
 metadata:
-  version: "0.1.0"
+  version: "0.2.0"
   author: intergent
 ---
 
@@ -15,6 +15,24 @@ parallel without authoring conflicting changes. This session owns one **unit**
 human approves them.
 
 This skill bundles the Intergent CLI. Requires `git` and Python 3.11+.
+
+## The action surface
+
+There are **seven** actions, shared by the CLI, MCP, and the pi tool. Most are
+overloaded by flags, so the surface stays small:
+
+| Action | Purpose |
+|---|---|
+| `start` | bootstrap the plane + a unit for this directory (idempotent; alias `init`) |
+| `declare` | declare scopes and acquire leases; `--dry-run` checks, `--renew`/`--release` manage leases, `--decide` resolves a conflict |
+| `commit` | commit the worktree and register the candidate; `--sync` rebases first |
+| `verify` | run trusted checks at the candidate's exact commit |
+| `review` | show the review packet; humans may add `--approve` / `--reject` / `--land` |
+| `submit` | (human) approve + land a candidate in one step |
+| `status` | units, candidates, leases, waves; `--health`, `--simulate`, `--gc`, `--short`, `--unit U` |
+
+Agents can call `start`, `declare`, `commit`, `verify`, `review`, `status`.
+`submit` and the `review` approval flags are human-only.
 
 ## Locate the bundled CLI
 
@@ -33,31 +51,33 @@ If `intergent` is already installed on `PATH`, you may use it directly instead:
 command -v intergent && intergent --version
 ```
 
-Every command below uses `intergent`; substitute `python3 $SKILL_DIR/bin/intergent`
-when it is not on `PATH`. Add `--json` for parseable output.
+Add `--json` for parseable output.
 
 ## Hard rules
 
-1. **Work inside your unit worktree.** Run `intergent workspace current`. If it
+1. **Work inside your unit worktree.** Run `intergent status --short`. If it
    fails, you are not in a unit worktree — stop and tell the human to launch
    you inside one (see Setup). Do not edit the main working tree.
 2. **Declare before you edit.** No file edits before `intergent declare`
    returns `granted`. For read-only work, skip Intergent.
-3. **Never approve or land.** `approve`, `reject`, and `land` are human actions.
+3. **Never approve or land.** `submit` and the `review` approval flags are human
+   actions.
 4. **Never override a conflict** unless the human explicitly asks. If a
    declaration returns `needs_decision`, stop and surface the options.
-5. **Heartbeat** during long tasks so your lease does not expire.
+5. **Heartbeat** during long tasks (`intergent declare --renew`) so your lease
+   does not expire.
 
 ## Setup (only when not already in a unit worktree)
 
 A human (or you, then ask them to relaunch) runs:
 
 ```bash
-intergent workspace create <short-task-name> --agent <agent-name>
-cd "$(intergent --json workspace current | python3 -c 'import sys,json;print(json.load(sys.stdin)["worktree"])')"
+WT=$(intergent --json start --agent <agent-name> | python3 -c 'import sys,json;print(json.load(sys.stdin)["worktree"])')
+cd "$WT"
 ```
 
-Then launch the agent **inside that directory**, so its cwd is the unit worktree.
+Then launch the agent **inside that directory**, so its cwd is the unit
+worktree. `start` is idempotent and is the only bootstrap command.
 
 ## Per-task workflow
 
@@ -69,15 +89,23 @@ intergent --json declare --operation modify \
 
 # 2. Edit files in this worktree only.
 
-# 3. Commit, then register the candidate.
-intergent commit -m "add scope check to Login"
-intergent --json finish
+# 3. Commit and register the candidate in one call.
+intergent commit -m "add scope check to Login" --summary "scope check"
 
 # 4. Verify the exact commit (trusted checks + fingerprint).
 intergent --json verify <candidate-id>
 
-# 5. Report the candidate and review summary to the human. They approve and land.
+# 5. Show the review packet and report the candidate to the human.
 intergent --json review <candidate-id>
+```
+
+The human approves and lands from their client (or a terminal):
+
+```bash
+intergent review <candidate-id> --approve
+intergent review <candidate-id> --land --cleanup
+# or, in one step:
+intergent submit <candidate-id> --cleanup
 ```
 
 `declare` responses:
@@ -85,9 +113,8 @@ intergent --json review <candidate-id>
 | status | Meaning | What to do |
 |---|---|---|
 | `granted` | Leases acquired | Proceed with edits |
-| `queued` | Another unit holds an overlapping scope (`position`, `blocker`, `eta_seconds`) | Do non-conflicting work, or `heartbeat` and wait; after the blocker releases, `rebase` and retry |
+| `queued` | Another unit holds an overlapping scope (`position`, `blocker`, `eta_seconds`) | Do non-conflicting work, or `declare --renew` and wait; after the blocker releases, `commit --sync` and retry |
 | `needs_decision` | Destructive vs additive on an exact scope | **Stop** and ask the human to choose `wait`, `redesign`, or `override` |
-| error | Not in a unit worktree, or invalid scope | Fix per Hard rules |
 
 ## Scope syntax
 
@@ -109,10 +136,11 @@ unit holds are queued or escalated — expect a wait.
 
 ```bash
 intergent --json status                 # units, candidates, lease queue, waves
-intergent --json check --operation ...  # dry-run conflict check, takes no lease
-intergent --json heartbeat              # renew leases
-intergent --json release                # release early (e.g. abandoning the task)
-intergent --json simulate               # plan waves over the combined tree
+intergent --json declare --dry-run --operation modify --scope file:x.py
+intergent --json declare --renew        # renew leases
+intergent --json declare --release      # release early (e.g. abandoning the task)
+intergent --json status --simulate      # plan waves over the combined tree
+intergent --json status --health        # git/plane health check
 intergent --json review <candidate>     # review packet for the human
 ```
 
@@ -123,8 +151,8 @@ Agents never land. The human runs:
 ```bash
 intergent status
 intergent review <candidate>
-intergent approve <candidate>
-intergent land --all          # transactional merge into local main
+intergent review <candidate> --approve
+intergent review --land --all        # transactional merge into local main
 ```
 
 Reference docs ship alongside this skill: `docs/agents.md`,

@@ -41,7 +41,7 @@ lives in the long-lived `intergentd` (local) and the coordinator service
 
 ### Why the CLI still exists
 
-Skills + MCP alone are insufficient: bootstrap (`init`/`setup`/`doctor`) happens
+Skills + MCP alone are insufficient: bootstrap (`start`) happens
 before MCP exists; the daemon must be started and inspected; CI cannot speak
 MCP; humans need status/override/audit without opening an agent; recovery from
 broken MCP config needs a CLI; not every client supports MCP. Skills route and
@@ -51,27 +51,29 @@ fall back to the CLI; MCP exposes only the hot loop.
 
 ### MCP tools (agent hot loop)
 
+One tool, `ig`, parameterized by an `action` enum:
+
 ```
-register_agent      create_workspace    register_child
-declare_intent      check_conflicts     claim_scope
-commit_workspace    verify              finish_workspace
-status              submit
+start   status   declare   commit   verify   review
 ```
+
+A single tool keeps the agent's context small; the enum (and every flag) is
+generated from `intergent/surface.py`, so it can never drift from the CLI.
+Human-only actions (`submit`, `review --approve/--reject/--land`) are never in
+the schema and are rejected if called by name.
 
 ### CLI
 
 ```bash
-intergent init | setup <client> | daemon | doctor
-intergent agent start | status | review <candidate> | approve | reject
-intergent simulate | submit | plan | land | override --reason
-intergent session spawn --background [--tmux] | attach | list | resume | kill
+intergent start | declare | commit | verify | review | submit | status | mcp
 ```
 
-The local-plane reference implementation currently provides
-`init`, `doctor`, `agent register|list`, `session create|list`,
-`workspace create|list|show`, `declare`, `check`, `heartbeat`, `release`,
-`decide`, `override`, `rebase`, `commit`, `finish`, `verify`, `simulate`,
-`review`, `approve`, `reject`, `land`, `status`, `gc`, and `mcp`. See
+The local-plane reference implementation renders those seven actions from
+`intergent/surface.py`. Flags carry the long tail: `declare --dry-run`
+(conflict check), `--renew`/`--release` (lease maintenance), `--decide`
+(audited override); `commit --sync` (rebase); `status --health` (doctor),
+`--simulate` (wave plan + combined-tree checks), `--gc` (worktree cleanup),
+`--short`, `--unit U`; `review --approve/--reject/--land [--all]`. See
 [Local implementation](./implementation.md).
 
 ### CI / host

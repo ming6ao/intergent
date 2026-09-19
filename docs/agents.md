@@ -24,10 +24,13 @@ The CLI and MCP server resolve the unit from the cwd (`intergent workspace
 current`), so no `--unit` bookkeeping is needed.
 
 ```bash
-intergent workspace create auth-fix --agent claude-code
-cd "$(intergent --json workspace current | python3 -c 'import sys,json;print(json.load(sys.stdin)["worktree"])')"
+intergent start --agent claude-code          # idempotent: plane + a unit for cwd
+cd "$(intergent --json start | python3 -c 'import sys,json;print(json.load(sys.stdin)["worktree"])')"
 # now launch the agent here
 ```
+
+`start` (alias `init`) is safe to re-run; the pi extension calls it automatically
+when a prompt tags Intergent and rebinds its tools to the returned worktree.
 
 This is exactly the design's "one tmux pane / session per unit". Different
 sessions get different worktrees; scope leases stop them authoring conflicts.
@@ -74,12 +77,12 @@ cp integrations/claude/.mcp.json /path/to/repo/   # project MCP server
 cd <unit-worktree> && claude
 ```
 
-Tools are then available as MCP calls. See
+Tools are then available as a single `ig` MCP call. See
 [integrations/claude/README.md](../integrations/claude/README.md).
 
 ### pi
 
-pi intentionally has no MCP. Install the extension that exposes `ig_*` tools,
+pi intentionally has no MCP. Install the extension that exposes the `ig` tool,
 and/or the bundled skill:
 
 ```bash
@@ -88,7 +91,9 @@ cp integrations/pi/intergent.ts ~/.pi/agent/extensions/intergent.ts
 cd <unit-worktree> && pi
 ```
 
-See [integrations/pi/README.md](../integrations/pi/README.md).
+Tag Intergent in a prompt (e.g. `intergent: add a scope check to Login`) and the
+session bootstraps a unit and injects the lifecycle. See
+[integrations/pi/README.md](../integrations/pi/README.md).
 
 ### Generic CLI agent
 
@@ -99,46 +104,45 @@ only reads a repository instruction file, add the workflow to `AGENTS.md` /
 
 ```markdown
 This repo uses Intergent. Before editing, run `intergent declare` in your unit
-worktree. Never run `intergent approve` or `intergent land`.
+worktree. Never run `intergent submit` or `intergent review --approve/--land`.
 ```
 
 ## Agent contract
 
 The tools/skill enforce this contract:
 
-1. `workspace current` must succeed — you are in a unit worktree.
+1. `status --short` must succeed — you are in a unit worktree.
 2. `declare` before editing. Handle the response:
    - `granted` → edit;
-   - `queued` → do other work or wait + heartbeat, then rebase;
+   - `queued` → do other work or `declare --renew` and wait, then `commit --sync`;
    - `needs_decision` → **stop and ask the human** (wait / redesign / override).
-3. `commit` → `finish` → `verify` the exact commit.
+3. `commit` → `verify` the exact commit.
 4. `review` and report the candidate to the human.
-5. **Never `approve` or `land`.** Those are human-only. The MCP and pi tool
-   surfaces deliberately omit them.
+5. **Never land.** `submit` and the `review` approval flags are human-only. The
+   MCP schema omits them and the pi tool gates `submit` behind a UI confirmation.
 
 ## MCP surface
 
-`intergent mcp` speaks newline-delimited JSON-RPC over stdio and exposes:
-`register_agent`, `create_workspace`, `register_child`, `declare_intent`,
-`check_conflicts`, `claim_scope`, `heartbeat`, `release`, `commit_workspace`,
-`finish_workspace`, `verify`, `status`, `current_workspace`, `submit`.
-
-`unit` is optional on the hot-loop tools; the server resolves it from its cwd.
-`submit` returns the review packet and never lands.
+`intergent mcp` speaks newline-delimited JSON-RPC over stdio and exposes a
+**single** tool, `ig`, with an `action` enum (`start`, `status`, `declare`,
+`commit`, `verify`, `review`). It is generated from `intergent/surface.py`, the
+same module the CLI renders, so the two surfaces cannot drift. `unit` is
+optional on hot-loop calls; the server resolves it from its cwd. `review`
+returns the review packet and never lands.
 
 ## Multiple sessions at once
 
 ```bash
 # session A
-intergent workspace create payments --agent claude-code
+intergent start --name payments --agent claude-code
 # session B
-intergent workspace create docs --agent pi
+intergent start --name docs --agent pi
 
 # later, human reviews and lands approved candidates in wave order
 intergent status
 intergent review <candidate>
-intergent approve <candidate>
-intergent land --all
+intergent review <candidate> --approve
+intergent review --land --all
 ```
 
 `agent start`-style process supervision, tmux attachment, and background

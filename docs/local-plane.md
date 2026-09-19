@@ -95,7 +95,7 @@ branch and verify the combined tree. This is the only way to catch cross-agent
 semantic breakage locally. Output includes the local wave plan and blockers.
 
 ```text
-intergent simulate
+intergent status --simulate
   wave 1: docs-agent, auth-agent
   wave 2: payments-agent        (conflicts with wave 1 on symbol:PaymentService)
   wave 3: pay-agent             (depends on payments-agent; will rebase)
@@ -113,12 +113,12 @@ adapters, and SQLite (WAL) is the local store. Key mappings:
 
 | Design concept | Implementation |
 |---|---|
-| worktree + branch per unit | `workspace create` → `ig/<session>/<unit>` branch and `.intergent/worktrees/...` |
+| worktree + branch per unit | `start --name` → `ig/<session>/<unit>` branch and `.intergent/worktrees/...` |
 | declared intent | `declare --operation ... --scope ...` (`intergent/scopes.py`) |
 | scope lock manager + queue | `intergent/locks.py` (IS/IX/S/SIX/X) and `lock_requests`/`claims` |
 | fingerprint-pinned verification | `intergent/verifier.py` (`tree, cmd, toolchain, policy`) |
 | local integration simulation | `intergent/planner.py` (`simulate`) |
-| approval-gated landing | `intergent/landing.py` (`approve` → `land`) |
+| approval-gated landing | `intergent/landing.py` (`review --approve` → `review --land` / `submit`) |
 
 See [Local implementation](./implementation.md) for the full command reference,
 semantics, data model, tests, and the deliberate gaps (no daemon/AST yet).

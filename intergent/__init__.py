@@ -13,4 +13,4 @@ called by every adapter (CLI, MCP), matching the "one engine, many adapters"
 rule in ``docs/architecture.md``.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

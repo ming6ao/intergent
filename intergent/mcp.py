@@ -1,182 +1,75 @@
 """MCP stdio server (agent hot loop).
 
-Thin JSON-RPC adapter over :class:`intergent.service.Service`.  MCP uses
-newline-delimited JSON over stdio; the tool set is intentionally small to limit
-context bloat (``docs/architecture.md``).
+Thin JSON-RPC adapter over :mod:`intergent.service`, generated from
+:mod:`intergent.surface`.  The server exposes exactly **one** tool, ``ig``,
+parameterized by an ``action`` enum, instead of one tool per verb.  This keeps
+the agent's context small and makes it impossible for the MCP surface to drift
+from the CLI (both are renders of the same action registry).
+
+Human-only actions (``submit`` and the ``review`` approval flags) are never in
+the tool schema and are rejected if called by name.
 """
 
 from __future__ import annotations
 
 import json
 import sys
-from typing import Any, Callable
+from typing import Any
 
+from . import __version__, surface
 from .service import Service
+from .surface import Param
 from .util import IntergentError
 
 PROTOCOL_VERSION = "2024-11-05"
-SERVER_INFO = {"name": "intergent", "version": "0.1.0"}
+SERVER_INFO = {"name": "intergent", "version": __version__}
+TOOL_NAME = "ig"
 
-TOOLS: list[dict[str, Any]] = [
-    {
-        "name": "register_agent",
-        "description": "Register the calling agent with the local coordinator.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "name": {"type": "string"},
-                "model": {"type": "string"},
-                "parent": {"type": "string"},
-            },
-            "required": ["name"],
-        },
-    },
-    {
-        "name": "create_workspace",
-        "description": "Create a unit with its own git worktree and branch.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "name": {"type": "string"},
-                "session": {"type": "string"},
-                "kind": {"type": "string", "enum": ["session", "worker"]},
-                "base": {"type": "string"},
-                "agent": {"type": "string"},
-                "task": {"type": "string"},
-            },
-            "required": ["name"],
-        },
-    },
-    {
-        "name": "register_child",
-        "description": "Create a child worker worktree under a parent unit's session.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "parent_unit": {"type": "string"},
-                "name": {"type": "string"},
-                "agent": {"type": "string"},
-                "task": {"type": "string"},
-            },
-            "required": ["parent_unit", "name"],
-        },
-    },
-    {
-        "name": "declare_intent",
-        "description": "Declare scopes and operations; acquires scope leases or queues.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "unit": {"type": "string"},
-                "operation": {
-                    "type": "string",
-                    "enum": ["add", "extend", "modify", "replace", "remove", "rename", "migrate"],
-                },
-                "scopes": {"type": "array", "items": {"type": "string"}},
-                "task": {"type": "string"},
-                "summary": {"type": "string"},
-            },
-            "required": ["unit", "operation", "scopes"],
-        },
-    },
-    {
-        "name": "check_conflicts",
-        "description": "Dry-run conflict detection without taking leases.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "unit": {"type": "string"},
-                "operation": {"type": "string"},
-                "scopes": {"type": "array", "items": {"type": "string"}},
-            },
-            "required": ["unit", "operation", "scopes"],
-        },
-    },
-    {
-        "name": "claim_scope",
-        "description": "Alias for declare_intent: leases are acquired when intent is declared.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "unit": {"type": "string"},
-                "operation": {"type": "string"},
-                "scopes": {"type": "array", "items": {"type": "string"}},
-            },
-            "required": ["unit", "operation", "scopes"],
-        },
-    },
-    {
-        "name": "heartbeat",
-        "description": "Renew the unit's leases.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {"unit": {"type": "string"}},
-            "required": ["unit"],
-        },
-    },
-    {
-        "name": "release",
-        "description": "Release the unit's leases and promote queued waiters.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {"unit": {"type": "string"}},
-            "required": ["unit"],
-        },
-    },
-    {
-        "name": "commit_workspace",
-        "description": "Commit all changes in the unit worktree.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {"unit": {"type": "string"}, "message": {"type": "string"}},
-            "required": ["unit", "message"],
-        },
-    },
-    {
-        "name": "finish_workspace",
-        "description": "Mark the unit's branch as a ready candidate.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {"unit": {"type": "string"}, "summary": {"type": "string"}},
-            "required": ["unit"],
-        },
-    },
-    {
-        "name": "verify",
-        "description": "Run trusted checks at the candidate commit; result is fingerprint-pinned.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {"candidate": {"type": "string"}, "force": {"type": "boolean"}},
-            "required": ["candidate"],
-        },
-    },
-    {
-        "name": "status",
-        "description": "Show units, candidates, lease queue, and wave plan.",
-        "inputSchema": {"type": "object", "properties": {}},
-    },
-    {
-        "name": "current_workspace",
-        "description": "Return the unit whose worktree contains the server's cwd.",
-        "inputSchema": {"type": "object", "properties": {}},
-    },
-    {
-        "name": "submit",
-        "description": "Build the review packet for a candidate. Landing requires human approval.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {"candidate": {"type": "string"}},
-            "required": ["candidate"],
-        },
-    },
-]
 
-# `unit` is optional on the hot-loop tools: when the server runs inside a unit
-# worktree, the service resolves the current unit from the cwd.
-for _tool in TOOLS:
-    _required = _tool.get("inputSchema", {}).get("required")
-    if _required and "unit" in _required:
-        _required.remove("unit")
+def _param_schema(param: Param) -> dict[str, Any]:
+    if param.type == "boolean":
+        schema: dict[str, Any] = {"type": "boolean"}
+    elif param.type == "int":
+        schema = {"type": "integer"}
+    elif param.type == "list":
+        schema = {"type": "array", "items": {"type": "string"}}
+    else:
+        schema = {"type": "string"}
+    if param.choices:
+        schema["enum"] = list(param.choices)
+    schema["description"] = param.help
+    return schema
+
+
+def build_tool() -> dict[str, Any]:
+    actions = surface.agent_actions()
+    actions_line = "; ".join(f"{a.name}: {a.summary}" for a in actions)
+    properties: dict[str, Any] = {
+        "action": {
+            "type": "string",
+            "enum": [a.name for a in actions],
+            "description": "Lifecycle action. " + actions_line,
+        }
+    }
+    for param in surface.agent_params():
+        properties[param.name] = _param_schema(param)
+    return {
+        "name": TOOL_NAME,
+        "description": (
+            "Intergent unit lifecycle. One tool, many actions: "
+            + actions_line
+            + ". Call it before editing (declare), then commit, verify, and "
+            "review. Landing is a human action, never exposed here."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": properties,
+            "required": ["action"],
+        },
+    }
+
+
+TOOLS: list[dict[str, Any]] = [build_tool()]
 
 
 def serve(service: Service) -> int:
@@ -222,7 +115,7 @@ def _handle(service: Service, message: dict[str, Any]) -> dict[str, Any] | None:
         name = params.get("name")
         arguments = params.get("arguments") or {}
         try:
-            payload = _call(service, name, arguments)
+            payload = call(service, name, arguments)
             text = json.dumps(payload, indent=2, default=str)
             return _result(
                 msg_id,
@@ -253,68 +146,20 @@ def _result(msg_id: Any, result: Any) -> dict[str, Any]:
     return {"jsonrpc": "2.0", "id": msg_id, "result": result}
 
 
-def _call(service: Service, name: str, args: dict[str, Any]) -> Any:
-    handlers: dict[str, Callable[[dict[str, Any]], Any]] = {
-        "register_agent": lambda a: service.register_agent(
-            a["name"], model=a.get("model"), parent=a.get("parent")
-        ),
-        "create_workspace": lambda a: service.create_workspace(
-            a["name"],
-            session=a.get("session"),
-            kind=a.get("kind", "worker"),
-            base=a.get("base"),
-            agent=a.get("agent"),
-            task=a.get("task"),
-        ),
-        "register_child": lambda a: _register_child(service, a),
-        "declare_intent": lambda a: service.declare_intent(
-            _unit(service, a),
-            operation=a["operation"],
-            scope_specs=list(a["scopes"]),
-            task=a.get("task"),
-            summary=a.get("summary"),
-        ),
-        "check_conflicts": lambda a: {
-            "findings": [
-                f.to_dict()
-                for f in service.check_conflicts(
-                    _unit(service, a), a["operation"], list(a["scopes"])
-                )
-            ]
-        },
-        "claim_scope": lambda a: service.declare_intent(
-            _unit(service, a), operation=a["operation"], scope_specs=list(a["scopes"])
-        ),
-        "heartbeat": lambda a: service.heartbeat(_unit(service, a)),
-        "release": lambda a: service.release(_unit(service, a)),
-        "commit_workspace": lambda a: service.commit(_unit(service, a), a["message"]),
-        "finish_workspace": lambda a: service.finish(_unit(service, a), summary=a.get("summary")),
-        "verify": lambda a: service.verify(a["candidate"], force=bool(a.get("force"))),
-        "status": lambda a: service.status(),
-        "current_workspace": lambda a: service.current_unit(),
-        "submit": lambda a: service.review(a["candidate"]),
-    }
-    handler = handlers.get(name)
-    if handler is None:
-        raise IntergentError(f"unknown tool: {name}")
-    return handler(args)
+def call(service: Service, name: str | None, args: dict[str, Any]) -> Any:
+    """Dispatch one tool call.
 
-
-def _unit(service: Service, args: dict[str, Any]) -> str:
-    """Use an explicit unit, else resolve the worktree containing the server cwd."""
-    explicit = args.get("unit")
-    if explicit:
-        return str(explicit)
-    return service.current_unit()["name"]
-
-
-def _register_child(service: Service, args: dict[str, Any]) -> dict[str, Any]:
-    parent = service.store.require_unit(args["parent_unit"])
-    session = service.store.get_session(int(parent["session_id"])) if parent.get("session_id") else None
-    return service.create_workspace(
-        args["name"],
-        session=(session or {}).get("name"),
-        kind="worker",
-        agent=args.get("agent"),
-        task=args.get("task"),
-    )
+    Accepts the generic ``ig`` tool (``{"action": ...}``) and, for ergonomics,
+    a direct action name as the tool name.
+    """
+    if name == TOOL_NAME:
+        action = args.get("action")
+        if not action:
+            raise IntergentError(f"{TOOL_NAME} requires an 'action'")
+        params = {k: v for k, v in args.items() if k != "action"}
+    elif name:
+        action = name
+        params = dict(args)
+    else:
+        raise IntergentError("missing tool name")
+    return surface.dispatch(service, action, {**params, "_human": False})

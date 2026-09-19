@@ -38,19 +38,25 @@ commit against a content fingerprint, simulates the combined tree, and merges
 approved candidates into the local main branch in wave order.
 
 ```bash
-# from a git repository
-./bin/intergent init --check "tests=pytest -q"
-./bin/intergent workspace create docs-agent --task "update API docs"
+# from a git repository: one idempotent bootstrap = plane + first unit
+./bin/intergent start --check "tests=pytest -q"
+# optional additional unit for another task
+./bin/intergent start --name docs-agent --task "update API docs"
 ./bin/intergent declare --unit docs-agent --operation add --scope file:docs/api.md
 
 # ... agent edits and commits in the printed worktree ...
-./bin/intergent commit  --unit docs-agent -m "expand API docs"
-./bin/intergent finish  --unit docs-agent
+./bin/intergent commit  --unit docs-agent -m "expand API docs"   # registers the candidate
 ./bin/intergent verify  docs-agent
-./bin/intergent simulate
-./bin/intergent approve docs-agent
-./bin/intergent land    --all
+./bin/intergent status  --simulate
+./bin/intergent submit  docs-agent --cleanup                     # approve + land
 ```
+
+Seven actions cover the whole lifecycle: `start`, `declare`, `commit`,
+`verify`, `review`, `submit`, `status` (plus `mcp`). `declare` also does
+`--dry-run` checks, `--renew`/`--release` leases, and `--decide` conflict
+resolution; `commit --sync` rebases; `status --health/--simulate/--gc` covers
+the old `debug` group. Agents get exactly **one** tool (MCP and pi) whose
+`action` is one of these verbs. See [docs/implementation.md](./docs/implementation.md).
 
 Agents may instead drive the same service over MCP: `./bin/intergent mcp`.
 See [docs/implementation.md](./docs/implementation.md) for the full CLI/MCP
@@ -58,11 +64,12 @@ reference and the mapping from design concepts to code.
 
 ### Use it inside Claude Code or pi
 
-Launch the agent **inside its unit worktree** and let it call Intergent:
+Launch the agent **inside its unit worktree** and let it call Intergent (pi
+bootstraps when a prompt tags Intergent; see [integrations/pi](./integrations/pi/README.md)):
 
 ```bash
-./bin/intergent workspace create auth-fix --agent claude-code
-cd "$(./bin/intergent --json workspace current | python3 -c 'import sys,json;print(json.load(sys.stdin)["worktree"])')"
+./bin/intergent start --agent claude-code      # plane + a unit for this dir
+cd "$(./bin/intergent --json start | python3 -c 'import sys,json;print(json.load(sys.stdin)["worktree"])')"
 claude          # or: pi
 ```
 
@@ -71,13 +78,14 @@ claude          # or: pi
 - Bundled skill: [`SKILL.md`](./SKILL.md)
 - Full guide: [docs/agents.md](./docs/agents.md)
 
-Agents declare intent, commit, finish, and verify; a human runs
-`approve` and `land`. Landing is never exposed to the agent.
+Agents declare intent, commit, verify, and review; a human approves and lands
+(with `review --land`, or the one-step `submit`). Landing is never exposed to
+the agent.
 
 ### Install as an agent skill
 
 ```bash
-npx skills add ming6ao/intergent -g -y -a claude-code -a pi
+npx skills add ming6ao/intergent -g -y -a pi -a opencode
 ```
 
 This repository **is** an Agent Skill: the root [`SKILL.md`](./SKILL.md) bundles

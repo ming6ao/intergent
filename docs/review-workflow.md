@@ -34,8 +34,8 @@ model, assembled by the tool.
 - **Pre-approval is essential for a queue to flow:** approve a candidate now; it
   lands automatically when its dependency/wave clears. Otherwise the user
   babysits every wait.
-- **Override** (`intergent override --reason "..."`) is explicit and audited;
-  never silent.
+- **Override** (`intergent declare --unit U --decide override --reason "..."`) is
+  explicit and audited; never silent.
 
 ## 5. Submission = batched, wave-ordered
 
@@ -55,19 +55,18 @@ fast-forwarded).
 ### Solo, one agent
 
 ```bash
-intergent init && intergent setup all && intergent daemon
-# agent over MCP: register_agent → create_workspace → declare_intent → commit → verify → finish
-intergent status && intergent review <candidate> && intergent submit
+intergent start --check "tests=pytest -q"
+# agent over MCP: start → declare → commit → verify → review
+intergent status && intergent review <candidate>
 ```
 
 ### Solo, many agents
 
 ```bash
-intergent agent start --name docs-agent --task "update API docs"
-intergent agent start --name auth-agent --task "add scope check to Login"
+intergent start --name docs-agent --task "update API docs"
+intergent start --name auth-agent --task "add scope check to Login"
 # intents declared; overlapping scopes warn / queue / auto-rebase
-intergent simulate          # merge all ready candidates, test combined tree
-intergent submit            # push branches, register candidates
+intergent status --simulate   # merge all ready candidates, test combined tree
 ```
 
 ### Team
