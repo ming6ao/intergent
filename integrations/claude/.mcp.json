@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "intergent": {
+      "command": "intergent",
+      "args": ["mcp"]
+    }
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Intergent Architecture",
+    "output": "architecture.html",
+    "quality_profile": "showcase",
+    "views": [
+      { "id": "authoring", "label": "Authoring path", "focus": ["agents", "localcoord", "verifier", "core"], "note": "Agents declare intent and verify locally inside the user's machine." },
+      { "id": "landing", "label": "Landing path", "focus": ["localcoord", "remote", "pg", "ci", "host"], "note": "Ready candidates are scheduled into waves and landed at the host." },
+      { "id": "shared-core", "label": "Shared core", "focus": ["localcoord", "core", "remote"], "note": "Both planes call the same deterministic conflict engine." }
+    ]
+  },
+  "layout": { "mode": "grid", "cols": 4, "gapX": 70, "gapY": 90 },
+  "components": [
+    { "id": "verifier", "type": "backend", "label": "Local Verifier", "sublabel": "build · typecheck · tests", "row": 0, "col": 1 },
+    { "id": "ci", "type": "cloud", "label": "Merged-Result CI", "sublabel": "one run per wave", "row": 0, "col": 2 },
+    { "id": "agents", "type": "external", "label": "Coding Agents", "sublabel": "MCP / CLI", "row": 1, "col": 0 },
+    { "id": "localcoord", "type": "backend", "label": "Local Coordinator", "sublabel": "intergentd · unix socket", "row": 1, "col": 1, "tag": "per user" },
+    { "id": "remote", "type": "backend", "label": "Remote Coordinator", "sublabel": "wave scheduler", "row": 1, "col": 2, "tag": "shared" },
+    { "id": "host", "type": "external", "label": "Git Host", "sublabel": "GitHub / GitLab", "row": 1, "col": 3 },
+    { "id": "core", "type": "backend", "label": "Analysis Core", "sublabel": "merge-tree + symbol graph", "row": 2, "col": 1, "tag": "shared" },
+    { "id": "pg", "type": "database", "label": "Shared Store", "sublabel": "Postgres · candidates · waves", "row": 2, "col": 2 }
+  ],
+  "boundaries": [
+    { "kind": "region", "label": "Local plane — per user machine", "wraps": ["agents", "localcoord", "verifier", "core"] },
+    { "kind": "region", "label": "Remote plane — shared, authoritative", "wraps": ["remote", "pg", "ci"] }
+  ],
+  "connections": [
+    { "id": "agents-declare", "from": "agents", "to": "localcoord", "label": "declare intent", "variant": "emphasis", "fromSide": "right", "toSide": "left" },
+    { "id": "submit-candidate", "from": "localcoord", "to": "remote", "label": "submit candidate", "variant": "emphasis", "fromSide": "right", "toSide": "left", "labelDy": 54 },
+    { "id": "land-host", "from": "remote", "to": "host", "label": "required check", "variant": "emphasis", "fromSide": "right", "toSide": "left" },
+    { "id": "local-verify", "from": "localcoord", "to": "verifier", "label": "run checks", "variant": "dashed", "fromSide": "top", "toSide": "bottom" },
+    { "id": "local-core", "from": "localcoord", "to": "core", "label": "conflict graph", "variant": "dashed", "fromSide": "bottom", "toSide": "top", "labelDy": 24 },
+    { "id": "core-remote", "from": "core", "to": "remote", "label": "same core", "variant": "dashed", "fromSide": "right", "toSide": "bottom" },
+    { "id": "remote-ci", "from": "remote", "to": "ci", "label": "merged-result CI", "variant": "dashed", "fromSide": "top", "toSide": "bottom" },
+    { "id": "remote-pg", "from": "remote", "to": "pg", "label": "plan waves", "fromSide": "bottom", "toSide": "top", "labelAt": [500, 360] }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "Local plane", "items": ["One git worktree per unit over a shared object store", "Declared intent and scope leases (advisory + leased exclusion)", "Fingerprint-pinned build, typecheck, and tests", "Combined-tree simulation before submit"] },
+    { "dot": "emerald", "title": "Remote plane", "items": ["Conflict graph: text + symbol + declared operation", "Wave scheduler batches mutually mergeable candidates", "One merged-result CI run per wave", "Content-addressed cache, batched pushes, backoff + jitter"] },
+    { "dot": "amber", "title": "Control", "items": ["Deterministic verdicts; no LLM in the block path", "Destructive-vs-additive needs an explicit decision", "Human review, pre-approval, audited override", "Background sessions verify, never publish or land"] }
+  ]
+}
