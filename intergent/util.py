@@ -7,11 +7,13 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import time
 from pathlib import Path
 from typing import Any, Iterable
 
 STATE_DIR = ".intergent"
+DEFAULT_EDITOR = "code"  # VS Code CLI
 CONFIG_NAME = "config.json"
 DB_NAME = "state.db"
 WORKTREES_DIR = "worktrees"
@@ -43,6 +45,27 @@ def sha256_bytes(data: bytes) -> str:
 
 def sha256_json(obj: Any) -> str:
     return sha256_text(json.dumps(obj, sort_keys=True, separators=(",", ":")))
+
+
+def editor_command(
+    path: str | os.PathLike[str], config: dict[str, Any] | None = None
+) -> str:
+    """Shell command that opens *path* in the configured editor.
+
+    Precedence: ``INTERGENT_EDITOR`` env var, then ``config["editor"]``, then
+    ``code`` (VS Code).  VS Code gets ``-n`` so the worktree opens in its own
+    window instead of replacing the human's current one.
+    """
+    editor = (
+        os.environ.get("INTERGENT_EDITOR")
+        or (config or {}).get("editor")
+        or DEFAULT_EDITOR
+    )
+    target = shlex.quote(str(path))
+    executable = os.path.basename(str(editor).split()[0]) if str(editor).split() else str(editor)
+    if executable in {"code", "code-insiders", "codium", "codium-insiders"}:
+        return f"{editor} -n {target}"
+    return f"{editor} {target}"
 
 
 def slugify(text: str, max_len: int = 40) -> str:

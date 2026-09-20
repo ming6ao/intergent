@@ -50,12 +50,32 @@ launching pi, e.g. `INTERGENT_BIN=/home/me/intergent/bin/intergent pi`.
 | `declare` | declare scopes + acquire leases; `dry_run`, `renew`, `release`, `decide` |
 | `commit` | commit the worktree and register the candidate (`sync` rebases first) |
 | `verify` | fingerprint-pinned trusted checks |
-| `review` | review packet for the human |
-| `submit` | **human-gated**: show the packet, ask for confirmation, then approve + land |
+| `review` | review packet for the human (includes an `open_command` for the worktree) |
+| `submit` | **human-gated**: stage the wave as an uncommitted draft on main, show it, and commit only on confirmation |
 
-`submit` is the only landing path in the tool, and it always asks the human via
-an interactive confirmation; without a UI it refuses. `review --approve`,
-`--reject`, and `--land` are not exposed to the model.
+`submit` is the only landing path in the tool. It stages an **uncommitted draft**
+on main, shows the human the drafted files/stat/commit message, and only creates
+the commit after the in-session confirmation dialog; without a UI it refuses.
+`review --approve`, `--reject`, and `--land` are not exposed to the model.
+
+### Approving from inside the session
+
+You do **not** need a terminal. There are two human paths, both gated by a
+blocking confirmation dialog:
+
+- **Ask the agent.** Say e.g. "approve and land it". The agent calls
+  `ig action=submit` (with the candidate id when there is more than one). That
+  approves the candidate and stages the combined change as an **uncommitted
+  draft** on main, then shows you the draft (files, diffstat, commit subject, and
+  the `open_command` to inspect main). Confirming creates the commit; declining
+  runs `--abort` and restores main. The agent cannot fake either step.
+- **Run a command.** `/ig-approve [candidate]` does the same draft → confirm →
+  commit; `/ig-reject [candidate]` rejects; `/ig-land` lands every approved
+  candidate. With no argument, the matching candidate is resolved from `status`,
+  preferring this session's worktree; if several match, you get a picker.
+
+Approval still requires `ctx.hasUI` (TUI or RPC mode). In print/JSON mode the
+extension refuses and points at the equivalent CLI commands.
 
 ## Alternative: the skill (CLI only, no extension)
 

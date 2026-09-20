@@ -30,6 +30,21 @@ class RepoCase(unittest.TestCase):
         run("git", "commit", "-qm", "initial", cwd=self.root)
         Service.init_plane(self.root, checks=self.checks)
         self.svc = Service(self.root)
+        # Legacy tests exercise the one-shot `direct` path; draft mode is covered
+        # by DraftLandingTests below.
+        self._set_landing(mode="direct")
+
+    def _set_landing(self, *, mode=None, strategy=None):
+        from intergent.util import config_path, read_json, write_json
+
+        config = read_json(config_path(self.root))
+        landing = dict(config.get("landing") or {})
+        if mode is not None:
+            landing["mode"] = mode
+        if strategy is not None:
+            landing["strategy"] = strategy
+        config["landing"] = landing
+        write_json(config_path(self.root), config)
 
     def tearDown(self):
         self.svc.close()
@@ -229,6 +244,116 @@ class LandingTests(RepoCase):
         self.svc.approve(candidate)
         self.svc.land([candidate], cleanup=True)
         self.assertFalse(Path(alpha["worktree"]).exists())
+
+    def _land_one_with_commits(self, *messages):
+        alpha = self.svc.create_workspace("alpha")
+        self.svc.declare_intent("alpha", operation="modify", scope_specs=["file:src/app.py"])
+        for i, message in enumerate(messages):
+            self.write(alpha["worktree"], "src/app.py", "line = %d\n" % i)
+            self.svc.commit("alpha", message)
+        candidate = self.svc.finish("alpha")["id"]
+        self.svc.verify(candidate)
+        self.svc.approve(candidate)
+        base = run("git", "rev-parse", "HEAD", cwd=self.root).stdout.strip()
+        results = self.svc.land([candidate])
+        return results[0], base
+
+    def test_squash_landing_hides_worktree_history(self):
+        result, base = self._land_one_with_commits("worktree one", "worktree two")
+        self.assertEqual(result["status"], "landed")
+        self.assertEqual(result["strategy"], "squash")
+        # Exactly one new commit on main, and it has a single parent.
+        added = run("git", "log", "--format=%H", f"{base}..HEAD", cwd=self.root).stdout.split()
+        self.assertEqual(len(added), 1)
+        parents = run("git", "rev-list", "--parents", "-n", "1", "HEAD", cwd=self.root).stdout.split()
+        self.assertEqual(len(parents), 2)
+        subjects = run("git", "log", "--format=%s", "-n", "10", cwd=self.root).stdout
+        self.assertNotIn("worktree one", subjects)
+        self.assertNotIn("worktree two", subjects)
+        self.assertIn("line = 1", (self.root / "src" / "app.py").read_text())
+
+    def test_merge_strategy_keeps_worktree_history(self):
+        self._set_landing(strategy="merge")
+        result, base = self._land_one_with_commits("worktree one", "worktree two")
+        self.assertEqual(result["status"], "landed")
+        self.assertEqual(result["strategy"], "merge")
+        parents = run("git", "rev-list", "--parents", "-n", "1", "HEAD", cwd=self.root).stdout.split()
+        self.assertEqual(len(parents), 3)
+        subjects = run("git", "log", "--format=%s", "-n", "10", cwd=self.root).stdout
+        self.assertIn("worktree one", subjects)
+        self.assertIn("worktree two", subjects)
+
+
+class DraftLandingTests(RepoCase):
+    def setUp(self):
+        super().setUp()
+        self._set_landing(mode="draft")
+
+    def _prepare(self, commits=1):
+        alpha = self.svc.create_workspace("alpha")
+        self.svc.declare_intent("alpha", operation="modify", scope_specs=["file:src/app.py"])
+        for i in range(commits):
+            self.write(alpha["worktree"], "src/app.py", f"line = {i}\n")
+            self.svc.commit("alpha", f"worktree commit {i}")
+        candidate = self.svc.finish("alpha")["id"]
+        self.svc.verify(candidate)
+        self.svc.approve(candidate)
+        return candidate, alpha
+
+    def test_land_stages_draft_then_commits(self):
+        candidate, alpha = self._prepare(commits=2)
+        base = run("git", "rev-parse", "HEAD", cwd=self.root).stdout.strip()
+        results = self.svc.land([candidate])
+        self.assertEqual(results[0]["status"], "drafted")
+        draft = results[0]["draft"]
+        self.assertIn("src/app.py", draft["files"])
+        self.assertIn("code -n", draft["open_command"])
+        # Main HEAD has not moved, but the draft is staged on the worktree.
+        self.assertEqual(run("git", "rev-parse", "HEAD", cwd=self.root).stdout.strip(), base)
+        self.assertIn("src/app.py", run("git", "status", "--porcelain", cwd=self.root).stdout)
+        # A second land without --commit refuses while a draft is pending.
+        with self.assertRaises(IntergentError):
+            self.svc.land([candidate])
+        # Commit the draft: one squashed, single-parent commit.
+        committed = self.svc.land([], commit_draft=True)
+        self.assertEqual(committed[0]["status"], "landed")
+        added = run("git", "log", "--format=%H", f"{base}..HEAD", cwd=self.root).stdout.split()
+        self.assertEqual(len(added), 1)
+        parents = run("git", "rev-list", "--parents", "-n", "1", "HEAD", cwd=self.root).stdout.split()
+        self.assertEqual(len(parents), 2)
+        self.assertIn("line = 1", (self.root / "src" / "app.py").read_text())
+
+    def test_abort_restores_main(self):
+        candidate, alpha = self._prepare()
+        base = run("git", "rev-parse", "HEAD", cwd=self.root).stdout.strip()
+        self.svc.land([candidate])
+        self.assertNotEqual(run("git", "status", "--porcelain", cwd=self.root).stdout.strip(), "")
+        aborted = self.svc.land([], abort_draft=True)
+        self.assertEqual(aborted[0]["status"], "aborted")
+        self.assertEqual(run("git", "rev-parse", "HEAD", cwd=self.root).stdout.strip(), base)
+        self.assertEqual(run("git", "status", "--porcelain", cwd=self.root).stdout.strip(), "")
+        self.assertNotIn("line = 0", (self.root / "src" / "app.py").read_text())
+
+    def test_conflicting_candidate_blocks_but_drafts_clean_prefix(self):
+        alpha = self.svc.create_workspace("alpha")
+        beta = self.svc.create_workspace("beta")
+        self.svc.declare_intent("alpha", operation="modify", scope_specs=["file:src/app.py"])
+        self.svc.declare_intent("beta", operation="modify", scope_specs=["file:src/app.py"])
+        self.write(alpha["worktree"], "src/app.py", "line = 'alpha'\n")
+        self.write(beta["worktree"], "src/app.py", "line = 'beta'\n")
+        self.svc.commit("alpha", "alpha")
+        self.svc.commit("beta", "beta")
+        c_alpha = self.svc.finish("alpha")["id"]
+        c_beta = self.svc.finish("beta")["id"]
+        self.svc.verify(c_alpha)
+        self.svc.verify(c_beta)
+        self.svc.approve(c_alpha)
+        self.svc.approve(c_beta)
+        results = self.svc.land([c_alpha, c_beta])
+        statuses = [r["status"] for r in results]
+        self.assertIn("drafted", statuses)
+        self.assertIn("blocked", statuses)
+        self.svc.land([], abort_draft=True)
 
 
 if __name__ == "__main__":

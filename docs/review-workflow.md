@@ -15,6 +15,9 @@ model, assembled by the tool.
 - verification evidence (commands, results, pinned fingerprint);
 - conflict/wave status ("assigned wave 2, after #512; auto-rebased");
 - provenance (agent/model, task, declared intents, recorded decisions);
+- the unit worktree path and an `open_command` that opens it (VS Code by
+  default; override with `editor` in `.intergent/config.json` or the
+  `INTERGENT_EDITOR` env var);
 - risk flags (HIGH conflicts, schema/migration, critical paths, large diffs).
 
 ## 3. Where review happens
@@ -42,7 +45,13 @@ model, assembled by the tool.
 Once candidates are approved:
 
 1. Coordinator computes waves over all approved candidates by mergeability.
-2. For each wave: merge into one integration tree → run CI **once** → land.
+2. For each wave: draft the combined tree onto the target branch and run CI
+   **once** — the changes are staged but **not committed**. A human reviews the
+   staged draft (the draft carries an `open_command` to open the target worktree)
+   and only then approves the commit. Landing is **squash-by-default**: the wave
+   becomes a single commit, so the unit branches' intermediate commits never
+   appear in main's history. Set `landing.strategy` to `merge` to keep `--no-ff`
+   merge commits, and `landing.mode` to `direct` to skip the draft/approval phase.
 3. Update PRs/status; rebase and re-wave the remainder; notify on failures
    (bisect to the culprit).
 

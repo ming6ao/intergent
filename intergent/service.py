@@ -22,8 +22,10 @@ from .scopes import (
 )
 from .store import Store
 from .util import (
+    DEFAULT_EDITOR,
     IntergentError,
     config_path,
+    editor_command,
     now,
     read_json,
     slugify,
@@ -90,6 +92,8 @@ class Service:
             "base": base,
             "lease_ttl_seconds": lease_ttl_seconds,
             "checks": checks or [],
+            "editor": DEFAULT_EDITOR,
+            "landing": {"strategy": "squash", "mode": "draft"},
             "policy": {"require_verification": True, "allow_auto_approve": []},
             "created_at": now(),
         }
@@ -689,6 +693,7 @@ class Service:
             commits, files = [], []
         wave = self._wave_for(candidate)
         findings = self._candidate_findings(candidate)
+        worktree = unit.get("worktree") if unit else None
         risk = []
         if any(f.severity == "HIGH" for f in findings):
             risk.append("HIGH conflict")
@@ -698,6 +703,8 @@ class Service:
             risk.append("large diff")
         return {
             "candidate": candidate,
+            "worktree": worktree,
+            "open_command": editor_command(worktree, self.config) if worktree else None,
             "unit": unit,
             "intent": intent,
             "scopes": scopes,
@@ -773,18 +780,20 @@ class Service:
         all_approved: bool = False,
         run_checks_flag: bool = True,
         cleanup: bool = False,
+        draft: bool | None = None,
+        commit_draft: bool = False,
+        abort_draft: bool = False,
     ) -> list[dict[str, Any]]:
-        if all_approved or not candidate_refs:
-            ids = [int(c["id"]) for c in self.store.list_candidates(statuses=["approved"])]
-        else:
-            ids = []
-            for ref in candidate_refs:
-                candidate = self.store.get_candidate(ref)
-                if candidate is None:
-                    raise IntergentError(f"unknown candidate: {ref}")
-                ids.append(int(candidate["id"]))
-        if not ids:
-            return []
+        ids: list[int] = []
+        if not (commit_draft or abort_draft):
+            if all_approved or not candidate_refs:
+                ids = [int(c["id"]) for c in self.store.list_candidates(statuses=["approved"])]
+            else:
+                for ref in candidate_refs:
+                    candidate = self.store.get_candidate(ref)
+                    if candidate is None:
+                        raise IntergentError(f"unknown candidate: {ref}")
+                    ids.append(int(candidate["id"]))
         results = landing.land_candidates(
             self.store,
             self.root,
@@ -792,6 +801,9 @@ class Service:
             ids,
             run_checks_flag=run_checks_flag,
             cleanup=cleanup,
+            draft=draft,
+            commit_draft=commit_draft,
+            abort_draft=abort_draft,
         )
         return [r.to_dict() for r in results]
 

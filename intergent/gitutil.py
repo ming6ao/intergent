@@ -252,8 +252,42 @@ def merge_into(
     return git(worktree, *args, check=False)
 
 
+def merge_squash_into(
+    worktree: str | os.PathLike[str], branch: str, *, message: str
+) -> GitResult:
+    """Squash-merge *branch* into *worktree* as one commit with a single parent.
+
+    ``git merge --squash`` stages the merged tree without creating a commit or
+    recording ``MERGE_HEAD``; we commit it here so the result is a real,
+    single-parent commit with no history from the source branch.
+    """
+    res = git(worktree, "merge", "--squash", branch, check=False)
+    if not res.ok:
+        return res
+    if "Already up to date" in (res.stdout or "") + (res.stderr or ""):
+        return res
+    return commit_all(worktree, message)
+
+
 def merge_abort(worktree: str | os.PathLike[str]) -> None:
-    git(worktree, "merge", "--abort", check=False)
+    # A conflicted ``merge --squash`` has no MERGE_HEAD, so ``merge --abort``
+    # fails; fall back to a hard reset (the worktree was clean before the merge).
+    res = git(worktree, "merge", "--abort", check=False)
+    if not res.ok:
+        git(worktree, "reset", "--hard", check=False)
+
+
+def read_tree_reset(worktree: str | os.PathLike[str], commit: str) -> GitResult:
+    """Set the index and working tree to *commit* while leaving HEAD untouched.
+
+    Used to stage a landing draft: ``git status`` then shows the combined
+    changes as staged, and a plain ``git commit`` records them.
+    """
+    return git(worktree, "read-tree", "--reset", "-u", commit, check=False)
+
+
+def reset_hard(worktree: str | os.PathLike[str], commit: str = "HEAD") -> GitResult:
+    return git(worktree, "reset", "--hard", commit, check=False)
 
 
 def commit_all(
@@ -280,6 +314,17 @@ def log_subjects(repo: str | os.PathLike[str], base: str, head: str) -> list[str
 def diff_names(repo: str | os.PathLike[str], base: str, head: str) -> list[str]:
     res = git(repo, "diff", "--name-only", f"{base}...{head}", check=False)
     return [line for line in res.stdout.splitlines() if line.strip()]
+
+
+def diff_changed(repo: str | os.PathLike[str], base: str, head: str) -> list[str]:
+    """Files that differ between two commits (two-dot, i.e. the full delta)."""
+    res = git(repo, "diff", "--name-only", base, head, check=False)
+    return [line for line in res.stdout.splitlines() if line.strip()]
+
+
+def diff_stat(repo: str | os.PathLike[str], base: str, head: str) -> str:
+    res = git(repo, "diff", "--stat", base, head, check=False)
+    return res.stdout.strip()
 
 
 def ahead_behind(repo: str | os.PathLike[str], base: str, head: str) -> tuple[int, int]:

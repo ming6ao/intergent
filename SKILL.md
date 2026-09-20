@@ -41,9 +41,13 @@ SKILL.md**. Resolve it to an absolute path before running, e.g.:
 
 ```bash
 # $SKILL_DIR is the folder containing this SKILL.md
-IG="python3 $SKILL_DIR/bin/intergent"
-"$IG" --version
+IG="$SKILL_DIR/bin/intergent"   # absolute path to the bundled CLI
+python3 "$IG" --version
 ```
+
+Always invoke it as `python3 "$IG" ...` (or an array). Do **not** wrap a
+command string in quotes — `IG="python3 $SKILL_DIR/bin/intergent"; "$IG" ...`
+is treated as one executable name and fails with `No such file or directory`.
 
 If `intergent` is already installed on `PATH`, you may use it directly instead:
 
@@ -61,7 +65,10 @@ Add `--json` for parseable output.
 2. **Declare before you edit.** No file edits before `intergent declare`
    returns `granted`. For read-only work, skip Intergent.
 3. **Never approve or land.** `submit` and the `review` approval flags are human
-   actions.
+   actions. Exception: if your harness exposes a human-gated approval tool that
+   requires a fresh in-session confirmation (e.g. the pi `ig` `submit` action),
+   call it only when the human explicitly asks. Never claim a merge happened
+   unless the tool reports success.
 4. **Never override a conflict** unless the human explicitly asks. If a
    declaration returns `needs_decision`, stop and surface the options.
 5. **Heartbeat** during long tasks (`intergent declare --renew`) so your lease
@@ -95,7 +102,8 @@ intergent commit -m "add scope check to Login" --summary "scope check"
 # 4. Verify the exact commit (trusted checks + fingerprint).
 intergent --json verify <candidate-id>
 
-# 5. Show the review packet and report the candidate to the human.
+# 5. Show the review packet and report the candidate to the human, including
+#    the packet's `open_command` so they can open the worktree (VS Code).
 intergent --json review <candidate-id>
 ```
 
@@ -150,9 +158,12 @@ Agents never land. The human runs:
 
 ```bash
 intergent status
-intergent review <candidate>
+intergent review <candidate>          # also prints `open_command` for the worktree
 intergent review <candidate> --approve
-intergent review --land --all        # transactional merge into local main
+intergent review --land --all        # stage the wave as an uncommitted draft on main
+# inspect main (use the draft's `open_command`), then either:
+intergent review --land --commit     # commit the draft
+intergent review --land --abort      # discard the draft and restore main
 ```
 
 Reference docs ship alongside this skill: `docs/agents.md`,

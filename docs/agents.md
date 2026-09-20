@@ -117,9 +117,14 @@ The tools/skill enforce this contract:
    - `queued` → do other work or `declare --renew` and wait, then `commit --sync`;
    - `needs_decision` → **stop and ask the human** (wait / redesign / override).
 3. `commit` → `verify` the exact commit.
-4. `review` and report the candidate to the human.
-5. **Never land.** `submit` and the `review` approval flags are human-only. The
-   MCP schema omits them and the pi tool gates `submit` behind a UI confirmation.
+4. `review` and report the candidate to the human, including the packet's
+   `open_command` so they can inspect the unit worktree (VS Code by default).
+5. **Never land unilaterally.** `submit` and the `review` approval flags are
+   human-only; the MCP schema omits them. Landing stages an **uncommitted draft**
+   on main and only commits after a human approves it. In pi, `ig action=submit`
+   (and the `/ig-approve`, `/ig-reject`, `/ig-land` commands) show the draft and
+   block on a human confirmation. Call `submit` only when the human explicitly
+   asks, and never claim a merge unless it returns success.
 
 ## MCP surface
 

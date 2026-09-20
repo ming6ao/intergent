@@ -125,8 +125,11 @@ ACTIONS: tuple[Action, ...] = (
             Param("candidate", "string", "candidate id or unit name", positional=True),
             Param("approve", "boolean", "approve the candidate for landing", human_only=True),
             Param("reject", "boolean", "reject the candidate", human_only=True),
-            Param("land", "boolean", "merge approved candidates into local main", human_only=True),
+            Param("land", "boolean", "stage approved candidates on local main", human_only=True),
             Param("all", "boolean", "with --land: land every approved candidate", human_only=True),
+            Param("draft", "boolean", "with --land: stage the draft without committing (waits for approval)", human_only=True),
+            Param("commit", "boolean", "with --land: commit the pending landing draft", human_only=True),
+            Param("abort", "boolean", "with --land: discard the pending landing draft", human_only=True),
             Param("reason", "string", "reason recorded with --approve/--reject", human_only=True),
             Param("no_checks", "boolean", "with --land: skip the pre-land combined-tree checks", human_only=True),
             Param("cleanup", "boolean", "with --land: remove landed unit worktrees", human_only=True),
@@ -134,11 +137,12 @@ ACTIONS: tuple[Action, ...] = (
     ),
     Action(
         name="submit",
-        summary="approve and land a candidate in one step (human action)",
+        summary="approve a candidate and land it (stages a draft by default; human action)",
         visibility="human",
         params=(
             Param("candidate", "string", "candidate id or unit name", required=True, positional=True),
             Param("reason", "string", "reason recorded with the approval"),
+            Param("draft", "boolean", "stage the draft on main instead of committing (waits for approval)"),
             Param("no_checks", "boolean", "skip the pre-land combined-tree checks"),
             Param("cleanup", "boolean", "remove the landed unit worktree"),
         ),
@@ -311,6 +315,9 @@ def _dispatch_review(service: "Service", p: dict[str, Any]) -> Any:
                 all_approved=bool(p.get("all")) or not refs,
                 run_checks_flag=not p.get("no_checks"),
                 cleanup=bool(p.get("cleanup")),
+                draft=True if p.get("draft") else False if p.get("commit") or p.get("abort") else None,
+                commit_draft=bool(p.get("commit")),
+                abort_draft=bool(p.get("abort")),
             )
         }
     if not candidate:
@@ -325,6 +332,7 @@ def _dispatch_submit(service: "Service", p: dict[str, Any]) -> Any:
             [p["candidate"]],
             run_checks_flag=not p.get("no_checks"),
             cleanup=bool(p.get("cleanup")),
+            draft=True if p.get("draft") else None,
         )
     }
 

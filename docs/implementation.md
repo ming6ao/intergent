@@ -111,8 +111,8 @@ intent-level `--operation` is the default per scope.
 intergent commit -m "message" [--summary S] [--sync]   # commit + register candidate
 intergent verify CANDIDATE [--force]                   # fingerprint-pinned checks
 intergent status --simulate [--no-checks]              # wave plan + combined-tree checks
-intergent review CANDIDATE                             # review packet
-intergent review --land [--all] [--no-checks] [--cleanup]
+intergent review CANDIDATE                             # packet + `open_command`
+intergent review --land [--all] [--draft|--commit|--abort] [--no-checks] [--cleanup]
 intergent submit CANDIDATE [--cleanup]                 # approve + land (human)
 intergent status [--health] [--gc] [--short] [--unit U]
 ```
@@ -185,11 +185,35 @@ over the combined tree.
 
 ### Landing (`landing.py`)
 
-Approved candidates are ordered by wave, then landed one at a time. For each:
-trial-merge into a detached scratch worktree at the current main tip, run
-checks, then perform the real merge in the main worktree. The merged result is
-recorded as additional verification evidence. Landing stops at the first
-failure so main and later candidates stay consistent.
+Landing is **two-phase** by default (`landing.mode = "draft"`):
+
+1. **Draft** — approved candidates are ordered by wave, trial-squashed into a
+   detached scratch worktree at the current main tip, and the configured checks
+   run once on the combined tree. That tree is then written into the real main
+   worktree with `git read-tree --reset -u`, so `main` shows the changes as
+   **staged but uncommitted**. The draft (candidates, files, commit message,
+   `open_command`) is persisted and returned; main's HEAD does not move.
+2. **Commit** — after a human approves, `land --commit` records the squashed
+   commit and marks the candidates landed. `land --abort` runs `git reset --hard`
+   back to the draft base and discards it.
+
+While a draft is pending, a further `land` refuses until it is committed or
+aborted.
+
+`landing.mode`:
+
+- **`draft`** (default) — stage on main and wait for human approval;
+- **`direct`** — apply and commit in one step (no draft review).
+
+`landing.strategy` controls the committed shape:
+
+- **`squash`** (default) — one single-parent commit on main, so main never
+  shows the per-worktree commit history;
+- **`merge`** — a `--no-ff` merge commit that preserves the unit branch's
+  commits.
+
+Set them in `.intergent/config.json`, e.g.
+`{"landing": {"mode": "draft", "strategy": "squash"}}`.
 
 ## 5. MCP tool surface
 

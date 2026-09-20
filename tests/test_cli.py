@@ -220,6 +220,14 @@ class CliTests(unittest.TestCase):
             self.assertEqual(out.returncode, 0, out.stderr)
             self.assertEqual(json.loads(out.stdout)["status"], "passed")
 
+            # The review packet tells the human how to open the worktree.
+            out = run_cli(["--json", "review", str(candidate)], worktree)
+            self.assertEqual(out.returncode, 0, out.stderr)
+            packet = json.loads(out.stdout)
+            self.assertEqual(packet["worktree"], str(worktree))
+            self.assertIn(str(worktree), packet["open_command"])
+            self.assertIn("-n", packet["open_command"])
+
     def test_mcp_exposes_one_action_tool(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
