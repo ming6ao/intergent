@@ -779,7 +779,7 @@ class Service:
         *,
         all_approved: bool = False,
         run_checks_flag: bool = True,
-        cleanup: bool = False,
+        cleanup: bool = True,
         draft: bool | None = None,
         commit_draft: bool = False,
         abort_draft: bool = False,
@@ -1017,8 +1017,23 @@ def _checks_output(checks: list[Any]) -> str:
     return "\n".join(lines) or "(no checks configured)"
 
 
+def _session_unit_slugs(session: str, name: str) -> tuple[str, str]:
+    """Slug the session and unit, collapsing the default ``session == name``.
+
+    ``create_workspace`` defaults the session to the unit name, so without this
+    a plain ``start`` produced ``<name>-<name>`` worktree directories and
+    ``ig/<name>/<name>`` branches.
+    """
+    session_slug = slugify(session, 24)
+    name_slug = slugify(name, 32)
+    if session_slug == name_slug:
+        return session_slug, session_slug
+    return session_slug, name_slug
+
+
 def _unique_branch(root: Path, session: str, name: str) -> str:
-    base = f"ig/{slugify(session, 24)}/{slugify(name, 32)}"
+    session_slug, name_slug = _session_unit_slugs(session, name)
+    base = f"ig/{session_slug}/{name_slug}" if session_slug != name_slug else f"ig/{name_slug}"
     branch = base
     counter = 2
     while gitutil.branch_exists(root, branch):
@@ -1028,7 +1043,9 @@ def _unique_branch(root: Path, session: str, name: str) -> str:
 
 
 def _unique_worktree(base_dir: Path, session: str, name: str) -> Path:
-    candidate = base_dir / f"{slugify(session, 24)}-{slugify(name, 32)}"
+    session_slug, name_slug = _session_unit_slugs(session, name)
+    combined = f"{session_slug}-{name_slug}" if session_slug != name_slug else name_slug
+    candidate = base_dir / combined
     path = candidate
     counter = 2
     while path.exists():

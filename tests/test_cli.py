@@ -228,6 +228,45 @@ class CliTests(unittest.TestCase):
             self.assertIn(str(worktree), packet["open_command"])
             self.assertIn("-n", packet["open_command"])
 
+    def test_land_cleans_worktree_by_default_and_keep_preserves_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subprocess.run(["git", "init", "-q", "-b", "main"], cwd=tmp, check=True)
+            subprocess.run(["git", "config", "user.email", "t@e.com"], cwd=tmp, check=True)
+            subprocess.run(["git", "config", "user.name", "T"], cwd=tmp, check=True)
+            (root / "a.txt").write_text("hi\n")
+            subprocess.run(["git", "add", "-A"], cwd=tmp, check=True)
+            subprocess.run(["git", "commit", "-qm", "init"], cwd=tmp, check=True)
+            run_cli(["--json", "start"], root)
+
+            def land(*, keep):
+                out = run_cli(["--json", "start", "--name", "alpha"], root)
+                worktree = Path(json.loads(out.stdout)["worktree"])
+                run_cli(
+                    ["--json", "declare", "--operation", "modify", "--scope", "file:a.txt"],
+                    worktree,
+                )
+                (worktree / "a.txt").write_text(f"changed keep={keep}\n")
+                out = run_cli(["--json", "commit", "-m", "change"], worktree)
+                self.assertEqual(out.returncode, 0, out.stderr)
+                candidate = json.loads(out.stdout)["candidate"]["id"]
+                run_cli(["--json", "verify", str(candidate)], worktree)
+                run_cli(["--json", "review", str(candidate), "--approve"], worktree)
+
+                submit_args = ["--json", "submit", str(candidate)]
+                commit_args = ["--json", "review", "--land", "--commit"]
+                if keep:
+                    submit_args.append("--keep")
+                    commit_args.append("--keep")
+                out = run_cli(submit_args, root)
+                self.assertEqual(out.returncode, 0, out.stderr)
+                out = run_cli(commit_args, root)
+                self.assertEqual(out.returncode, 0, out.stderr)
+                return worktree
+
+            self.assertFalse(land(keep=False).exists())
+            self.assertTrue(land(keep=True).exists())
+
     def test_mcp_exposes_one_action_tool(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

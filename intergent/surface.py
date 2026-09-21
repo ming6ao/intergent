@@ -132,7 +132,7 @@ ACTIONS: tuple[Action, ...] = (
             Param("abort", "boolean", "with --land: discard the pending landing draft", human_only=True),
             Param("reason", "string", "reason recorded with --approve/--reject", human_only=True),
             Param("no_checks", "boolean", "with --land: skip the pre-land combined-tree checks", human_only=True),
-            Param("cleanup", "boolean", "with --land: remove landed unit worktrees", human_only=True),
+            Param("keep", "boolean", "with --land: keep landed unit worktrees (default: remove them)", human_only=True),
         ),
     ),
     Action(
@@ -144,7 +144,7 @@ ACTIONS: tuple[Action, ...] = (
             Param("reason", "string", "reason recorded with the approval"),
             Param("draft", "boolean", "stage the draft on main instead of committing (waits for approval)"),
             Param("no_checks", "boolean", "skip the pre-land combined-tree checks"),
-            Param("cleanup", "boolean", "remove the landed unit worktree"),
+            Param("keep", "boolean", "keep the landed unit worktree (default: remove it)"),
         ),
     ),
 )
@@ -314,7 +314,7 @@ def _dispatch_review(service: "Service", p: dict[str, Any]) -> Any:
                 refs,
                 all_approved=bool(p.get("all")) or not refs,
                 run_checks_flag=not p.get("no_checks"),
-                cleanup=bool(p.get("cleanup")),
+                cleanup=not bool(p.get("keep")),
                 draft=True if p.get("draft") else False if p.get("commit") or p.get("abort") else None,
                 commit_draft=bool(p.get("commit")),
                 abort_draft=bool(p.get("abort")),
@@ -331,7 +331,7 @@ def _dispatch_submit(service: "Service", p: dict[str, Any]) -> Any:
         "landed": service.land(
             [p["candidate"]],
             run_checks_flag=not p.get("no_checks"),
-            cleanup=bool(p.get("cleanup")),
+            cleanup=not bool(p.get("keep")),
             draft=True if p.get("draft") else None,
         )
     }

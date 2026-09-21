@@ -113,7 +113,7 @@ adapters, and SQLite (WAL) is the local store. Key mappings:
 
 | Design concept | Implementation |
 |---|---|
-| worktree + branch per unit | `start --name` → `ig/<session>/<unit>` branch and `.intergent/worktrees/...` |
+| worktree + branch per unit | `start --name` → `ig/<session>/<unit>` branch (or `ig/<unit>` when the session defaults to the unit name) and `.intergent/worktrees/...` |
 | declared intent | `declare --operation ... --scope ...` (`intergent/scopes.py`) |
 | scope lock manager + queue | `intergent/locks.py` (IS/IX/S/SIX/X) and `lock_requests`/`claims` |
 | fingerprint-pinned verification | `intergent/verifier.py` (`tree, cmd, toolchain, policy`) |

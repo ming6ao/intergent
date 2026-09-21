@@ -99,7 +99,7 @@ def land_candidates(
     candidate_ids: list[int],
     *,
     run_checks_flag: bool = True,
-    cleanup: bool = False,
+    cleanup: bool = True,
     draft: bool | None = None,
     commit_draft: bool = False,
     abort_draft: bool = False,

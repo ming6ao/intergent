@@ -264,7 +264,7 @@ export default function intergentExtension(pi: ExtensionAPI) {
 			gc: Type.Optional(Type.Boolean({ description: "status: prune landed worktrees" })),
 			short: Type.Optional(Type.Boolean({ description: "status: print only the unit name" })),
 			no_checks: Type.Optional(Type.Boolean()),
-			cleanup: Type.Optional(Type.Boolean({ description: "submit: remove the landed worktree" })),
+			keep: Type.Optional(Type.Boolean({ description: "submit: keep the landed worktree (default: remove it)" })),
 		}),
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			const { action, ...rest } = params as Record<string, unknown> & { action: string };
@@ -364,7 +364,7 @@ export default function intergentExtension(pi: ExtensionAPI) {
 			};
 		}
 		const commitArgs = ["review", "--land", "--commit"];
-		if (params.cleanup) commitArgs.push("--cleanup");
+		if (params.keep) commitArgs.push("--keep");
 		const { text, json } = await runIg(ctx, commitArgs, signal);
 		return { content: [{ type: "text" as const, text }], details: json ?? {} };
 	}

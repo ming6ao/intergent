@@ -48,7 +48,7 @@ approved candidates into the local main branch in wave order.
 ./bin/intergent commit  --unit docs-agent -m "expand API docs"   # registers the candidate
 ./bin/intergent verify  docs-agent
 ./bin/intergent status  --simulate
-./bin/intergent submit  docs-agent --cleanup                     # approve + land
+./bin/intergent submit  docs-agent                               # approve + land (worktree removed)
 ```
 
 Seven actions cover the whole lifecycle: `start`, `declare`, `commit`,

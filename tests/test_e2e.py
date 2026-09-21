@@ -86,6 +86,17 @@ class HappyPathTests(RepoCase):
         self.assertIn("hello", (self.root / "src" / "app.py").read_text())
         self.assertIn("API.", (self.root / "docs" / "api.md").read_text())
 
+    def test_default_worktree_and_branch_collapse_duplicate_name(self):
+        # No explicit session: the session defaults to the unit name, and the
+        # worktree/branch must not repeat it ("solo-solo", "ig/solo/solo").
+        unit = self.svc.create_workspace("solo")
+        self.assertEqual(Path(unit["worktree"]).name, "solo")
+        self.assertEqual(unit["branch"], "ig/solo")
+        # A distinct explicit session still namespaces both.
+        other = self.svc.create_workspace("solo", session="team")
+        self.assertEqual(Path(other["worktree"]).name, "team-solo")
+        self.assertEqual(other["branch"], "ig/team/solo")
+
 
 class LeaseTests(RepoCase):
     def test_destructive_second_queues_then_promotes(self):
@@ -244,6 +255,36 @@ class LandingTests(RepoCase):
         self.svc.approve(candidate)
         self.svc.land([candidate], cleanup=True)
         self.assertFalse(Path(alpha["worktree"]).exists())
+
+    def test_landing_cleans_worktree_by_default(self):
+        alpha = self.svc.create_workspace("alpha")
+        self.svc.declare_intent("alpha", operation="modify", scope_specs=["file:src/app.py"])
+        self.write(alpha["worktree"], "src/app.py", "a = 1\n")
+        self.svc.commit("alpha", "a")
+        candidate = self.svc.finish("alpha")["id"]
+        self.svc.verify(candidate)
+        self.svc.approve(candidate)
+        self.svc.land([candidate])
+        self.assertFalse(Path(alpha["worktree"]).exists())
+        # The branch is retained, so the landed history stays reachable.
+        branch = subprocess.run(
+            ["git", "rev-parse", "--verify", alpha["branch"]],
+            cwd=self.root,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(branch.returncode, 0, branch.stderr)
+
+    def test_landing_keep_preserves_worktree(self):
+        alpha = self.svc.create_workspace("alpha")
+        self.svc.declare_intent("alpha", operation="modify", scope_specs=["file:src/app.py"])
+        self.write(alpha["worktree"], "src/app.py", "a = 1\n")
+        self.svc.commit("alpha", "a")
+        candidate = self.svc.finish("alpha")["id"]
+        self.svc.verify(candidate)
+        self.svc.approve(candidate)
+        self.svc.land([candidate], cleanup=False)
+        self.assertTrue(Path(alpha["worktree"]).exists())
 
     def _land_one_with_commits(self, *messages):
         alpha = self.svc.create_workspace("alpha")

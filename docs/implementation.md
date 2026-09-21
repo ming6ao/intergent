@@ -112,8 +112,8 @@ intergent commit -m "message" [--summary S] [--sync]   # commit + register candi
 intergent verify CANDIDATE [--force]                   # fingerprint-pinned checks
 intergent status --simulate [--no-checks]              # wave plan + combined-tree checks
 intergent review CANDIDATE                             # packet + `open_command`
-intergent review --land [--all] [--draft|--commit|--abort] [--no-checks] [--cleanup]
-intergent submit CANDIDATE [--cleanup]                 # approve + land (human)
+intergent review --land [--all] [--draft|--commit|--abort] [--no-checks] [--keep]
+intergent submit CANDIDATE [--keep]                    # approve + land (human)
 intergent status [--health] [--gc] [--short] [--unit U]
 ```
 
@@ -195,7 +195,8 @@ Landing is **two-phase** by default (`landing.mode = "draft"`):
    `open_command`) is persisted and returned; main's HEAD does not move.
 2. **Commit** — after a human approves, `land --commit` records the squashed
    commit and marks the candidates landed. `land --abort` runs `git reset --hard`
-   back to the draft base and discards it.
+   back to the draft base and discards it. Committing also removes the landed
+   unit worktrees (branches are kept); pass `--keep` to inspect them instead.
 
 While a draft is pending, a further `land` refuses until it is committed or
 aborted.

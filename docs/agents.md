@@ -18,7 +18,8 @@ the MCP server, and the human keeps approval and landing.
 ## The one rule that makes it work
 
 **Run the agent inside its own unit worktree.** Intergent gives each session a
-`git worktree` + branch (`ig/<session>/<unit>`). The agent's working directory
+`git worktree` + branch (`ig/<session>/<unit>`, or `ig/<unit>` when the session
+defaults to the unit name). The agent's working directory
 must be that worktree, so its edits, commits, and the tools' cwd all agree.
 The CLI and MCP server resolve the unit from the cwd (`intergent workspace
 current`), so no `--unit` bookkeeping is needed.

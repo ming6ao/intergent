@@ -111,10 +111,13 @@ The human approves and lands from their client (or a terminal):
 
 ```bash
 intergent review <candidate-id> --approve
-intergent review <candidate-id> --land --cleanup
+intergent review <candidate-id> --land            # removes the unit worktree
 # or, in one step:
-intergent submit <candidate-id> --cleanup
+intergent submit <candidate-id>
 ```
+
+Landing removes the unit worktree by default (the branch is kept, so the
+history stays reachable). Pass `--keep` to inspect it afterwards.
 
 `declare` responses:
 
@@ -162,7 +165,7 @@ intergent review <candidate>          # also prints `open_command` for the workt
 intergent review <candidate> --approve
 intergent review --land --all        # stage the wave as an uncommitted draft on main
 # inspect main (use the draft's `open_command`), then either:
-intergent review --land --commit     # commit the draft
+intergent review --land --commit     # commit the draft (removes unit worktrees)
 intergent review --land --abort      # discard the draft and restore main
 ```
 
