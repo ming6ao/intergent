@@ -1,7 +1,8 @@
 ---
 name: intergent
-description: Coordinate this session with other coding agents on one repository using the Intergent local plane (git worktree per session, declared scope leases, fingerprint-pinned verification, approval-gated landing). Use when the repository has .intergent/config.json, when the user mentions Intergent/ig/scope conflicts/wave landing, or before editing files in a coordinated multi-agent repo. Bundles the intergent CLI. Not for read-only research.
+description: Coordinate this session with other coding agents on one repository using the Intergent local plane (git worktree per session, declared scope leases, fingerprint-pinned verification, approval-gated landing). Use ONLY when the user explicitly invokes this skill: runs `/skill:intergent`, or names it ("intergent"/"ig") and asks to coordinate parallel agents, declare scopes, or land a wave. Do NOT auto-load it merely because a repository contains .intergent/config.json. Bundles the intergent CLI. Not for read-only research.
 license: Apache-2.0
+disable-model-invocation: true
 metadata:
   version: "0.2.0"
   author: intergent

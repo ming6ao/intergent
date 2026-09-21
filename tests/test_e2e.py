@@ -397,5 +397,18 @@ class DraftLandingTests(RepoCase):
         self.svc.land([], abort_draft=True)
 
 
+class ReleaseTests(RepoCase):
+    def test_release_retires_unit_and_gc_prunes_worktree(self):
+        alpha = self.svc.create_workspace("alpha")
+        self.assertTrue(Path(alpha["worktree"]).exists())
+
+        self.svc.release("alpha")
+        self.assertEqual(self.svc.store.get_unit("alpha")["state"], "released")
+
+        removed = self.svc.gc()["removed_worktrees"]
+        self.assertIn("alpha", removed)
+        self.assertFalse(Path(alpha["worktree"]).exists())
+
+
 if __name__ == "__main__":
     unittest.main()

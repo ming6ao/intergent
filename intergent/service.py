@@ -558,6 +558,11 @@ class Service:
         self._reap_expired()
         unit = self.store.require_unit(unit_ref)
         promoted = self._release_unit(int(unit["id"]), status="released")
+        # Retire the unit so `status --gc` can prune its worktree.  (The
+        # internal `_release_unit` is also used to supersede an intent on
+        # re-declare, where the unit must stay active.)
+        self.store.set_unit_state(int(unit["id"]), "released")
+        self.store.conn.commit()
         return {"unit": unit["name"], "promoted": [p["unit_name"] for p in promoted]}
 
     # ------------------------------------------------------------------

@@ -25,6 +25,7 @@
  *      `.pi/extensions/` (project), then `/reload`.
  */
 
+import { existsSync } from "node:fs";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createCodingTools } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
@@ -59,10 +60,41 @@ function parseJson(text: string): unknown {
 const TAG = /\bintergent\b|\big\b/i;
 const ACTION_RE = /^(intergent|ig)\b[:,]?\s*/i;
 
+/**
+ * True when the session is bound to a worktree that no longer exists, e.g.
+ * because it landed and was cleaned up. A session that was never bound
+ * (``worktree`` undefined) is *not* stale — bootstrapping stays tag-gated.
+ */
+export function bindingIsStale(
+	worktree: string | undefined,
+	exists: (path: string) => boolean,
+): boolean {
+	return worktree !== undefined && !exists(worktree);
+}
+
+/**
+ * Parameters the CLI expects as bare positionals rather than `--flags`.
+ * Mirrors `positional=True` in `intergent/surface.py`; guarded by
+ * `tests/test_skill_package.py` so the two surfaces cannot drift.
+ */
+const POSITIONAL_PARAMS: Record<string, string[]> = {
+	verify: ["candidate"],
+	review: ["candidate"],
+	submit: ["candidate"],
+};
+
 function toArgs(action: string, params: Record<string, unknown>): string[] {
+	const positional = POSITIONAL_PARAMS[action] ?? [];
 	const args = [action];
+	// Positionals go first, so `intergent verify <candidate> --json` parses.
+	for (const key of positional) {
+		const value = params[key];
+		if (value !== undefined && value !== null) args.push(String(value));
+	}
 	for (const [key, value] of Object.entries(params)) {
-		if (key === "action" || value === undefined || value === null) continue;
+		if (key === "action" || positional.includes(key) || value === undefined || value === null) {
+			continue;
+		}
 		const flag = `--${key.replace(/_/g, "-")}`;
 		if (typeof value === "boolean") {
 			if (value) args.push(flag);
@@ -144,6 +176,15 @@ export default function intergentExtension(pi: ExtensionAPI) {
 		args: string[],
 		signal?: AbortSignal,
 	): Promise<IgResult> {
+		// If the worktree this session was bound to has been removed (it landed
+		// and was cleaned up), drop the stale binding and bootstrap a fresh unit
+		// so the CLI has a valid cwd again. We only re-bootstrap an existing
+		// binding; the initial bootstrap stays tag-gated in `before_agent_start`.
+		if (bindingIsStale(unitCwd, existsSync)) {
+			unitCwd = undefined;
+			bootstrapped = false;
+			await bootstrap(ctx);
+		}
 		const result = await pi.exec(bin, ["--json", ...args], {
 			cwd: unitCwd ?? ctx.cwd,
 			signal,

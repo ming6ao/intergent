@@ -6,11 +6,16 @@ must be bundled. These tests fail if that structure regresses.
 """
 
 import re
+import sys
 import unittest
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SKILL = REPO_ROOT / "SKILL.md"
+PI_EXTENSION = REPO_ROOT / "integrations" / "pi" / "intergent.ts"
+
+sys.path.insert(0, str(REPO_ROOT))
+from intergent import surface  # noqa: E402
 
 
 def _frontmatter(text: str) -> dict[str, str]:
@@ -47,6 +52,36 @@ class SkillPackageTests(unittest.TestCase):
     def test_skill_documents_bundled_cli_path(self):
         text = SKILL.read_text(encoding="utf-8")
         self.assertIn("bin/intergent", text)
+
+    def test_root_skill_is_explicit_invocation_only(self):
+        # The skill must not auto-load just because a repo has a plane; the
+        # user invokes it with `/skill:intergent`.
+        data = _frontmatter(SKILL.read_text(encoding="utf-8"))
+        self.assertEqual(data.get("disable-model-invocation"), "true")
+        self.assertNotIn("repository has .intergent/config.json", data.get("description", ""))
+
+    def test_pi_extension_recovers_from_removed_worktree(self):
+        # A session can outlive its unit worktree (it lands and is cleaned up).
+        # The extension must drop the stale binding and re-bootstrap instead of
+        # running every `ig` call in a deleted directory.
+        text = PI_EXTENSION.read_text(encoding="utf-8")
+        self.assertIn("bindingIsStale(unitCwd, existsSync)", text)
+        self.assertIn("await bootstrap(ctx)", text)
+
+    def test_pi_positional_params_match_surface(self):
+        text = PI_EXTENSION.read_text(encoding="utf-8")
+        match = re.search(r"const POSITIONAL_PARAMS[^=]*=\s*\{(.*?)\n\};", text, re.DOTALL)
+        self.assertIsNotNone(match, "POSITIONAL_PARAMS not found in the pi extension")
+        parsed = {
+            action: re.findall(r'"([^"]+)"', params)
+            for action, params in re.findall(r"(\w+)\s*:\s*\[([^\]]*)\]", match.group(1))
+        }
+        expected = {
+            action.name: [p.name for p in action.params if p.positional]
+            for action in surface.ACTIONS
+        }
+        expected = {name: params for name, params in expected.items() if params}
+        self.assertEqual(parsed, expected)
 
 
 if __name__ == "__main__":
