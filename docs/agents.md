@@ -105,7 +105,8 @@ only reads a repository instruction file, add the workflow to `AGENTS.md` /
 
 ```markdown
 This repo uses Intergent. Before editing, run `intergent declare` in your unit
-worktree. Never run `intergent submit` or `intergent review --approve/--land`.
+worktree. Never run `intergent review` (approval is human-only); finish with
+`intergent handoff` and report the draft.
 ```
 
 ## Agent contract
@@ -117,24 +118,22 @@ The tools/skill enforce this contract:
    - `granted` → edit;
    - `queued` → do other work or `declare --renew` and wait, then `commit --sync`;
    - `needs_decision` → **stop and ask the human** (wait / redesign / override).
-3. `commit` → `verify` the exact commit.
-4. `review` and report the candidate to the human, including the packet's
-   `open_command` so they can inspect the unit worktree (VS Code by default).
-5. **Never land unilaterally.** `submit` and the `review` approval flags are
-   human-only; the MCP schema omits them. Landing stages an **uncommitted draft**
-   on main and only commits after a human approves it. In pi, `ig action=submit`
-   (and the `/ig-approve`, `/ig-reject`, `/ig-land` commands) show the draft and
-   block on a human confirmation. Call `submit` only when the human explicitly
-   asks, and never claim a merge unless it returns success.
+3. `commit` → `handoff`. `handoff` verifies the exact commits, trial-merges the
+   wave, and stages an **uncommitted draft** on main.
+4. Report the draft to the human, including its `open_command` so they can
+   inspect the main worktree (VS Code by default), then stop.
+5. **Never approve or land.** `review` is human-only; the MCP schema omits it.
+   In pi, the human uses `/ig-approve` and `/ig-reject`, which show the draft and
+   block on a confirmation. Never claim a merge unless the tool reports success.
 
 ## MCP surface
 
 `intergent mcp` speaks newline-delimited JSON-RPC over stdio and exposes a
 **single** tool, `ig`, with an `action` enum (`start`, `status`, `declare`,
-`commit`, `verify`, `review`). It is generated from `intergent/surface.py`, the
-same module the CLI renders, so the two surfaces cannot drift. `unit` is
-optional on hot-loop calls; the server resolves it from its cwd. `review`
-returns the review packet and never lands.
+`commit`, `handoff`). It is generated from `intergent/surface.py`, the same
+module the CLI renders, so the two surfaces cannot drift. `unit` is optional on
+hot-loop calls; the server resolves it from its cwd. Approval (`review`) is
+human-only and never exposed.
 
 ## Multiple sessions at once
 
@@ -144,11 +143,10 @@ intergent start --name payments --agent claude-code
 # session B
 intergent start --name docs --agent pi
 
-# later, human reviews and lands approved candidates in wave order
+# each agent finishes with `handoff`; the human then reviews the draft
 intergent status
-intergent review <candidate>
-intergent review <candidate> --approve
-intergent review --land --all
+intergent review            # show the staged draft
+intergent review --approve  # commit it on main + clean up
 ```
 
 `agent start`-style process supervision, tmux attachment, and background

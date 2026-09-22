@@ -157,7 +157,7 @@ def plan_waves(
                         a=candidate["branch"],
                         b=base_ref,
                         message="branch does not merge cleanly onto base",
-                        suggestion="rebase onto the base branch and re-verify",
+                        suggestion="rebase onto the base branch and hand off again",
                     )
                 )
             else:
@@ -189,7 +189,7 @@ def simulate(
     run_checks_flag: bool = True,
 ) -> dict[str, Any]:
     candidates = store.list_candidates(
-        statuses=statuses or ["ready", "verified", "approved", "blocked", "failed"]
+        statuses=statuses or ["prepared", "pending"]
     )
     waves = plan_waves(store, root, config, candidates)
     scratch = scratch_dir(root)

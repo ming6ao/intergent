@@ -74,7 +74,7 @@ ACTIONS: tuple[Action, ...] = (
             Param("short", "boolean", "print only the current unit name"),
             Param("simulate", "boolean", "plan waves and verify the combined tree"),
             Param("health", "boolean", "check git/plane health"),
-            Param("gc", "boolean", "prune worktrees for landed/released units"),
+            Param("gc", "boolean", "prune worktrees for landed/closed units"),
             Param("no_checks", "boolean", "with --simulate: plan only, do not run checks"),
         ),
     ),
@@ -111,40 +111,21 @@ ACTIONS: tuple[Action, ...] = (
         ),
     ),
     Action(
-        name="verify",
-        summary="run trusted checks at a candidate's exact commit (fingerprint-pinned)",
+        name="handoff",
+        summary="verify + trial-merge prepared candidates into an uncommitted draft on main",
         params=(
-            Param("candidate", "string", "candidate id or unit name", required=True, positional=True),
-            Param("force", "boolean", "re-run even if a cached result exists"),
+            Param("no_checks", "boolean", "skip verification and combined-tree checks"),
         ),
     ),
     Action(
         name="review",
-        summary="show a candidate's review packet; humans may approve, reject, or land it",
-        params=(
-            Param("candidate", "string", "candidate id or unit name", positional=True),
-            Param("approve", "boolean", "approve the candidate for landing", human_only=True),
-            Param("reject", "boolean", "reject the candidate", human_only=True),
-            Param("land", "boolean", "stage approved candidates on local main", human_only=True),
-            Param("all", "boolean", "with --land: land every approved candidate", human_only=True),
-            Param("draft", "boolean", "with --land: stage the draft without committing (waits for approval)", human_only=True),
-            Param("commit", "boolean", "with --land: commit the pending landing draft", human_only=True),
-            Param("abort", "boolean", "with --land: discard the pending landing draft", human_only=True),
-            Param("reason", "string", "reason recorded with --approve/--reject", human_only=True),
-            Param("no_checks", "boolean", "with --land: skip the pre-land combined-tree checks", human_only=True),
-            Param("keep", "boolean", "with --land: keep landed unit worktrees (default: remove them)", human_only=True),
-        ),
-    ),
-    Action(
-        name="submit",
-        summary="approve a candidate and land it (stages a draft by default; human action)",
+        summary="show the pending handoff; approve (commit + clean up) or reject (restore main)",
         visibility="human",
         params=(
-            Param("candidate", "string", "candidate id or unit name", required=True, positional=True),
-            Param("reason", "string", "reason recorded with the approval"),
-            Param("draft", "boolean", "stage the draft on main instead of committing (waits for approval)"),
-            Param("no_checks", "boolean", "skip the pre-land combined-tree checks"),
-            Param("keep", "boolean", "keep the landed unit worktree (default: remove it)"),
+            Param("approve", "boolean", "commit the pending handoff and clean up worktrees"),
+            Param("reject", "boolean", "discard the pending handoff and restore main"),
+            Param("keep", "boolean", "with --approve: keep the landed unit worktrees"),
+            Param("reason", "string", "reason recorded with the decision"),
         ),
     ),
 )
@@ -297,53 +278,30 @@ def _dispatch_commit(service: "Service", p: dict[str, Any]) -> Any:
     return {"commit": commit, "candidate": candidate}
 
 
+def _dispatch_handoff(service: "Service", p: dict[str, Any]) -> Any:
+    return {
+        "handoff": service.handoff(run_checks_flag=not p.get("no_checks"))
+    }
+
+
 def _dispatch_review(service: "Service", p: dict[str, Any]) -> Any:
-    candidate = p.get("candidate")
-    if p.get("approve"):
-        if not candidate:
-            raise IntergentError("review --approve requires a candidate")
-        return service.approve(candidate, reason=p.get("reason"))
-    if p.get("reject"):
-        if not candidate:
-            raise IntergentError("review --reject requires a candidate")
-        return service.reject(candidate, reason=p.get("reason"))
-    if p.get("land"):
-        refs = [candidate] if candidate else []
+    if p.get("approve") and p.get("reject"):
+        raise IntergentError("review --approve and --reject are mutually exclusive")
+    if p.get("approve") or p.get("reject"):
         return {
-            "landed": service.land(
-                refs,
-                all_approved=bool(p.get("all")) or not refs,
-                run_checks_flag=not p.get("no_checks"),
-                cleanup=not bool(p.get("keep")),
-                draft=True if p.get("draft") else False if p.get("commit") or p.get("abort") else None,
-                commit_draft=bool(p.get("commit")),
-                abort_draft=bool(p.get("abort")),
+            "handoff": service.finalize(
+                approve=bool(p.get("approve")), cleanup=not bool(p.get("keep"))
             )
         }
-    if not candidate:
-        raise IntergentError("review requires a candidate (or --land --all)")
-    return service.review(candidate)
-
-
-def _dispatch_submit(service: "Service", p: dict[str, Any]) -> Any:
-    service.approve(p["candidate"], reason=p.get("reason"))
-    return {
-        "landed": service.land(
-            [p["candidate"]],
-            run_checks_flag=not p.get("no_checks"),
-            cleanup=not bool(p.get("keep")),
-            draft=True if p.get("draft") else None,
-        )
-    }
+    return service.pending_handoff()
 
 
 _HANDLERS = {
     "status": _dispatch_status,
     "declare": _dispatch_declare,
     "commit": _dispatch_commit,
-    "verify": lambda s, p: s.verify(p["candidate"], force=bool(p.get("force"))),
+    "handoff": _dispatch_handoff,
     "review": _dispatch_review,
-    "submit": _dispatch_submit,
 }
 
 

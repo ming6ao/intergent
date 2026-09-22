@@ -64,7 +64,7 @@ timeout + backoff.
 ### Lease lifecycle
 
 ```text
-declare → conflict? ──no──► GRANTED ──heartbeat──► ready/verified ──► submit ──► RELEASE
+declare → conflict? ──no──► GRANTED ──heartbeat──► prepared ──► handoff ──► RELEASE
                     │           └──── heartbeat lost (TTL) ─────────────────────────┘
                    yes
                     ▼
@@ -75,7 +75,7 @@ declare → conflict? ──no──► GRANTED ──heartbeat──► ready/v
 - Fairness: priority + FIFO + **aging** (no starvation).
 - Waiting semantics: return `queued{position, blocker, eta}`; the agent may poll,
   wait, **switch to non-conflicting work**, or proceed optimistically and rebase.
-- **Lease holds until the candidate is ready (verified + submitted)**, then the
+- **Lease holds until the candidate is handed off and approved**, then the
   waiter is released and rebases onto the holder's branch — keeps authoring
   throughput up without coupling to review latency.
 
@@ -118,7 +118,7 @@ adapters, and SQLite (WAL) is the local store. Key mappings:
 | scope lock manager + queue | `intergent/locks.py` (IS/IX/S/SIX/X) and `lock_requests`/`claims` |
 | fingerprint-pinned verification | `intergent/verifier.py` (`tree, cmd, toolchain, policy`) |
 | local integration simulation | `intergent/planner.py` (`simulate`) |
-| approval-gated landing | `intergent/landing.py` (`review --approve` → `review --land` / `submit`) |
+| approval-gated handoff | `intergent/landing.py` (`handoff` stages; `review --approve/--reject` decides) |
 
 See [Local implementation](./implementation.md) for the full command reference,
 semantics, data model, tests, and the deliberate gaps (no daemon/AST yet).

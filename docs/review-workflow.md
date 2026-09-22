@@ -42,16 +42,16 @@ model, assembled by the tool.
 
 ## 5. Submission = batched, wave-ordered
 
-Once candidates are approved:
+Once candidates are prepared (`handoff` is the boundary):
 
-1. Coordinator computes waves over all approved candidates by mergeability.
-2. For each wave: draft the combined tree onto the target branch and run CI
+1. The agent runs `intergent handoff`; the coordinator computes waves over all
+   prepared candidates by mergeability.
+2. For each wave: stage the combined tree onto the target branch and run CI
    **once** — the changes are staged but **not committed**. A human reviews the
    staged draft (the draft carries an `open_command` to open the target worktree)
-   and only then approves the commit. Landing is **squash-by-default**: the wave
-   becomes a single commit, so the unit branches' intermediate commits never
-   appear in main's history. Set `landing.strategy` to `merge` to keep `--no-ff`
-   merge commits, and `landing.mode` to `direct` to skip the draft/approval phase.
+   and only then approves the commit (`review --approve`) or discards it
+   (`review --reject`). The wave becomes a single commit, so the unit branches'
+   intermediate commits never appear in main's history.
 3. Update PRs/status; rebase and re-wave the remainder; notify on failures
    (bisect to the culprit).
 
@@ -65,8 +65,8 @@ fast-forwarded).
 
 ```bash
 intergent start --check "tests=pytest -q"
-# agent over MCP: start → declare → commit → verify → review
-intergent status && intergent review <candidate>
+# agent over MCP: start → declare → commit → handoff
+intergent status && intergent review --approve
 ```
 
 ### Solo, many agents

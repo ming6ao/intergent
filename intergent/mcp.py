@@ -6,8 +6,8 @@ parameterized by an ``action`` enum, instead of one tool per verb.  This keeps
 the agent's context small and makes it impossible for the MCP surface to drift
 from the CLI (both are renders of the same action registry).
 
-Human-only actions (``submit`` and the ``review`` approval flags) are never in
-the tool schema and are rejected if called by name.
+Human-only actions (``review`` and its approval flags) are never in the tool
+schema and are rejected if called by name.
 """
 
 from __future__ import annotations
@@ -58,8 +58,9 @@ def build_tool() -> dict[str, Any]:
         "description": (
             "Intergent unit lifecycle. One tool, many actions: "
             + actions_line
-            + ". Call it before editing (declare), then commit, verify, and "
-            "review. Landing is a human action, never exposed here."
+            + ". Call it before editing (declare), then commit, then hand off "
+            "(handoff) to stage an uncommitted draft on main. Approval is a "
+            "human action, never exposed here."
         ),
         "inputSchema": {
             "type": "object",

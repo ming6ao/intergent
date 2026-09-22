@@ -5,7 +5,7 @@ only plane that can refuse a merge.
 
 ## 1. Candidate ingest
 
-Candidates arrive via `intergent submit`, PR, or webhook. Each carries: branch,
+Candidates arrive via `intergent handoff`, PR, or webhook. Each carries: branch,
 base, changed paths, symbol graph, declared intents, verification evidence,
 priority.
 

@@ -49,30 +49,23 @@ launching pi, e.g. `INTERGENT_BIN=/home/me/intergent/bin/intergent pi`.
 | `status` | units, candidates, leases, waves (`simulate`, `health`, `gc`, `short`) |
 | `declare` | declare scopes + acquire leases; `dry_run`, `renew`, `release`, `decide` |
 | `commit` | commit the worktree and register the candidate (`sync` rebases first) |
-| `verify` | fingerprint-pinned trusted checks |
-| `review` | review packet for the human (includes an `open_command` for the worktree) |
-| `submit` | **human-gated**: stage the wave as an uncommitted draft on main, show it, and commit only on confirmation |
+| `handoff` | **agent's last step**: verify + trial-merge into an uncommitted draft on main |
 
-`submit` is the only landing path in the tool. It stages an **uncommitted draft**
-on main, shows the human the drafted files/stat/commit message, and only creates
-the commit after the in-session confirmation dialog; without a UI it refuses.
-`review --approve`, `--reject`, and `--land` are not exposed to the model.
+`handoff` is the only landing-adjacent action in the tool. It stages an
+**uncommitted draft** on main and returns it (files, diffstat, commit subject,
+`open_command`). Approval is a human action and is not exposed to the model.
 
 ### Approving from inside the session
 
-You do **not** need a terminal. There are two human paths, both gated by a
+You do **not** need a terminal. The human owns the handoff boundary, gated by a
 blocking confirmation dialog:
 
-- **Ask the agent.** Say e.g. "approve and land it". The agent calls
-  `ig action=submit` (with the candidate id when there is more than one). That
-  approves the candidate and stages the combined change as an **uncommitted
-  draft** on main, then shows you the draft (files, diffstat, commit subject, and
-  the `open_command` to inspect main). Confirming creates the commit; declining
-  runs `--abort` and restores main. The agent cannot fake either step.
-- **Run a command.** `/ig-approve [candidate]` does the same draft → confirm →
-  commit; `/ig-reject [candidate]` rejects; `/ig-land` lands every approved
-  candidate. With no argument, the matching candidate is resolved from `status`,
-  preferring this session's worktree; if several match, you get a picker.
+- **Run a command.** `/ig-approve` shows the staged draft and, on confirmation,
+  commits it on main and cleans up the unit worktrees. `/ig-reject` discards the
+  draft and restores main. With no pending handoff, `/ig-approve` tells you to
+  ask the agent to run `ig handoff`.
+- **Ask the agent** to run `ig handoff`, then run `/ig-approve` yourself. The
+  agent cannot commit or approve; only the human confirmation does.
 
 Approval still requires `ctx.hasUI` (TUI or RPC mode). In print/JSON mode the
 extension refuses and points at the equivalent CLI commands.

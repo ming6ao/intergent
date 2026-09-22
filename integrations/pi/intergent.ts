@@ -14,9 +14,10 @@
  * prompt mentions "intergent" (or when INTERGENT_AUTO_BOOTSTRAP=1).  Set
  * INTERGENT_AUTO_BOOTSTRAP=0 to disable entirely.
  *
- * Landing is human-gated: `ig` exposes `submit`, which first shows the review
- * packet and requires an interactive confirmation before it approves and lands.
- * It is a no-op without a UI.
+ * The agent's last step is `handoff`: it verifies the work and stages an
+ * uncommitted draft on local main.  The human owns the boundary — `/ig-approve`
+ * commits the draft and cleans up, `/ig-reject` restores main.  The agent never
+ * approves or lands.
  *
  * Install:
  *   1. `pip install -e /path/to/intergent` (so `intergent` is on PATH), or set
@@ -37,12 +38,11 @@ export const IG_ACTIONS = [
 	"status",
 	"declare",
 	"commit",
-	"verify",
-	"review",
+	"handoff",
 ] as const;
 
-/** Tool actions = the agent surface plus the human-gated `submit`. */
-export const IG_TOOL_ACTIONS = [...IG_ACTIONS, "submit"] as const;
+/** The `ig` tool exposes exactly the agent surface. */
+export const IG_TOOL_ACTIONS = [...IG_ACTIONS] as const;
 
 interface IgResult {
 	text: string;
@@ -72,29 +72,10 @@ export function bindingIsStale(
 	return worktree !== undefined && !exists(worktree);
 }
 
-/**
- * Parameters the CLI expects as bare positionals rather than `--flags`.
- * Mirrors `positional=True` in `intergent/surface.py`; guarded by
- * `tests/test_skill_package.py` so the two surfaces cannot drift.
- */
-const POSITIONAL_PARAMS: Record<string, string[]> = {
-	verify: ["candidate"],
-	review: ["candidate"],
-	submit: ["candidate"],
-};
-
 function toArgs(action: string, params: Record<string, unknown>): string[] {
-	const positional = POSITIONAL_PARAMS[action] ?? [];
 	const args = [action];
-	// Positionals go first, so `intergent verify <candidate> --json` parses.
-	for (const key of positional) {
-		const value = params[key];
-		if (value !== undefined && value !== null) args.push(String(value));
-	}
 	for (const [key, value] of Object.entries(params)) {
-		if (key === "action" || positional.includes(key) || value === undefined || value === null) {
-			continue;
-		}
+		if (key === "action" || value === undefined || value === null) continue;
 		const flag = `--${key.replace(/_/g, "-")}`;
 		if (typeof value === "boolean") {
 			if (value) args.push(flag);
@@ -107,20 +88,8 @@ function toArgs(action: string, params: Record<string, unknown>): string[] {
 	return args;
 }
 
-/** Subset of the `intergent review` packet the confirmation dialog needs. */
-interface ReviewPacket {
-	candidate?: { id?: number | string; status?: string; branch?: string; summary?: string | null };
-	unit?: { name?: string; worktree?: string } | null;
-	worktree?: string | null;
-	open_command?: string | null;
-	commits?: string[];
-	files?: string[];
-	risk_flags?: string[];
-	verification?: { status?: string; fingerprint?: string } | null;
-}
-
-/** A staged (uncommitted) landing draft on the main branch. */
-interface LandingDraft {
+/** The uncommitted handoff draft staged on the main branch. */
+interface HandoffDraft {
 	main_branch?: string;
 	main_worktree?: string;
 	open_command?: string | null;
@@ -130,8 +99,8 @@ interface LandingDraft {
 	candidates?: Array<{ id: number | string; unit?: string; summary?: string | null }>;
 }
 
-/** Render a staged landing draft for the approve/commit dialog. */
-function formatDraft(draft: LandingDraft): string {
+/** Render a staged handoff for the approve dialog. */
+function formatDraft(draft: HandoffDraft): string {
 	const units = (draft.candidates ?? []).map((c) => c.unit ?? String(c.id)).join(", ");
 	const files = draft.files ?? [];
 	const lines: Array<string | undefined> = [
@@ -141,22 +110,6 @@ function formatDraft(draft: LandingDraft): string {
 		`Files (${files.length}): ${files.slice(0, 12).join(", ")}${files.length > 12 ? ", …" : ""}`,
 		draft.stat,
 		draft.open_command ? `Open main in VS Code: ${draft.open_command}` : undefined,
-	];
-	return lines.filter((line): line is string => Boolean(line)).join("\n");
-}
-
-/** Render a review packet as the short human summary shown before approval. */
-function formatPacket(packet: ReviewPacket): string {
-	const c: NonNullable<ReviewPacket["candidate"]> = packet.candidate ?? {};
-	const lines: Array<string | undefined> = [
-		`Candidate ${c.id ?? "?"} [${c.status ?? "?"}]${packet.unit?.name ? ` — unit ${packet.unit.name}` : ""}`,
-		c.summary ? `Summary: ${c.summary}` : undefined,
-		c.branch ? `Branch: ${c.branch}` : undefined,
-		`Commits: ${packet.commits?.length ?? 0} · Files: ${packet.files?.length ?? 0}`,
-		`Verification: ${packet.verification?.status ?? "none"}`,
-		packet.risk_flags?.length ? `Risk: ${packet.risk_flags.join(", ")}` : undefined,
-		packet.worktree ? `Worktree: ${packet.worktree}` : undefined,
-		packet.open_command ? `Open: ${packet.open_command}` : undefined,
 	];
 	return lines.filter((line): line is string => Boolean(line)).join("\n");
 }
@@ -248,15 +201,14 @@ export default function intergentExtension(pi: ExtensionAPI) {
 				"\n\n## Intergent task\n" +
 				"This session is bound to an Intergent unit worktree. Work only in the " +
 				"worktree; use the `ig` tool for the lifecycle: `declare` before editing " +
-				"(scope every file/symbol), then `commit`, `verify`, and `review`. When " +
-				"the work is done, call `ig` with action `submit`: it stages the change as an " +
-				"uncommitted draft on local main and asks the human to review and approve the " +
-				"commit. Never run `git merge` yourself. When the human explicitly asks you " +
-				"to approve or land, call `ig` action `submit`; only the human's confirmation " +
-				"commits the draft. When you report a candidate for review, " +
-				"include the `open_command` from the review packet so the human can open " +
-				"the unit worktree in VS Code. If `declare` returns `queued` or " +
-				"`needs_decision`, stop and ask the human.",
+				"(scope every file/symbol), then `commit`, then `handoff`. `handoff` " +
+				"verifies your work, trial-merges it, and stages an uncommitted draft on " +
+				"local main. After that you are done: report the draft (including its " +
+				"`open_command`) and stop. A human approves or rejects the handoff with " +
+				"`/ig-approve` / `/ig-reject`; never run `git merge`, never approve or land " +
+				"yourself. If `declare` returns `queued` or `needs_decision`, stop and ask " +
+				"the human." +
+				(task ? `\n\nTask: ${task}` : ""),
 		};
 	});
 
@@ -271,16 +223,15 @@ export default function intergentExtension(pi: ExtensionAPI) {
 		name: "ig",
 		label: "Intergent",
 		description:
-			"Intergent unit lifecycle: start, status, declare, commit, verify, review, " +
-			"submit. Call `declare` before editing, then `commit`, `verify`, `review`, " +
-			"and finally `submit` (which drafts the wave onto local main and asks the human to approve the commit).",
-		promptSnippet: "Drive the Intergent unit lifecycle (declare → commit → verify → submit)",
+			"Intergent unit lifecycle: start, status, declare, commit, handoff. " +
+			"Call `declare` before editing, then `commit`, then `handoff` to verify " +
+			"your work and stage an uncommitted draft on local main for human approval.",
+		promptSnippet: "Drive the Intergent unit lifecycle (declare → commit → handoff)",
 		promptGuidelines: [
 			"Use `ig` with action `declare` before editing any file in an Intergent workspace; scope every file or symbol you touch.",
 			"If `declare` returns `queued` or `needs_decision`, do not edit: stop and ask the human.",
-			"When reporting a candidate for review or approval, include the review packet's `open_command` (e.g. `code -n <worktree>`) so the human can open the unit worktree in VS Code.",
-			"When the human explicitly asks to approve or land, call `ig` with action `submit` (and the candidate id); never claim a merge happened unless the tool returns success.",
-			"Finish with action `submit`; it drafts the change on local main and asks the human to approve before committing.",
+			"Finish with `ig` action `handoff`: it verifies your work and stages an uncommitted draft on local main. Then report the draft's `open_command` and stop.",
+			"Never approve or land a handoff yourself; the human runs `/ig-approve` or `/ig-reject`.",
 		],
 		parameters: Type.Object({
 			action: StringEnum(IG_TOOL_ACTIONS),
@@ -291,7 +242,6 @@ export default function intergentExtension(pi: ExtensionAPI) {
 			),
 			task: Type.Optional(Type.String()),
 			summary: Type.Optional(Type.String()),
-			candidate: Type.Optional(Type.String({ description: "candidate id or unit name" })),
 			message: Type.Optional(Type.String({ description: "commit message (action=commit)" })),
 			reason: Type.Optional(Type.String()),
 			dry_run: Type.Optional(Type.Boolean({ description: "declare: conflict check only" })),
@@ -299,171 +249,56 @@ export default function intergentExtension(pi: ExtensionAPI) {
 			release: Type.Optional(Type.Boolean({ description: "declare: release leases" })),
 			decide: Type.Optional(StringEnum(["wait", "override", "redesign"])),
 			sync: Type.Optional(Type.Boolean({ description: "commit: rebase onto base first" })),
-			force: Type.Optional(Type.Boolean()),
 			simulate: Type.Optional(Type.Boolean({ description: "status: plan waves" })),
 			health: Type.Optional(Type.Boolean({ description: "status: check plane health" })),
 			gc: Type.Optional(Type.Boolean({ description: "status: prune landed worktrees" })),
 			short: Type.Optional(Type.Boolean({ description: "status: print only the unit name" })),
-			no_checks: Type.Optional(Type.Boolean()),
-			keep: Type.Optional(Type.Boolean({ description: "submit: keep the landed worktree (default: remove it)" })),
+			no_checks: Type.Optional(Type.Boolean({ description: "handoff: skip verification" })),
 		}),
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			const { action, ...rest } = params as Record<string, unknown> & { action: string };
-
-			if (action === "submit") {
-				return submit(ctx, rest, signal);
-			}
 			const { text, json } = await runIg(ctx, toArgs(action, rest), signal);
 			return { content: [{ type: "text" as const, text }], details: json ?? {} };
 		},
 	});
 
-	/** Candidates ordered so this session's own worktree wins, then ready ones. */
-	async function resolveCandidate(
+	/** The uncommitted draft staged on main, if any. */
+	async function pendingDraft(
 		ctx: ExtensionContext,
-		candidate: string | undefined,
 		signal?: AbortSignal,
-	): Promise<string | undefined> {
-		if (candidate) return candidate;
-		const { json } = await runIg(ctx, ["status"], signal);
-		const candidates =
-			(
-				json as {
-					candidates?: Array<{
-						id: number | string;
-						status?: string;
-						worktree?: string;
-						unit_name?: string;
-						summary?: string | null;
-					}>;
-				}
-			)?.candidates ?? [];
-		if (candidates.length === 0) return undefined;
-		if (candidates.length === 1) return String(candidates[0]!.id);
-		const here = unitCwd ?? ctx.cwd;
-		const mine = candidates.filter((c) => c.worktree && here.startsWith(c.worktree));
-		if (mine.length === 1) return String(mine[0]!.id);
-		const ready = candidates.filter((c) => c.status === "verified" || c.status === "approved");
-		if (ready.length === 1) return String(ready[0]!.id);
-		if (!ctx.hasUI) return undefined;
-		const labels = candidates.map(
-			(c) => `${c.id}: ${c.summary ?? c.unit_name ?? "(candidate)"}`,
-		);
-		const choice = await ctx.ui.select("Which candidate?", labels);
-		return choice ? choice.split(":", 1)[0]!.trim() : undefined;
+	): Promise<HandoffDraft | undefined> {
+		const { json } = await runIg(ctx, ["review"], signal);
+		return (json as { draft?: HandoffDraft | null } | undefined)?.draft ?? undefined;
 	}
 
-	/**
-	 * Human-gated landing. Approves the candidate, stages the combined draft on
-	 * main (uncommitted), asks the human to review it, and only commits on
-	 * confirmation. The dialog — not the agent's tool call — is the approval.
-	 */
-	async function submit(
-		ctx: ExtensionContext,
-		params: Record<string, unknown>,
-		signal?: AbortSignal,
-	) {
-		let candidate = params.candidate ? String(params.candidate) : undefined;
-		try {
-			candidate = await resolveCandidate(ctx, candidate, signal);
-		} catch {
-			/* status unavailable; keep whatever the caller passed */
-		}
-		if (!candidate) {
-			throw new Error(
-				"No candidate to submit. Run `ig` with action `commit` then `verify` first, " +
-					"or pass the candidate id.",
-			);
-		}
-		if (!ctx.hasUI) {
-			throw new Error(
-				"submit needs a human confirmation and this session has no UI; run " +
-					"`intergent submit <candidate> --draft` to stage the draft on main, then " +
-					"`intergent review --land --commit` to land it (or `--abort` to discard).",
-			);
-		}
-		// Approve + stage the draft on main. Nothing is committed yet.
-		const draftArgs = ["submit", candidate, "--draft"];
-		if (params.reason) draftArgs.push("--reason", String(params.reason));
-		if (params.no_checks) draftArgs.push("--no-checks");
-		const drafted = await runIg(ctx, draftArgs, signal);
-		const landed = (drafted.json as { landed?: Array<{ draft?: LandingDraft | null }> } | undefined)
-			?.landed;
-		const draft = landed?.find((entry) => entry.draft)?.draft;
-		if (!draft) {
-			// Nothing to stage (e.g. already contained in main).
-			return { content: [{ type: "text" as const, text: drafted.text }], details: drafted.json ?? {} };
-		}
-		const ok = await ctx.ui.confirm("Intergent: approve and commit this draft?", formatDraft(draft));
-		if (!ok) {
-			const aborted = await runIg(ctx, ["review", "--land", "--abort"], signal);
-			return {
-				content: [
-					{ type: "text" as const, text: "Draft discarded by the human.\n" + aborted.text },
-				],
-				details: { approved: false, draft },
-			};
-		}
-		const commitArgs = ["review", "--land", "--commit"];
-		if (params.keep) commitArgs.push("--keep");
-		const { text, json } = await runIg(ctx, commitArgs, signal);
-		return { content: [{ type: "text" as const, text }], details: json ?? {} };
-	}
-
-	function resultText(result: { content: Array<{ type: "text"; text: string }> }): string {
-		return result.content[0]?.text ?? "done";
-	}
-
-	// Human-only commands: the human can trigger approval directly, without
-	// asking the model, and the extension still confirms before any merge.
+	// Human-only commands: the human owns the handoff boundary. The extension
+	// confirms before committing (approve) or discarding (reject).
 	pi.registerCommand("ig-approve", {
-		description: "Intergent: review a candidate, then approve and land it",
-		handler: async (args, ctx) => {
-			const result = await submit(ctx, { candidate: args.trim() || undefined });
-			ctx.ui.notify(resultText(result), "info");
-		},
-	});
-
-	pi.registerCommand("ig-reject", {
-		description: "Intergent: reject a candidate",
-		handler: async (args, ctx) => {
-			let candidate = args.trim() || undefined;
-			try {
-				candidate = await resolveCandidate(ctx, candidate);
-			} catch {
-				/* the undefined check below handles failures */
-			}
-			if (!candidate) {
-				ctx.ui.notify("No candidate to reject.", "warning");
+		description: "Intergent: approve the pending handoff (commit + clean up)",
+		handler: async (_args, ctx) => {
+			const draft = await pendingDraft(ctx);
+			if (!draft) {
+				ctx.ui.notify("No handoff is pending. Ask the agent to run `ig handoff`.", "warning");
 				return;
 			}
-			if (!ctx.hasUI) {
-				throw new Error("reject needs a human confirmation, and this session has no UI");
-			}
-			const packet = await runIg(ctx, ["review", candidate]);
-			const info = packet.json as ReviewPacket | undefined;
-			const ok = await ctx.ui.confirm(
-				"Intergent: reject?",
-				info ? formatPacket(info) : `Reject candidate ${candidate}?`,
-			);
+			if (!ctx.hasUI) throw new Error("approve needs a human confirmation");
+			const ok = await ctx.ui.confirm("Intergent: approve this handoff?", formatDraft(draft));
 			if (!ok) return;
-			const { text } = await runIg(ctx, ["review", candidate, "--reject"]);
+			const { text } = await runIg(ctx, ["review", "--approve"]);
 			ctx.ui.notify(text, "info");
 		},
 	});
 
-	pi.registerCommand("ig-land", {
-		description: "Intergent: land all approved candidates on local main",
+	pi.registerCommand("ig-reject", {
+		description: "Intergent: reject the pending handoff (restore main)",
 		handler: async (_args, ctx) => {
-			if (!ctx.hasUI) {
-				throw new Error("land needs a human confirmation, and this session has no UI");
-			}
+			if (!ctx.hasUI) throw new Error("reject needs a human confirmation");
 			const ok = await ctx.ui.confirm(
-				"Intergent: land approved candidates?",
-				"Merge every approved candidate into local main in wave order?",
+				"Intergent: reject the pending handoff?",
+				"Discard the staged draft and restore main?",
 			);
 			if (!ok) return;
-			const { text } = await runIg(ctx, ["review", "--land", "--all"]);
+			const { text } = await runIg(ctx, ["review", "--reject"]);
 			ctx.ui.notify(text, "info");
 		},
 	});

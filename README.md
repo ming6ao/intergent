@@ -34,8 +34,8 @@ Start here: **[docs/README.md](./docs/README.md)**
 The local plane is implemented in [`intergent/`](./intergent) (dependency-free
 Python 3.11+). It gives every coding-agent session its own git worktree, leases
 declared scopes so conflicting work is queued or escalated, verifies each
-commit against a content fingerprint, simulates the combined tree, and merges
-approved candidates into the local main branch in wave order.
+commit against a content fingerprint, simulates the combined tree, and hands the
+combined result to a human as one uncommitted draft on the local main branch.
 
 ```bash
 # from a git repository: one idempotent bootstrap = plane + first unit
@@ -46,17 +46,19 @@ approved candidates into the local main branch in wave order.
 
 # ... agent edits and commits in the printed worktree ...
 ./bin/intergent commit  --unit docs-agent -m "expand API docs"   # registers the candidate
-./bin/intergent verify  docs-agent
-./bin/intergent status  --simulate
-./bin/intergent submit  docs-agent                               # approve + land (worktree removed)
+./bin/intergent handoff                                          # verify + stage a draft on main
+
+# ... human reviews the draft on main, then either:
+./bin/intergent review --approve   # commit on main + clean up the worktree
+./bin/intergent review --reject    # discard the draft and restore main
 ```
 
-Seven actions cover the whole lifecycle: `start`, `declare`, `commit`,
-`verify`, `review`, `submit`, `status` (plus `mcp`). `declare` also does
-`--dry-run` checks, `--renew`/`--release` leases, and `--decide` conflict
-resolution; `commit --sync` rebases; `status --health/--simulate/--gc` covers
-the old `debug` group. Agents get exactly **one** tool (MCP and pi) whose
-`action` is one of these verbs. See [docs/implementation.md](./docs/implementation.md).
+Six actions cover the whole lifecycle: `start`, `declare`, `commit`, `handoff`,
+`review`, `status` (plus `mcp`). `declare` also does `--dry-run` checks,
+`--renew`/`--release` leases, and `--decide` conflict resolution;
+`commit --sync` rebases; `status --health/--simulate/--gc` covers the old
+`debug` group. Agents get exactly **one** tool (MCP and pi) whose `action` is
+one of these verbs. See [docs/implementation.md](./docs/implementation.md).
 
 Agents may instead drive the same service over MCP: `./bin/intergent mcp`.
 See [docs/implementation.md](./docs/implementation.md) for the full CLI/MCP
@@ -78,9 +80,9 @@ claude          # or: pi
 - Bundled skill: [`SKILL.md`](./SKILL.md)
 - Full guide: [docs/agents.md](./docs/agents.md)
 
-Agents declare intent, commit, verify, and review; a human approves and lands
-(with `review --land`, or the one-step `submit`). Landing is never exposed to
-the agent.
+Agents declare intent, commit, and hand off; the handoff boundary is owned by
+the human (`review --approve` / `--reject`). Approval is never exposed to the
+agent.
 
 ### Install as an agent skill
 

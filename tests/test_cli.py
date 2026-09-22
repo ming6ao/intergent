@@ -212,23 +212,32 @@ class CliTests(unittest.TestCase):
             self.assertEqual(json.loads(out.stdout)["status"], "granted")
 
             (worktree / "a.txt").write_text("changed\n")
-            # `commit` now registers the candidate in one call (finish folded in).
+            # `commit` commits and registers a prepared candidate in one call.
             out = run_cli(["--json", "commit", "-m", "change"], worktree)
             self.assertEqual(out.returncode, 0, out.stderr)
-            candidate = json.loads(out.stdout)["candidate"]["id"]
-            out = run_cli(["--json", "verify", str(candidate)], worktree)
-            self.assertEqual(out.returncode, 0, out.stderr)
-            self.assertEqual(json.loads(out.stdout)["status"], "passed")
+            self.assertEqual(json.loads(out.stdout)["candidate"]["status"], "prepared")
 
-            # The review packet tells the human how to open the worktree.
-            out = run_cli(["--json", "review", str(candidate)], worktree)
+            # `handoff` stages an uncommitted draft on main.
+            out = run_cli(["--json", "handoff"], worktree)
+            self.assertEqual(out.returncode, 0, out.stderr)
+            draft = json.loads(out.stdout)["handoff"][0]["draft"]
+            self.assertEqual(draft["files"], ["a.txt"])
+            self.assertIn("-n", draft["open_command"])
+
+            # `review` (human) shows the pending handoff.
+            out = run_cli(["--json", "review"], root)
             self.assertEqual(out.returncode, 0, out.stderr)
             packet = json.loads(out.stdout)
-            self.assertEqual(packet["worktree"], str(worktree))
-            self.assertIn(str(worktree), packet["open_command"])
-            self.assertIn("-n", packet["open_command"])
+            self.assertTrue(packet["pending"])
+            self.assertEqual(packet["draft"]["files"], ["a.txt"])
 
-    def test_land_cleans_worktree_by_default_and_keep_preserves_it(self):
+            # `review --approve` commits the draft and cleans up the worktree.
+            out = run_cli(["--json", "review", "--approve"], root)
+            self.assertEqual(out.returncode, 0, out.stderr)
+            self.assertEqual(json.loads(out.stdout)["handoff"][0]["status"], "landed")
+            self.assertFalse(worktree.exists())
+
+    def test_approve_cleans_worktree_by_default_and_keep_preserves_it(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             subprocess.run(["git", "init", "-q", "-b", "main"], cwd=tmp, check=True)
@@ -239,7 +248,7 @@ class CliTests(unittest.TestCase):
             subprocess.run(["git", "commit", "-qm", "init"], cwd=tmp, check=True)
             run_cli(["--json", "start"], root)
 
-            def land(*, keep):
+            def approve(*, keep):
                 out = run_cli(["--json", "start", "--name", "alpha"], root)
                 worktree = Path(json.loads(out.stdout)["worktree"])
                 run_cli(
@@ -249,23 +258,17 @@ class CliTests(unittest.TestCase):
                 (worktree / "a.txt").write_text(f"changed keep={keep}\n")
                 out = run_cli(["--json", "commit", "-m", "change"], worktree)
                 self.assertEqual(out.returncode, 0, out.stderr)
-                candidate = json.loads(out.stdout)["candidate"]["id"]
-                run_cli(["--json", "verify", str(candidate)], worktree)
-                run_cli(["--json", "review", str(candidate), "--approve"], worktree)
-
-                submit_args = ["--json", "submit", str(candidate)]
-                commit_args = ["--json", "review", "--land", "--commit"]
-                if keep:
-                    submit_args.append("--keep")
-                    commit_args.append("--keep")
-                out = run_cli(submit_args, root)
+                out = run_cli(["--json", "handoff"], worktree)
                 self.assertEqual(out.returncode, 0, out.stderr)
-                out = run_cli(commit_args, root)
+                args = ["--json", "review", "--approve"]
+                if keep:
+                    args.append("--keep")
+                out = run_cli(args, root)
                 self.assertEqual(out.returncode, 0, out.stderr)
                 return worktree
 
-            self.assertFalse(land(keep=False).exists())
-            self.assertTrue(land(keep=True).exists())
+            self.assertFalse(approve(keep=False).exists())
+            self.assertTrue(approve(keep=True).exists())
 
     def test_mcp_exposes_one_action_tool(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -296,7 +299,7 @@ class CliTests(unittest.TestCase):
                 [a.name for a in surface.agent_actions()],
             )
             # Human-only actions and params never reach the agent.
-            self.assertNotIn("submit", schema["properties"]["action"]["enum"])
+            self.assertNotIn("review", schema["properties"]["action"]["enum"])
             self.assertNotIn("approve", schema["properties"])
 
     def test_mcp_call_and_human_action_rejected(self):
@@ -330,7 +333,7 @@ class CliTests(unittest.TestCase):
                     call(3, "ig", {"action": "commit", "unit": "alpha", "message": "change", "summary": "s"}),
                     call(4, "ig", {"action": "status"}),
                     call(5, "ig", {"action": "status", "simulate": True, "no_checks": True}),
-                    call(6, "submit", {"candidate": "1"}),
+                    call(6, "review", {"approve": True}),
                 ]
             ) + "\n"
             out = run_cli(["mcp"], root, input_text=messages)
@@ -344,7 +347,7 @@ class CliTests(unittest.TestCase):
             self.assertIn("candidate", payload[1])
             self.assertTrue(payload[2]["candidates"])
             self.assertIn("waves", payload[3])
-            # submit is a human action and is refused for agents.
+            # review is a human action and is refused for agents.
             self.assertTrue(lines[5]["result"]["isError"])
             self.assertIn("human action", lines[5]["result"]["content"][0]["text"])
 

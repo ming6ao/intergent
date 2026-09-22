@@ -43,8 +43,8 @@ its own `git worktree` + branch over one object store, so working trees never
 collide. Declared intent is reconciled through hierarchical scope leases, so
 agents that would contradict each other are serialized or asked to decide.
 Every candidate is verified at its exact commit, the combined result is
-simulated before submission, and approved candidates are merged into the local
-main branch in dependency/wave order.
+simulated before handoff, and the handoff stages one uncommitted draft on the
+local main branch in dependency/wave order for a human to approve.
 
 ```text
 Session ──► Unit (worktree + branch) ──► Intent (scopes + operation)
@@ -53,9 +53,9 @@ Session ──► Unit (worktree + branch) ──► Intent (scopes + operation)
                      granted │                          queued │ needs_decision
                     (leases) │                                 │
                              ▼                                 ▼
-                 commit → verify ──► candidate ──► simulate waves
+                 commit ──► prepared candidate ──► simulate waves
                                                               │
-                                                    approve ──► land → main
+                                          handoff ──► draft ──► review ──► main
 ```
 
 ## 3. Action reference
@@ -109,18 +109,18 @@ intent-level `--operation` is the default per scope.
 
 ```bash
 intergent commit -m "message" [--summary S] [--sync]   # commit + register candidate
-intergent verify CANDIDATE [--force]                   # fingerprint-pinned checks
+intergent handoff [--no-checks]                        # verify + stage a draft on main
 intergent status --simulate [--no-checks]              # wave plan + combined-tree checks
-intergent review CANDIDATE                             # packet + `open_command`
-intergent review --land [--all] [--draft|--commit|--abort] [--no-checks] [--keep]
-intergent submit CANDIDATE [--keep]                    # approve + land (human)
+intergent review                                       # show the pending handoff (human)
+intergent review --approve [--keep]                    # commit + clean up (human)
+intergent review --reject                              # restore main (human)
 intergent status [--health] [--gc] [--short] [--unit U]
 ```
 
-`land` is transactional per candidate: the merge is materialized and verified in
-a scratch worktree first, then applied to the real main worktree. If a merge
-conflicts or checks fail, main is left untouched and the candidate is marked
-`blocked`/`failed`.
+`handoff` is transactional: the combined result is materialized and verified in
+a scratch worktree first, then written into the real main worktree as staged
+changes. If a merge conflicts or checks fail, main is left untouched and the
+candidate stays `prepared`.
 
 ## 4. Semantics implemented
 
@@ -183,48 +183,36 @@ lease-ordering dependencies force the waiter into a later wave. Each wave is
 materialized as a synthetic combined commit and the configured checks run once
 over the combined tree.
 
-### Landing (`landing.py`)
+### Handoff (`landing.py`)
 
-Landing is **two-phase** by default (`landing.mode = "draft"`):
+The handoff is the single boundary between agent work and human approval:
 
-1. **Draft** — approved candidates are ordered by wave, trial-squashed into a
-   detached scratch worktree at the current main tip, and the configured checks
-   run once on the combined tree. That tree is then written into the real main
-   worktree with `git read-tree --reset -u`, so `main` shows the changes as
-   **staged but uncommitted**. The draft (candidates, files, commit message,
-   `open_command`) is persisted and returned; main's HEAD does not move.
-2. **Commit** — after a human approves, `land --commit` records the squashed
-   commit and marks the candidates landed. `land --abort` runs `git reset --hard`
-   back to the draft base and discards it. Committing also removes the landed
-   unit worktrees (branches are kept); pass `--keep` to inspect them instead.
+1. **Stage** — prepared candidates are ordered by wave, verified at their exact
+   commits, trial-squashed into a detached scratch worktree at the current main
+   tip, and the configured checks run once on the combined tree. That tree is
+   then written into the real main worktree with `git read-tree --reset -u`, so
+   `main` shows the changes as **staged but uncommitted**. The draft
+   (candidates, files, commit message, `open_command`) is persisted and
+   returned; main's HEAD does not move.
+2. **Approve** — `review --approve` records one squashed commit and marks the
+   candidates landed, then removes the unit worktrees (branches are kept; pass
+   `--keep` to inspect them instead).
+3. **Reject** — `review --reject` runs `git reset --hard` back to the draft base
+   and returns the units to `working`.
 
-While a draft is pending, a further `land` refuses until it is committed or
-aborted.
-
-`landing.mode`:
-
-- **`draft`** (default) — stage on main and wait for human approval;
-- **`direct`** — apply and commit in one step (no draft review).
-
-`landing.strategy` controls the committed shape:
-
-- **`squash`** (default) — one single-parent commit on main, so main never
-  shows the per-worktree commit history;
-- **`merge`** — a `--no-ff` merge commit that preserves the unit branch's
-  commits.
-
-Set them in `.intergent/config.json`, e.g.
-`{"landing": {"mode": "draft", "strategy": "squash"}}`.
+While a handoff is pending, a further `handoff` refuses until it is approved or
+rejected. There is no direct-commit mode; every wave becomes a single squashed
+commit on main.
 
 ## 5. MCP tool surface
 
 The server exposes exactly one tool, `ig`, with an `action` enum
-(`start`, `status`, `declare`, `commit`, `verify`, `review`). The tool schema —
+(`start`, `status`, `declare`, `commit`, `handoff`). The tool schema —
 enum, properties, types, choices — is generated from `surface.py`, and the same
 module implements dispatch, so the MCP and CLI surfaces cannot drift.
 `unit` is optional when the server runs inside a unit worktree. Human-only
-actions and flags (`submit`, `review --approve/--reject/--land`) are absent from
-the schema and rejected if invoked by name. For pi and generic agents see
+actions and flags (`review --approve/--reject`) are absent from the schema and
+rejected if invoked by name. For pi and generic agents see
 [Agent integration](./agents.md).
 
 ## 6. Tests

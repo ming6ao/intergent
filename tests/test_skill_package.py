@@ -68,20 +68,16 @@ class SkillPackageTests(unittest.TestCase):
         self.assertIn("bindingIsStale(unitCwd, existsSync)", text)
         self.assertIn("await bootstrap(ctx)", text)
 
-    def test_pi_positional_params_match_surface(self):
+    def test_retired_actions_are_gone(self):
+        # `submit` and `verify` were folded into `handoff` + `review`.
+        names = {a.name for a in surface.ACTIONS}
+        self.assertNotIn("submit", names)
+        self.assertNotIn("verify", names)
+        self.assertIn("handoff", names)
         text = PI_EXTENSION.read_text(encoding="utf-8")
-        match = re.search(r"const POSITIONAL_PARAMS[^=]*=\s*\{(.*?)\n\};", text, re.DOTALL)
-        self.assertIsNotNone(match, "POSITIONAL_PARAMS not found in the pi extension")
-        parsed = {
-            action: re.findall(r'"([^"]+)"', params)
-            for action, params in re.findall(r"(\w+)\s*:\s*\[([^\]]*)\]", match.group(1))
-        }
-        expected = {
-            action.name: [p.name for p in action.params if p.positional]
-            for action in surface.ACTIONS
-        }
-        expected = {name: params for name, params in expected.items() if params}
-        self.assertEqual(parsed, expected)
+        self.assertNotIn('"submit"', text)
+        self.assertNotIn('"verify"', text)
+        self.assertIn('"handoff"', text)
 
 
 if __name__ == "__main__":

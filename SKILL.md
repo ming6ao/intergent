@@ -1,6 +1,6 @@
 ---
 name: intergent
-description: Coordinate this session with other coding agents on one repository using the Intergent local plane (git worktree per session, declared scope leases, fingerprint-pinned verification, approval-gated landing). Use ONLY when the user explicitly invokes this skill: runs `/skill:intergent`, or names it ("intergent"/"ig") and asks to coordinate parallel agents, declare scopes, or land a wave. Do NOT auto-load it merely because a repository contains .intergent/config.json. Bundles the intergent CLI. Not for read-only research.
+description: Coordinate this session with other coding agents on one repository using the Intergent local plane (git worktree per session, declared scope leases, fingerprint-pinned verification, human-approved handoff). Use ONLY when the user explicitly invokes this skill: runs `/skill:intergent`, or names it ("intergent"/"ig") and asks to coordinate parallel agents, declare scopes, or land a wave. Do NOT auto-load it merely because a repository contains .intergent/config.json. Bundles the intergent CLI. Not for read-only research.
 license: Apache-2.0
 disable-model-invocation: true
 metadata:
@@ -12,28 +12,42 @@ metadata:
 
 Intergent lets several coding-agent sessions work the same repository in
 parallel without authoring conflicting changes. This session owns one **unit**
-(git worktree + branch). Changes land on the local main branch only after a
-human approves them.
+(git worktree + branch). Work reaches the local main branch only through a
+**handoff** that a human approves.
 
 This skill bundles the Intergent CLI. Requires `git` and Python 3.11+.
 
+## The lifecycle in one picture
+
+```
+declare ──► edit ──► commit ──► handoff          (agent)
+                                   │
+                          uncommitted draft on main
+                                   │
+                    review --approve / --reject   (human)
+```
+
+- Before the handoff the agent owns the worktree.
+- The handoff is the boundary: it verifies the work and stages one uncommitted
+  draft on main.
+- After the handoff the human owns the decision: approve (commit + clean up) or
+  reject (restore main).
+
 ## The action surface
 
-There are **seven** actions, shared by the CLI, MCP, and the pi tool. Most are
-overloaded by flags, so the surface stays small:
+There are **six** actions, shared by the CLI, MCP, and the pi tool:
 
 | Action | Purpose |
 |---|---|
 | `start` | bootstrap the plane + a unit for this directory (idempotent; alias `init`) |
 | `declare` | declare scopes and acquire leases; `--dry-run` checks, `--renew`/`--release` manage leases, `--decide` resolves a conflict |
 | `commit` | commit the worktree and register the candidate; `--sync` rebases first |
-| `verify` | run trusted checks at the candidate's exact commit |
-| `review` | show the review packet; humans may add `--approve` / `--reject` / `--land` |
-| `submit` | (human) approve + land a candidate in one step |
+| `handoff` | verify + trial-merge the prepared candidates into an uncommitted draft on main |
+| `review` | (human) show the pending handoff; `--approve` commits it and cleans up, `--reject` restores main |
 | `status` | units, candidates, leases, waves; `--health`, `--simulate`, `--gc`, `--short`, `--unit U` |
 
-Agents can call `start`, `declare`, `commit`, `verify`, `review`, `status`.
-`submit` and the `review` approval flags are human-only.
+Agents can call `start`, `declare`, `commit`, `handoff`, `status`. `review` and
+its approval flags are human-only.
 
 ## Locate the bundled CLI
 
@@ -65,11 +79,9 @@ Add `--json` for parseable output.
    you inside one (see Setup). Do not edit the main working tree.
 2. **Declare before you edit.** No file edits before `intergent declare`
    returns `granted`. For read-only work, skip Intergent.
-3. **Never approve or land.** `submit` and the `review` approval flags are human
-   actions. Exception: if your harness exposes a human-gated approval tool that
-   requires a fresh in-session confirmation (e.g. the pi `ig` `submit` action),
-   call it only when the human explicitly asks. Never claim a merge happened
-   unless the tool reports success.
+3. **Never approve or land.** `review` is a human action. Your last step is
+   `handoff`; then report the draft (including its `open_command`) and stop.
+   Never claim a merge happened unless the tool reports success.
 4. **Never override a conflict** unless the human explicitly asks. If a
    declaration returns `needs_decision`, stop and surface the options.
 5. **Heartbeat** during long tasks (`intergent declare --renew`) so your lease
@@ -100,25 +112,12 @@ intergent --json declare --operation modify \
 # 3. Commit and register the candidate in one call.
 intergent commit -m "add scope check to Login" --summary "scope check"
 
-# 4. Verify the exact commit (trusted checks + fingerprint).
-intergent --json verify <candidate-id>
-
-# 5. Show the review packet and report the candidate to the human, including
-#    the packet's `open_command` so they can open the worktree (VS Code).
-intergent --json review <candidate-id>
+# 4. Hand off: verify + trial-merge into an uncommitted draft on main.
+intergent --json handoff
 ```
 
-The human approves and lands from their client (or a terminal):
-
-```bash
-intergent review <candidate-id> --approve
-intergent review <candidate-id> --land            # removes the unit worktree
-# or, in one step:
-intergent submit <candidate-id>
-```
-
-Landing removes the unit worktree by default (the branch is kept, so the
-history stays reachable). Pass `--keep` to inspect it afterwards.
+Then **stop**. Report the draft — including its `open_command` (which opens the
+main worktree) — and let the human decide.
 
 `declare` responses:
 
@@ -153,22 +152,22 @@ intergent --json declare --renew        # renew leases
 intergent --json declare --release      # release early (e.g. abandoning the task)
 intergent --json status --simulate      # plan waves over the combined tree
 intergent --json status --health        # git/plane health check
-intergent --json review <candidate>     # review packet for the human
+intergent --json review                 # show the pending handoff (human)
 ```
 
-## Human approval and landing
+## Human approval
 
 Agents never land. The human runs:
 
 ```bash
 intergent status
-intergent review <candidate>          # also prints `open_command` for the worktree
-intergent review <candidate> --approve
-intergent review --land --all        # stage the wave as an uncommitted draft on main
-# inspect main (use the draft's `open_command`), then either:
-intergent review --land --commit     # commit the draft (removes unit worktrees)
-intergent review --land --abort      # discard the draft and restore main
+intergent review            # show the draft staged on main
+intergent review --approve  # commit it on main + clean up the unit worktrees
+intergent review --reject   # discard it and restore main
 ```
+
+`--approve --keep` keeps the unit worktrees (branches are always kept, so the
+landed history stays reachable).
 
 Reference docs ship alongside this skill: `docs/agents.md`,
 `docs/implementation.md`, `docs/local-plane.md`.

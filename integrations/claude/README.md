@@ -59,16 +59,14 @@ Claude loads it on demand and will declare intent before editing, surface
 ## 4. Workflow
 
 ```
-agent: declare -> edit -> commit -> verify -> review
-human: intergent review <candidate> --approve ; intergent review --land --all
-       # or in one step: intergent submit <candidate>
+agent: declare -> edit -> commit -> handoff
+human: intergent review --approve   # or: intergent review --reject
 ```
 
-The MCP surface deliberately excludes landing; `submit` and the `review`
-approval flags are human actions.
+The MCP surface deliberately excludes approval; `review` is a human action.
 
 ## Available MCP tools
 
 Exactly one tool, `ig`, with an `action` enum: `start`, `status`, `declare`,
-`commit`, `verify`, `review`. The schema is generated from
-`intergent/surface.py`, so it matches the CLI exactly. Human actions are absent.
+`commit`, `handoff`. The schema is generated from `intergent/surface.py`, so it
+matches the CLI exactly. Human actions are absent.

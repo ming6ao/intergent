@@ -1,16 +1,16 @@
-"""Approval-gated landing onto the local main branch.
+"""Approval-gated handoff onto the local main branch.
 
-Landing is transactional per wave: the combined result is materialized and
-verified in a scratch worktree first, then *drafted* into the real main
-worktree as staged (uncommitted) changes.  A human reviews the draft and then
-either commits it (``--commit``) or discards it (``--abort``).  Waves are
-processed in order so dependency and mergeability ordering is respected
-(``docs/review-workflow.md`` section 5).
+The *handoff* is the single boundary between agent work and human approval:
 
-Two modes (``landing.mode``):
+1. the agent's ``prepared`` candidates are verified and trial-merged into a
+   scratch worktree;
+2. the combined result is written onto the real main worktree as staged
+   (uncommitted) changes, and the staged units move to ``pending``;
+3. a human either **approves** -- one commit on main, units ``landed``,
+   worktrees cleaned -- or **rejects** -- main restored, units back to
+   ``working``.
 
-- ``draft`` (default): prepare the staged draft on main and wait for approval;
-- ``direct``: apply and commit in one step (no human draft review).
+There is no direct-commit mode: every landing goes through a draft.
 """
 
 from __future__ import annotations
@@ -26,12 +26,13 @@ from .util import (
     IntergentError,
     editor_command,
     now,
+    rmtree,
     scratch_dir,
     worktrees_dir,
 )
 from .verifier import CheckResult, compute_fingerprint, run_checks
 
-DRAFT_META_KEY = "landing_draft"
+DRAFT_META_KEY = "handoff_draft"
 
 
 @dataclass
@@ -39,12 +40,12 @@ class LandResult:
     candidate_id: int
     unit_name: str
     branch: str
-    status: str  # drafted | landed | aborted | blocked | skipped | failed
+    status: str  # pending | landed | rejected | failed | skipped
     detail: str = ""
     merge_commit: str | None = None
     checks: list[CheckResult] = field(default_factory=list)
     already_up_to_date: bool = False
-    strategy: str = "merge"
+    strategy: str = "squash"
     draft: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -62,6 +63,15 @@ class LandResult:
         }
 
 
+def _checks_output(checks: list[CheckResult]) -> str:
+    lines = []
+    for check in checks:
+        lines.append(f"[{check.status}] {check.name}: {check.command}")
+        if check.output:
+            lines.append(check.output[-2000:])
+    return "\n".join(lines) or "(no checks configured)"
+
+
 def main_worktree(root: Path, branch: str) -> tuple[Path, bool]:
     entry = gitutil.worktree_for_branch(root, branch)
     if entry is not None:
@@ -73,7 +83,7 @@ def main_worktree(root: Path, branch: str) -> tuple[Path, bool]:
     return path, True
 
 
-def _ordered_approved(
+def _ordered_candidates(
     store: Store, root: Path, config: dict[str, Any], candidates: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
     waves = plan_waves(store, root, config, candidates)
@@ -92,43 +102,34 @@ def _ordered_approved(
     return ordered
 
 
-def land_candidates(
+def pending_draft(store: Store) -> dict[str, Any] | None:
+    return store.get_meta(DRAFT_META_KEY)
+
+
+# ---------------------------------------------------------------------------
+# Handoff (agent side)
+# ---------------------------------------------------------------------------
+
+
+def handoff(
     store: Store,
     root: Path,
     config: dict[str, Any],
     candidate_ids: list[int],
     *,
     run_checks_flag: bool = True,
-    cleanup: bool = True,
-    draft: bool | None = None,
-    commit_draft: bool = False,
-    abort_draft: bool = False,
 ) -> list[LandResult]:
-    pending = store.get_meta(DRAFT_META_KEY)
-    if commit_draft:
-        if not pending:
-            raise IntergentError("no landing draft is pending")
-        return _finalize_draft(
-            store, root, config, pending, run_checks_flag=run_checks_flag, cleanup=cleanup
-        )
-    if abort_draft:
-        if not pending:
-            raise IntergentError("no landing draft is pending")
-        return [_abort_draft(store, root, config, pending)]
-    if pending:
+    """Stage the prepared candidates as one uncommitted draft on main."""
+    if pending_draft(store):
         raise IntergentError(
-            "a landing draft is staged on main; commit it with `review --land --commit` "
-            "or discard it with `review --land --abort`"
+            "a handoff is already staged on main; approve or reject it with `review` first"
         )
-
-    approved = [
-        c
-        for c in store.list_candidates(statuses=["approved"])
-        if int(c["id"]) in set(candidate_ids)
+    wanted = set(candidate_ids)
+    prepared = [
+        c for c in store.list_candidates(statuses=["prepared"]) if int(c["id"]) in wanted
     ]
-    missing = set(candidate_ids) - {int(c["id"]) for c in approved}
     results: list[LandResult] = []
-    for cid in sorted(missing):
+    for cid in sorted(wanted - {int(c["id"]) for c in prepared}):
         candidate = store.get_candidate(cid)
         results.append(
             LandResult(
@@ -136,68 +137,38 @@ def land_candidates(
                 unit_name=(candidate or {}).get("unit_name", "?"),
                 branch=(candidate or {}).get("branch", "?"),
                 status="skipped",
-                detail="candidate is not approved",
+                detail="candidate is not prepared",
             )
         )
-    if not approved:
+    if not prepared:
         return results
-
-    mode = "draft" if draft is True else "direct" if draft is False else landing_mode(config)
-    if mode == "draft":
-        return _draft_wave(
-            store, root, config, approved, run_checks_flag=run_checks_flag, results=results
-        )
-
-    wt_path, created = main_worktree(root, main_branch_of(config))
-    if not gitutil.is_clean(wt_path):
-        raise IntergentError(
-            f"main worktree {wt_path} is dirty; commit or discard changes before landing"
-        )
-
-    ordered = _ordered_approved(store, root, config, approved)
-    for candidate in ordered:
-        result = _land_one(
-            store, root, config, candidate, wt_path, run_checks_flag=run_checks_flag
-        )
-        results.append(result)
-        if result.status != "landed":
-            # Stop the train: later candidates may depend on this one, and the
-            # main tip moved (or failed to).  The user can re-run after fixing.
-            break
-        if cleanup:
-            _cleanup_unit(store, root, candidate)
-
-    gitutil.prune_worktrees(root)
-    return results
+    return _stage_draft(
+        store, root, config, prepared, run_checks_flag=run_checks_flag, results=results
+    )
 
 
-# ---------------------------------------------------------------------------
-# Draft mode
-# ---------------------------------------------------------------------------
-
-
-def _draft_wave(
+def _stage_draft(
     store: Store,
     root: Path,
     config: dict[str, Any],
-    approved: list[dict[str, Any]],
+    prepared: list[dict[str, Any]],
     *,
     run_checks_flag: bool,
     results: list[LandResult],
 ) -> list[LandResult]:
-    strategy = landing_strategy(config)
     main_branch = main_branch_of(config)
     wt_path, _created = main_worktree(root, main_branch)
     if not gitutil.is_clean(wt_path):
         raise IntergentError(
-            f"main worktree {wt_path} is dirty; commit or discard changes before landing"
+            f"main worktree {wt_path} is dirty; commit or discard changes before handoff"
         )
 
-    ordered = _ordered_approved(store, root, config, approved)
+    ordered = _ordered_candidates(store, root, config, prepared)
     base_commit = gitutil.head_commit(wt_path)
-    scratch = scratch_dir(root) / f"draft-{abs(hash(base_commit)) % 10_000_000}"
+    scratch = scratch_dir(root) / f"handoff-{abs(hash(base_commit)) % 10_000_000}"
     staged: list[dict[str, Any]] = []
     blocked: list[dict[str, Any]] = []
+    failed: list[tuple[dict[str, Any], list[CheckResult]]] = []
     try:
         if scratch.exists():
             gitutil.remove_worktree(root, scratch, force=True)
@@ -208,7 +179,9 @@ def _draft_wave(
             head = gitutil.rev_parse(root, branch)
             scratch_head = gitutil.head_commit(scratch)
             if gitutil.merge_base(root, scratch_head, head) == head:
+                # Already contained in main: land it without a draft entry.
                 _mark_landed(store, candidate, base_commit)
+                _cleanup_unit(store, root, candidate)
                 results.append(
                     LandResult(
                         candidate_id=cid,
@@ -218,13 +191,28 @@ def _draft_wave(
                         detail="already contained in main",
                         merge_commit=base_commit,
                         already_up_to_date=True,
-                        strategy=strategy,
                     )
                 )
                 continue
-            merge = gitutil.merge_squash_into(
-                scratch, branch, message=f"ig draft {branch}"
-            )
+            if run_checks_flag:
+                fp = compute_fingerprint(root, config, head)
+                fp_id = store.get_or_create_fingerprint(
+                    cid,
+                    fp.fingerprint,
+                    fp.tree,
+                    fp.cmd_digest,
+                    fp.toolchain_digest,
+                    fp.policy_digest,
+                )
+                cached = store.latest_verification_for_fingerprint(fp_id)
+                if cached is None or cached["status"] != "passed":
+                    status, checks, duration = run_checks(root, config, head)
+                    store.add_verification(cid, fp_id, status, _checks_output(checks), duration)
+                    store.conn.commit()
+                    if status != "passed":
+                        failed.append((candidate, checks))
+                        break
+            merge = gitutil.merge_squash_into(scratch, branch, message=f"ig handoff {branch}")
             if not merge.ok:
                 gitutil.merge_abort(scratch)
                 blocked.append(
@@ -236,20 +224,29 @@ def _draft_wave(
                 )
                 break
             staged.append(candidate)
+
+        if failed:
+            for candidate, checks in failed:
+                results.append(
+                    LandResult(
+                        candidate_id=int(candidate["id"]),
+                        unit_name=candidate["unit_name"],
+                        branch=candidate["branch"],
+                        status="failed",
+                        detail="candidate checks failed",
+                        checks=checks,
+                    )
+                )
+            return results
         if not staged:
             for entry in blocked:
-                store.update_candidate(int(entry["id"]), status="blocked")
-                store.event(
-                    "land.blocked", candidate_id=int(entry["id"]), data={"reason": entry["reason"]}
-                )
                 results.append(
                     LandResult(
                         candidate_id=int(entry["id"]),
                         unit_name=entry["unit"],
                         branch="",
-                        status="blocked",
+                        status="failed",
                         detail=entry["reason"],
-                        strategy=strategy,
                     )
                 )
             return results
@@ -261,30 +258,22 @@ def _draft_wave(
             if status != "passed":
                 detail = f"combined check {status} on drafted tree"
                 for candidate in staged:
-                    store.update_candidate(int(candidate["id"]), status="failed")
-                    store.event(
-                        "land.failed",
-                        candidate_id=int(candidate["id"]),
-                        data={"reason": detail},
+                    results.append(
+                        LandResult(
+                            candidate_id=int(candidate["id"]),
+                            unit_name=candidate["unit_name"],
+                            branch=candidate["branch"],
+                            status="failed",
+                            detail=detail,
+                            checks=checks,
+                        )
                     )
-                return [
-                    LandResult(
-                        candidate_id=int(candidate["id"]),
-                        unit_name=candidate["unit_name"],
-                        branch=candidate["branch"],
-                        status="failed",
-                        detail=detail,
-                        checks=checks,
-                        strategy=strategy,
-                    )
-                    for candidate in staged
-                ]
+                return results
 
         applied = gitutil.read_tree_reset(wt_path, combined)
         if not applied.ok:
             raise IntergentError(
-                "failed to stage the landing draft on main: "
-                + _conflict_summary(applied)
+                "failed to stage the handoff on main: " + _conflict_summary(applied)
             )
 
         draft = {
@@ -309,8 +298,14 @@ def _draft_wave(
             "created_at": now(),
         }
         store.set_meta(DRAFT_META_KEY, draft)
+        for candidate in staged:
+            store.update_candidate(int(candidate["id"]), status="pending")
+            unit = store.get_unit(int(candidate["unit_id"]))
+            if unit:
+                store.set_unit_state(int(unit["id"]), "pending")
+        store.conn.commit()
         store.event(
-            "land.drafted",
+            "handoff.staged",
             data={"candidates": [int(c["id"]) for c in staged], "base": base_commit},
         )
         first = staged[0]
@@ -319,10 +314,9 @@ def _draft_wave(
                 candidate_id=int(first["id"]),
                 unit_name=", ".join(c["unit_name"] for c in staged),
                 branch=first["branch"],
-                status="drafted",
-                detail=f"drafted {len(staged)} candidate(s) onto {main_branch}; awaiting approval",
+                status="pending",
+                detail=f"staged {len(staged)} candidate(s) onto {main_branch}; awaiting approval",
                 checks=checks,
-                strategy=strategy,
                 draft=draft,
             )
         )
@@ -332,18 +326,115 @@ def _draft_wave(
                     candidate_id=int(entry["id"]),
                     unit_name=entry["unit"],
                     branch="",
-                    status="blocked",
+                    status="failed",
                     detail=entry["reason"],
-                    strategy=strategy,
                 )
             )
         return results
     finally:
         gitutil.remove_worktree(root, scratch, force=True)
-        from .util import rmtree
-
         rmtree(scratch)
         gitutil.prune_worktrees(root)
+
+
+# ---------------------------------------------------------------------------
+# Approval (human side)
+# ---------------------------------------------------------------------------
+
+
+def finalize(
+    store: Store,
+    root: Path,
+    config: dict[str, Any],
+    *,
+    approve: bool,
+    cleanup: bool = True,
+) -> list[LandResult]:
+    draft = pending_draft(store)
+    if not draft:
+        raise IntergentError("no handoff is pending")
+    if approve:
+        return _finalize_draft(store, root, config, draft, cleanup=cleanup)
+    return [_abort_draft(store, root, config, draft)]
+
+
+def _finalize_draft(
+    store: Store,
+    root: Path,
+    config: dict[str, Any],
+    draft: dict[str, Any],
+    *,
+    cleanup: bool,
+) -> list[LandResult]:
+    wt_path = Path(draft["main_worktree"])
+    if gitutil.head_commit(wt_path) != draft["base_commit"]:
+        raise IntergentError(
+            "main moved since the handoff was staged; reject it and hand off again"
+        )
+    commit = gitutil.commit_all(wt_path, draft["message"])
+    if not commit.ok:
+        raise IntergentError(
+            "failed to commit the handoff: " + (commit.stderr or commit.stdout).strip()
+        )
+    new_head = gitutil.head_commit(wt_path)
+    results: list[LandResult] = []
+    for entry in draft.get("candidates", []):
+        candidate = store.get_candidate(int(entry["id"]))
+        if candidate is None:
+            continue
+        cid = int(candidate["id"])
+        _mark_landed(store, candidate, new_head)
+        store.event("handoff.landed", candidate_id=cid, data={"merge_commit": new_head})
+        results.append(
+            LandResult(
+                candidate_id=cid,
+                unit_name=entry.get("unit") or candidate.get("unit_name", "?"),
+                branch=entry.get("branch") or candidate.get("branch", ""),
+                status="landed",
+                detail=f"committed to {draft['main_branch']}",
+                merge_commit=new_head,
+            )
+        )
+        if cleanup:
+            _cleanup_unit(store, root, candidate)
+    store.set_meta(DRAFT_META_KEY, None)
+    gitutil.prune_worktrees(root)
+    return results
+
+
+def _abort_draft(
+    store: Store, root: Path, config: dict[str, Any], draft: dict[str, Any]
+) -> LandResult:
+    wt_path = Path(draft["main_worktree"])
+    gitutil.reset_hard(wt_path, draft["base_commit"])
+    for entry in draft.get("candidates", []):
+        cid = int(entry["id"])
+        candidate = store.get_candidate(cid)
+        if candidate is None:
+            continue
+        store.update_candidate(cid, status="prepared")
+        unit = store.get_unit(int(candidate["unit_id"]))
+        if unit:
+            store.set_unit_state(int(unit["id"]), "working")
+    store.set_meta(DRAFT_META_KEY, None)
+    store.conn.commit()
+    store.event("handoff.rejected", data={"base": draft["base_commit"]})
+    gitutil.prune_worktrees(root)
+    candidates = draft.get("candidates") or [{"id": 0, "unit": "?", "branch": ""}]
+    first = candidates[0]
+    return LandResult(
+        candidate_id=int(first["id"]),
+        unit_name=", ".join(c.get("unit", "?") for c in candidates),
+        branch=first.get("branch", ""),
+        status="rejected",
+        detail="handoff discarded; main restored",
+        draft=draft,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Shared helpers
+# ---------------------------------------------------------------------------
 
 
 def _draft_message(staged: list[dict[str, Any]]) -> str:
@@ -356,203 +447,6 @@ def _draft_message(staged: list[dict[str, Any]]) -> str:
         lines.append("")
         lines.extend(details)
     return "\n".join(lines)
-
-
-def _finalize_draft(
-    store: Store,
-    root: Path,
-    config: dict[str, Any],
-    draft: dict[str, Any],
-    *,
-    run_checks_flag: bool,
-    cleanup: bool,
-) -> list[LandResult]:
-    wt_path = Path(draft["main_worktree"])
-    if gitutil.head_commit(wt_path) != draft["base_commit"]:
-        raise IntergentError(
-            "main moved since the landing draft was prepared; abort it and draft again"
-        )
-    commit = gitutil.commit_all(wt_path, draft["message"])
-    if not commit.ok:
-        raise IntergentError(
-            "failed to commit the landing draft: " + (commit.stderr or commit.stdout).strip()
-        )
-    new_head = gitutil.head_commit(wt_path)
-    strategy = landing_strategy(config)
-    results: list[LandResult] = []
-    for entry in draft.get("candidates", []):
-        candidate = store.get_candidate(int(entry["id"]))
-        if candidate is None:
-            continue
-        cid = int(candidate["id"])
-        if run_checks_flag:
-            fp = compute_fingerprint(root, config, new_head)
-            fp_id = store.get_or_create_fingerprint(
-                cid, fp.fingerprint, fp.tree, fp.cmd_digest, fp.toolchain_digest, fp.policy_digest
-            )
-            store.add_verification(
-                cid, fp_id, "passed", "verified merged result during landing", 0.0
-            )
-        _mark_landed(store, candidate, new_head)
-        store.event("land.landed", candidate_id=cid, data={"merge_commit": new_head})
-        results.append(
-            LandResult(
-                candidate_id=cid,
-                unit_name=entry.get("unit") or candidate.get("unit_name", "?"),
-                branch=entry.get("branch") or candidate.get("branch", ""),
-                status="landed",
-                detail=f"squashed into {draft['main_branch']}",
-                merge_commit=new_head,
-                strategy=strategy,
-            )
-        )
-        if cleanup:
-            _cleanup_unit(store, root, candidate)
-    for entry in draft.get("blocked", []):
-        cid = int(entry["id"])
-        store.update_candidate(cid, status="blocked")
-        store.event("land.blocked", candidate_id=cid, data={"reason": entry["reason"]})
-        results.append(
-            LandResult(
-                candidate_id=cid,
-                unit_name=entry["unit"],
-                branch="",
-                status="blocked",
-                detail=entry["reason"],
-                strategy=strategy,
-            )
-        )
-    store.set_meta(DRAFT_META_KEY, None)
-    gitutil.prune_worktrees(root)
-    return results
-
-
-def _abort_draft(
-    store: Store, root: Path, config: dict[str, Any], draft: dict[str, Any]
-) -> LandResult:
-    wt_path = Path(draft["main_worktree"])
-    gitutil.reset_hard(wt_path, draft["base_commit"])
-    store.set_meta(DRAFT_META_KEY, None)
-    store.event("land.draft_aborted", data={"base": draft["base_commit"]})
-    gitutil.prune_worktrees(root)
-    return LandResult(
-        candidate_id=int((draft.get("candidates") or [{"id": 0}])[0]["id"]),
-        unit_name=", ".join(c.get("unit", "?") for c in draft.get("candidates", [])),
-        branch="",
-        status="aborted",
-        detail="landing draft discarded; main restored",
-        draft=draft,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Direct mode
-# ---------------------------------------------------------------------------
-
-
-def _land_one(
-    store: Store,
-    root: Path,
-    config: dict[str, Any],
-    candidate: dict[str, Any],
-    main_wt: Path,
-    *,
-    run_checks_flag: bool,
-) -> LandResult:
-    cid = int(candidate["id"])
-    unit_name = candidate["unit_name"]
-    branch = candidate["branch"]
-    strategy = landing_strategy(config)
-    result = LandResult(
-        candidate_id=cid, unit_name=unit_name, branch=branch, status="blocked", strategy=strategy
-    )
-
-    # Nothing to do already?
-    head = gitutil.rev_parse(root, branch)
-    main_head = gitutil.head_commit(main_wt)
-    if gitutil.merge_base(root, main_head, head) == head:
-        result.status = "landed"
-        result.detail = "already contained in main"
-        result.already_up_to_date = True
-        result.merge_commit = main_head
-        _mark_landed(store, candidate, main_head)
-        return result
-
-    scratch = scratch_dir(root) / f"land-{cid}-{abs(hash(head)) % 10_000_000}"
-    try:
-        if scratch.exists():
-            gitutil.remove_worktree(root, scratch, force=True)
-        base_commit = gitutil.rev_parse(root, main_branch_of(config))
-        gitutil.add_detached_worktree(root, scratch, base_commit)
-        if strategy == "squash":
-            merge = gitutil.merge_squash_into(
-                scratch, branch, message=f"ig trial squash {branch}"
-            )
-        else:
-            merge = gitutil.merge_into(
-                scratch, branch, message=f"ig trial merge {branch}", no_ff=True
-            )
-        if not merge.ok:
-            gitutil.merge_abort(scratch)
-            result.detail = f"merge conflict against main: {_conflict_summary(merge)}"
-            store.update_candidate(cid, status="blocked")
-            store.event("land.blocked", candidate_id=cid, data={"reason": result.detail})
-            return result
-        if run_checks_flag:
-            status, checks, _duration = run_checks(root, config, head, worktree=scratch)
-            result.checks = checks
-            if status != "passed":
-                result.detail = f"combined check {status} on merged tree"
-                store.update_candidate(cid, status="failed")
-                store.event("land.failed", candidate_id=cid, data={"reason": result.detail})
-                return result
-    finally:
-        gitutil.remove_worktree(root, scratch, force=True)
-        from .util import rmtree
-
-        rmtree(scratch)
-        gitutil.prune_worktrees(root)
-
-    # Pre-verified; apply for real to the main worktree.
-    if not gitutil.is_clean(main_wt):
-        result.detail = f"main worktree {main_wt} became dirty; refusing to merge"
-        return result
-    real = _apply_to_main(main_wt, branch, unit_name, strategy)
-    if not real.ok:
-        gitutil.merge_abort(main_wt)
-        result.detail = f"real merge failed: {_conflict_summary(real)}"
-        store.update_candidate(cid, status="blocked")
-        return result
-
-    new_head = gitutil.head_commit(main_wt)
-    result.status = "landed"
-    result.merge_commit = new_head
-    verb = "squashed" if strategy == "squash" else "merged"
-    result.detail = f"{verb} into " + main_branch_of(config)
-
-    if run_checks_flag:
-        # Record the merged-result verification against the candidate so the
-        # review packet carries landing evidence too.
-        fp = compute_fingerprint(root, config, new_head)
-        fp_id = store.get_or_create_fingerprint(
-            cid, fp.fingerprint, fp.tree, fp.cmd_digest, fp.toolchain_digest, fp.policy_digest
-        )
-        store.add_verification(
-            cid, fp_id, "passed", "verified merged result during landing", 0.0
-        )
-
-    _mark_landed(store, candidate, new_head)
-    store.event("land.landed", candidate_id=cid, data={"merge_commit": new_head})
-    return result
-
-
-def _apply_to_main(
-    main_wt: Path, branch: str, unit_name: str, strategy: str
-) -> gitutil.GitResult:
-    message = f"ig: land {unit_name} ({branch})"
-    if strategy == "squash":
-        return gitutil.merge_squash_into(main_wt, branch, message=message)
-    return gitutil.merge_into(main_wt, branch, message=message, no_ff=True)
 
 
 def _mark_landed(store: Store, candidate: dict[str, Any], merge_commit: str) -> None:
@@ -574,8 +468,6 @@ def _cleanup_unit(store: Store, root: Path, candidate: dict[str, Any]) -> None:
         return
     path = Path(unit["worktree"])
     gitutil.remove_worktree(root, path, force=True)
-    from .util import rmtree
-
     rmtree(path)
     branch = unit["branch"]
     # Keep the branch (history stays reachable) but drop the worktree.
@@ -584,26 +476,6 @@ def _cleanup_unit(store: Store, root: Path, candidate: dict[str, Any]) -> None:
 
 def main_branch_of(config: dict[str, Any]) -> str:
     return config.get("main_branch") or "main"
-
-
-def landing_strategy(config: dict[str, Any]) -> str:
-    """How landed candidates reach main: ``squash`` (default) or ``merge``."""
-    strategy = (config.get("landing") or {}).get("strategy") or "squash"
-    if strategy not in {"squash", "merge"}:
-        raise IntergentError(
-            f"unknown landing.strategy: {strategy!r} (expected 'squash' or 'merge')"
-        )
-    return strategy
-
-
-def landing_mode(config: dict[str, Any]) -> str:
-    """Whether landing stages a draft for approval (``draft``, default) or commits directly."""
-    mode = (config.get("landing") or {}).get("mode") or "draft"
-    if mode not in {"draft", "direct"}:
-        raise IntergentError(
-            f"unknown landing.mode: {mode!r} (expected 'draft' or 'direct')"
-        )
-    return mode
 
 
 def _conflict_summary(result: gitutil.GitResult) -> str:

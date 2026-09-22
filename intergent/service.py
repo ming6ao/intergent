@@ -25,18 +25,12 @@ from .util import (
     DEFAULT_EDITOR,
     IntergentError,
     config_path,
-    editor_command,
     now,
     read_json,
     slugify,
     worktrees_dir,
     write_json,
 )
-from .verifier import (
-    compute_fingerprint,
-    run_checks,
-)
-
 DEFAULT_ATTACHMENT = "terminal"
 
 
@@ -93,7 +87,6 @@ class Service:
             "lease_ttl_seconds": lease_ttl_seconds,
             "checks": checks or [],
             "editor": DEFAULT_EDITOR,
-            "landing": {"strategy": "squash", "mode": "draft"},
             "policy": {"require_verification": True, "allow_auto_approve": []},
             "created_at": now(),
         }
@@ -343,8 +336,8 @@ class Service:
     ) -> dict[str, Any]:
         self._reap_expired()
         unit = self.store.require_unit(unit_ref)
-        if unit["state"] != "active":
-            raise IntergentError(f"unit {unit['name']} is {unit['state']}, not active")
+        if unit["state"] != "working":
+            raise IntergentError(f"unit {unit['name']} is {unit['state']}, not working")
         items = parse_scope_specs(scope_specs, operation)
         operation = classify_operation(operation)
 
@@ -561,7 +554,7 @@ class Service:
         # Retire the unit so `status --gc` can prune its worktree.  (The
         # internal `_release_unit` is also used to supersede an intent on
         # re-declare, where the unit must stay active.)
-        self.store.set_unit_state(int(unit["id"]), "released")
+        self.store.set_unit_state(int(unit["id"]), "closed")
         self.store.conn.commit()
         return {"unit": unit["name"], "promoted": [p["unit_name"] for p in promoted]}
 
@@ -591,11 +584,11 @@ class Service:
         intent = self.store.latest_intent_for_unit(int(unit["id"]))
         existing = self.store.list_candidates()
         candidate = next(
-            (c for c in existing if int(c["unit_id"]) == int(unit["id"]) and c["status"] in {"ready", "verified", "failed", "blocked"}),
+            (c for c in existing if int(c["unit_id"]) == int(unit["id"]) and c["status"] in {"prepared", "failed", "blocked"}),
             None,
         )
         if candidate is not None:
-            self.store.update_candidate(int(candidate["id"]), head_commit=head, status="ready")
+            self.store.update_candidate(int(candidate["id"]), head_commit=head, status="prepared")
             cid = int(candidate["id"])
         else:
             cid = self.store.create_candidate(
@@ -607,209 +600,57 @@ class Service:
                 priority=0,
                 summary=summary,
             )
-        self.store.set_unit_state(int(unit["id"]), "finished")
         self.store.conn.commit()
-        self.store.event("candidate.ready", unit_id=int(unit["id"]), candidate_id=cid)
+        self.store.event("candidate.prepared", unit_id=int(unit["id"]), candidate_id=cid)
         return self.store.get_candidate(cid)  # type: ignore[return-value]
-
-    def verify(
-        self, candidate_ref: str | int, *, force: bool = False
-    ) -> dict[str, Any]:
-        self._reap_expired()
-        candidate = self.store.get_candidate(candidate_ref)
-        if candidate is None:
-            raise IntergentError(f"unknown candidate: {candidate_ref}")
-        cid = int(candidate["id"])
-        unit = self.store.get_unit(int(candidate["unit_id"]))
-        config = self.config
-        branch = candidate["branch"]
-        head = gitutil.rev_parse(self.root, branch)
-        if head != candidate["head_commit"]:
-            self.store.update_candidate(cid, head_commit=head)
-
-        fp = compute_fingerprint(self.root, config, head)
-        fp_id = self.store.get_or_create_fingerprint(
-            cid, fp.fingerprint, fp.tree, fp.cmd_digest, fp.toolchain_digest, fp.policy_digest
-        )
-        self.store.conn.commit()
-        if not force:
-            cached = self.store.latest_verification_for_fingerprint(fp_id)
-            if cached is not None and cached["status"] == "passed":
-                return {
-                    "candidate": cid,
-                    "status": "passed",
-                    "fingerprint": fp.fingerprint,
-                    "from_cache": True,
-                    "checks": [],
-                }
-
-        status, checks, duration = run_checks(self.root, config, head)
-        self.store.add_verification(
-            cid,
-            fp_id,
-            status,
-            _checks_output(checks),
-            duration,
-        )
-        if status == "passed":
-            self.store.update_candidate(cid, status="verified")
-            if unit is not None:
-                self._release_unit(int(unit["id"]), status="released")
-        else:
-            self.store.update_candidate(cid, status="failed")
-        self.store.conn.commit()
-        self.store.event(
-            "candidate.verified",
-            unit_id=int(candidate["unit_id"]),
-            candidate_id=cid,
-            data={"status": status, "fingerprint": fp.fingerprint},
-        )
-        return {
-            "candidate": cid,
-            "status": status,
-            "fingerprint": fp.fingerprint,
-            "from_cache": False,
-            "duration": duration,
-            "checks": [c.to_dict() for c in checks],
-        }
 
     def simulation(self, *, run_checks_flag: bool = True) -> dict[str, Any]:
         return planner.simulate(
             self.store, self.root, self.config, run_checks_flag=run_checks_flag
         )
 
-    def review(self, candidate_ref: str | int) -> dict[str, Any]:
-        candidate = self.store.get_candidate(candidate_ref)
-        if candidate is None:
-            raise IntergentError(f"unknown candidate: {candidate_ref}")
-        unit = self.store.get_unit(int(candidate["unit_id"]))
-        intent = self.store.get_intent(int(candidate["intent_id"])) if candidate.get("intent_id") else None
-        scopes = (
-            self.store.intent_scopes(int(candidate["intent_id"]))
-            if candidate.get("intent_id")
-            else []
-        )
-        verification = self.store.latest_verification(int(candidate["id"]))
-        base = candidate.get("base_commit") or self.config.get("base") or "main"
-        try:
-            commits = gitutil.log_subjects(self.root, base, candidate["head_commit"])
-            files = gitutil.diff_names(self.root, base, candidate["head_commit"])
-        except IntergentError:
-            commits, files = [], []
-        wave = self._wave_for(candidate)
-        findings = self._candidate_findings(candidate)
-        worktree = unit.get("worktree") if unit else None
-        risk = []
-        if any(f.severity == "HIGH" for f in findings):
-            risk.append("HIGH conflict")
-        if any(s["kind"] in {"schema", "migration", "config"} for s in scopes):
-            risk.append("schema/migration/config")
-        if len(files) > 50:
-            risk.append("large diff")
-        return {
-            "candidate": candidate,
-            "worktree": worktree,
-            "open_command": editor_command(worktree, self.config) if worktree else None,
-            "unit": unit,
-            "intent": intent,
-            "scopes": scopes,
-            "verification": verification,
-            "commits": commits,
-            "files": files,
-            "wave": wave,
-            "findings": [f.to_dict() for f in findings],
-            "risk_flags": risk,
-            "decisions": self.store.list_decisions(int(candidate["intent_id"])) if candidate.get("intent_id") else [],
-        }
+    def pending_handoff(self) -> dict[str, Any]:
+        """The uncommitted draft staged on main, if any."""
+        self._reap_expired()
+        draft = landing.pending_draft(self.store)
+        return {"pending": draft is not None, "draft": draft}
 
-    def approve(self, candidate_ref: str | int, *, reason: str | None = None) -> dict[str, Any]:
-        candidate = self.store.get_candidate(candidate_ref)
-        if candidate is None:
-            raise IntergentError(f"unknown candidate: {candidate_ref}")
-        try:
-            current_head = gitutil.rev_parse(self.root, candidate["branch"])
-        except IntergentError:
-            current_head = candidate["head_commit"]
-        if current_head != candidate["head_commit"]:
-            raise IntergentError(
-                "candidate branch advanced since its last verification; run `intergent verify` again"
-            )
-        verification = self.store.latest_verification(int(candidate["id"]))
-        if self.config.get("policy", {}).get("require_verification", True):
-            if verification is None or verification["status"] != "passed":
-                raise IntergentError(
-                    "candidate has no passing local verification; run `intergent verify` first"
-                )
-        findings = self._candidate_findings(candidate)
-        if findings:
-            self.store.event(
-                "candidate.approved_with_findings",
-                candidate_id=int(candidate["id"]),
-                data={"count": len(findings), "highest": findings[0].severity},
-            )
-        self.store.update_candidate(int(candidate["id"]), status="approved")
-        intent_id = candidate.get("intent_id")
-        if intent_id:
-            self.store.add_decision(
-                intent_id=int(intent_id),
-                related_intent_id=None,
-                verdict="human_approval",
-                severity=None,
-                rationale="candidate approved for landing",
-                action="approve",
-                reason=reason,
-            )
-        self.store.conn.commit()
-        self.store.event("candidate.approved", candidate_id=int(candidate["id"]))
-        return self.store.get_candidate(int(candidate["id"]))  # type: ignore[return-value]
-
-    def reject(self, candidate_ref: str | int, *, reason: str | None = None) -> dict[str, Any]:
-        candidate = self.store.get_candidate(candidate_ref)
-        if candidate is None:
-            raise IntergentError(f"unknown candidate: {candidate_ref}")
-        self.store.update_candidate(int(candidate["id"]), status="rejected")
-        self.store.conn.commit()
-        self.store.event("candidate.rejected", candidate_id=int(candidate["id"]), data={"reason": reason})
-        return self.store.get_candidate(int(candidate["id"]))  # type: ignore[return-value]
-
-    def approve_all_verified(self, *, reason: str | None = None) -> list[dict[str, Any]]:
-        approved = []
-        for candidate in self.store.list_candidates(statuses=["verified"]):
-            approved.append(self.approve(int(candidate["id"]), reason=reason))
-        return approved
-
-    def land(
+    def handoff(
         self,
         candidate_refs: list[str | int] | None = None,
         *,
-        all_approved: bool = False,
         run_checks_flag: bool = True,
-        cleanup: bool = True,
-        draft: bool | None = None,
-        commit_draft: bool = False,
-        abort_draft: bool = False,
     ) -> list[dict[str, Any]]:
-        ids: list[int] = []
-        if not (commit_draft or abort_draft):
-            if all_approved or not candidate_refs:
-                ids = [int(c["id"]) for c in self.store.list_candidates(statuses=["approved"])]
-            else:
-                for ref in candidate_refs:
-                    candidate = self.store.get_candidate(ref)
-                    if candidate is None:
-                        raise IntergentError(f"unknown candidate: {ref}")
-                    ids.append(int(candidate["id"]))
-        results = landing.land_candidates(
-            self.store,
-            self.root,
-            self.config,
-            ids,
-            run_checks_flag=run_checks_flag,
-            cleanup=cleanup,
-            draft=draft,
-            commit_draft=commit_draft,
-            abort_draft=abort_draft,
+        """Verify + trial-merge the prepared candidates into a draft on main."""
+        if candidate_refs:
+            ids: list[int] = []
+            for ref in candidate_refs:
+                candidate = self.store.get_candidate(ref)
+                if candidate is None:
+                    raise IntergentError(f"unknown candidate: {ref}")
+                ids.append(int(candidate["id"]))
+        else:
+            ids = [int(c["id"]) for c in self.store.list_candidates(statuses=["prepared"])]
+        results = landing.handoff(
+            self.store, self.root, self.config, ids, run_checks_flag=run_checks_flag
         )
+        # Candidates already contained in main are marked landed during staging,
+        # which frees their leases.
+        self._promote_queue()
+        return [r.to_dict() for r in results]
+
+    def finalize(
+        self,
+        *,
+        approve: bool,
+        cleanup: bool = True,
+    ) -> list[dict[str, Any]]:
+        """Approve (commit + clean up) or reject (restore main) the pending handoff."""
+        results = landing.finalize(
+            self.store, self.root, self.config, approve=approve, cleanup=cleanup
+        )
+        if approve:
+            self._promote_queue()
         return [r.to_dict() for r in results]
 
     def rebase(self, unit_ref: str | int, *, onto: str | None = None) -> dict[str, Any]:
@@ -827,7 +668,7 @@ class Service:
         head = gitutil.head_commit(worktree)
         candidate = self.store.get_candidate(unit["name"])
         if candidate is not None:
-            self.store.update_candidate(int(candidate["id"]), head_commit=head, status="ready")
+            self.store.update_candidate(int(candidate["id"]), head_commit=head, status="prepared")
         self.store.conn.commit()
         return {"unit": unit["name"], "onto": target, "head": head}
 
@@ -839,7 +680,7 @@ class Service:
             self.store,
             self.root,
             self.config,
-            [c for c in candidates if c["status"] in {"ready", "verified", "approved"}],
+            [c for c in candidates if c["status"] in {"prepared", "pending"}],
         )
         return {
             "root": str(self.root),
@@ -848,13 +689,14 @@ class Service:
             "candidates": candidates,
             "queue": self.store.queued_requests(),
             "waves": [w.to_dict() for w in waves],
+            "handoff": landing.pending_draft(self.store),
             "decisions": self.store.list_decisions()[:20],
         }
 
     def gc(self) -> dict[str, Any]:
         removed = []
         for unit in self.store.list_units():
-            if unit["state"] in {"landed", "released", "abandoned"}:
+            if unit["state"] in {"landed", "closed"}:
                 path = Path(unit["worktree"])
                 if path.exists():
                     gitutil.remove_worktree(self.root, path, force=True)
@@ -874,45 +716,6 @@ class Service:
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
-    def _candidate_findings(self, candidate: dict[str, Any]) -> list[Finding]:
-        intent_id = candidate.get("intent_id")
-        if not intent_id:
-            return []
-        intent = self.store.get_intent(int(intent_id))
-        if intent is None:
-            return []
-        scope_rows = self.store.intent_scopes(int(intent_id))
-        ref = self._intent_ref(
-            {
-                "id": int(intent_id),
-                "unit_id": int(candidate["unit_id"]),
-                "unit_name": candidate.get("unit_name", ""),
-                "operation": intent["operation"],
-                "scopes": scope_rows,
-            }
-        )
-        others = self._other_refs(int(candidate["unit_id"]))
-        others = [o for o in others if o.intent_id != int(intent_id)]
-        return conflict.evaluate(ref, others)
-
-    def _has_override(self, intent_id: Any) -> bool:
-        if not intent_id:
-            return False
-        for decision in self.store.list_decisions(int(intent_id)):
-            if decision.get("action") == "override":
-                return True
-        return False
-
-    def _wave_for(self, candidate: dict[str, Any]) -> int | None:
-        candidates = self.store.list_candidates(
-            statuses=["ready", "verified", "approved", "blocked", "failed"]
-        )
-        waves = planner.plan_waves(self.store, self.root, self.config, candidates)
-        for wave in waves:
-            if any(int(c["id"]) == int(candidate["id"]) for c in wave.candidates):
-                return wave.index
-        return None
-
     def _blocker_from_findings(self, findings: list[Finding]) -> int | None:
         for finding in findings:
             if finding.rule == "FM-C001 destructive_vs_additive" and finding.asserted:
@@ -1011,15 +814,6 @@ def _finding_intent(findings: list[Finding]) -> int | None:
         if finding.rule == "FM-C001 destructive_vs_additive" and finding.asserted:
             return finding.other_intent_id
     return None
-
-
-def _checks_output(checks: list[Any]) -> str:
-    lines = []
-    for check in checks:
-        lines.append(f"[{check.status}] {check.name}: {check.command}")
-        if check.output:
-            lines.append(check.output[-2000:])
-    return "\n".join(lines) or "(no checks configured)"
 
 
 def _session_unit_slugs(session: str, name: str) -> tuple[str, str]:

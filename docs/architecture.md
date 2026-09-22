@@ -54,26 +54,26 @@ fall back to the CLI; MCP exposes only the hot loop.
 One tool, `ig`, parameterized by an `action` enum:
 
 ```
-start   status   declare   commit   verify   review
+start   status   declare   commit   handoff
 ```
 
 A single tool keeps the agent's context small; the enum (and every flag) is
 generated from `intergent/surface.py`, so it can never drift from the CLI.
-Human-only actions (`submit`, `review --approve/--reject/--land`) are never in
-the schema and are rejected if called by name.
+Human-only actions (`review --approve/--reject`) are never in the schema and are
+rejected if called by name.
 
 ### CLI
 
 ```bash
-intergent start | declare | commit | verify | review | submit | status | mcp
+intergent start | declare | commit | handoff | review | status | mcp
 ```
 
-The local-plane reference implementation renders those seven actions from
+The local-plane reference implementation renders those six actions from
 `intergent/surface.py`. Flags carry the long tail: `declare --dry-run`
 (conflict check), `--renew`/`--release` (lease maintenance), `--decide`
 (audited override); `commit --sync` (rebase); `status --health` (doctor),
 `--simulate` (wave plan + combined-tree checks), `--gc` (worktree cleanup),
-`--short`, `--unit U`; `review --approve/--reject/--land [--all]`. See
+`--short`, `--unit U`; `handoff`; `review --approve/--reject`. See
 [Local implementation](./implementation.md).
 
 ### CI / host

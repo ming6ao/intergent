@@ -85,7 +85,7 @@ than scheduled by mergeability.
 | **Intent** | `{scopes[], operation, task, summary}` declared before editing. |
 | **Claim** | Advisory/leased ownership of a scope by a unit. |
 | **Lease** | Time-bounded, heartbeat-renewed grant of a lock mode on a scope. |
-| **Candidate** | A finished, verified unit awaiting landing (branch + metadata + evidence). |
+| **Candidate** | A committed unit awaiting handoff (branch + metadata + evidence). |
 | **Wave** | An ordered batch of mutually mergeable candidates that can be tested/landed together. |
 | **Fingerprint** | Content hash of (candidate tree, command vector, toolchain, policy digest) that pins a verification result. |
 

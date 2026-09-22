@@ -49,7 +49,7 @@ CREATE TABLE IF NOT EXISTS units (
   branch TEXT NOT NULL,
   base_commit TEXT,
   agent_id INTEGER REFERENCES agents(id),
-  state TEXT NOT NULL DEFAULT 'active',
+  state TEXT NOT NULL DEFAULT 'working',
   created_at REAL NOT NULL,
   updated_at REAL NOT NULL,
   UNIQUE(session_id, name)
@@ -125,7 +125,7 @@ CREATE TABLE IF NOT EXISTS candidates (
   head_commit TEXT NOT NULL,
   base_commit TEXT,
   priority INTEGER NOT NULL DEFAULT 0,
-  status TEXT NOT NULL DEFAULT 'ready',
+  status TEXT NOT NULL DEFAULT 'prepared',
   summary TEXT,
   created_at REAL NOT NULL,
   updated_at REAL NOT NULL
@@ -200,7 +200,26 @@ class Store:
         self.conn = sqlite3.connect(str(path), timeout=10.0)
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
+        self._migrate_states()
         self.conn.commit()
+
+    def _migrate_states(self) -> None:
+        """Collapse pre-handoff/post-handoff states onto the merged model.
+
+        Legacy databases used ``active``/``finished`` units and
+        ``ready``/``verified``/``approved`` candidates; the handoff model keeps
+        ``working`` units and ``prepared`` candidates.
+        """
+        self.conn.execute(
+            "UPDATE units SET state='working' WHERE state IN ('active','finished')"
+        )
+        self.conn.execute(
+            "UPDATE units SET state='closed' WHERE state IN ('released','abandoned')"
+        )
+        self.conn.execute(
+            "UPDATE candidates SET status='prepared' "
+            "WHERE status IN ('ready','verified','approved','blocked','failed')"
+        )
 
     def close(self) -> None:
         self.conn.close()
@@ -321,7 +340,7 @@ class Store:
             c.execute(
                 "INSERT INTO units(session_id, name, kind, worktree, branch, base_commit,"
                 " agent_id, state, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
-                (session_id, name, kind, worktree, branch, base_commit, agent_id, "active", ts, ts),
+                (session_id, name, kind, worktree, branch, base_commit, agent_id, "working", ts, ts),
             )
             row = c.execute(
                 "SELECT id FROM units WHERE session_id=? AND name=?", (session_id, name)
@@ -590,7 +609,7 @@ class Store:
                 "INSERT INTO candidates(unit_id, intent_id, branch, head_commit, base_commit,"
                 " priority, status, summary, created_at, updated_at)"
                 " VALUES(?,?,?,?,?,?,?,?,?,?)",
-                (unit_id, intent_id, branch, head_commit, base_commit, priority, "ready", summary, ts, ts),
+                (unit_id, intent_id, branch, head_commit, base_commit, priority, "prepared", summary, ts, ts),
             )
             return int(c.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
 
