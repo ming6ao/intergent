@@ -166,8 +166,10 @@ intergent review --approve  # commit it on main + clean up the unit worktrees
 intergent review --reject   # discard it and restore main
 ```
 
-`--approve --keep` keeps the unit worktrees (branches are always kept, so the
-landed history stays reachable).
+`--approve` removes the unit worktree and deletes its `ig/<unit>` branch once
+the approved squash is on main. `--approve --keep` retains the worktree and
+branch for inspection; `status --gc` prunes worktrees and landed-unit branches
+left over from earlier runs.
 
 Reference docs ship alongside this skill: `docs/agents.md`,
 `docs/implementation.md`, `docs/local-plane.md`.

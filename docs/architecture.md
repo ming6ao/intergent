@@ -72,7 +72,7 @@ The local-plane reference implementation renders those six actions from
 `intergent/surface.py`. Flags carry the long tail: `declare --dry-run`
 (conflict check), `--renew`/`--release` (lease maintenance), `--decide`
 (audited override); `commit --sync` (rebase); `status --health` (doctor),
-`--simulate` (wave plan + combined-tree checks), `--gc` (worktree cleanup),
+`--simulate` (wave plan + combined-tree checks), `--gc` (worktree/branch cleanup),
 `--short`, `--unit U`; `handoff`; `review --approve/--reject`. See
 [Local implementation](./implementation.md).
 

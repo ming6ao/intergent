@@ -470,7 +470,10 @@ def _cleanup_unit(store: Store, root: Path, candidate: dict[str, Any]) -> None:
     gitutil.remove_worktree(root, path, force=True)
     rmtree(path)
     branch = unit["branch"]
-    # Keep the branch (history stays reachable) but drop the worktree.
+    # The approved squash commit on main supersedes the unit branch, so drop the
+    # ref as well; otherwise every landed unit leaks an `ig/<unit>` branch.
+    if branch:
+        gitutil.delete_branch(root, branch)
     store.event("unit.cleaned", unit_id=int(unit["id"]), data={"branch": branch})
 
 

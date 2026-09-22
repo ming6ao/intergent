@@ -49,6 +49,17 @@ class RepoCase(unittest.TestCase):
         candidate = self.svc.finish(unit)
         return workspace, candidate
 
+    def branch_exists(self, branch):
+        return (
+            subprocess.run(
+                ["git", "rev-parse", "--verify", branch],
+                cwd=self.root,
+                capture_output=True,
+                text=True,
+            ).returncode
+            == 0
+        )
+
 
 class HappyPathTests(RepoCase):
     def test_happy_path_hands_off_and_approves_both_candidates(self):
@@ -245,25 +256,21 @@ class HandoffTests(RepoCase):
         self.assertEqual(self.svc.store.get_candidate("alpha")["status"], "prepared")
         self.assertEqual(self.svc.store.get_unit("alpha")["state"], "working")
 
-    def test_approve_cleans_worktree_by_default(self):
+    def test_approve_cleans_worktree_and_branch_by_default(self):
         alpha, _ = self.prepare("alpha")
         self.svc.handoff()
         self.svc.finalize(approve=True)
         self.assertFalse(Path(alpha["worktree"]).exists())
-        # The branch is retained, so the landed history stays reachable.
-        branch = subprocess.run(
-            ["git", "rev-parse", "--verify", alpha["branch"]],
-            cwd=self.root,
-            capture_output=True,
-            text=True,
-        )
-        self.assertEqual(branch.returncode, 0, branch.stderr)
+        # The approved squash supersedes the unit branch, so its ref is dropped.
+        self.assertFalse(self.branch_exists(alpha["branch"]))
 
-    def test_approve_keep_preserves_worktree(self):
+    def test_approve_keep_preserves_worktree_and_branch(self):
         alpha, _ = self.prepare("alpha")
         self.svc.handoff()
         self.svc.finalize(approve=True, cleanup=False)
         self.assertTrue(Path(alpha["worktree"]).exists())
+        # `--keep` retains the branch so the landed history stays inspectable.
+        self.assertTrue(self.branch_exists(alpha["branch"]))
 
     def test_simulation_plans_waves(self):
         self.prepare("alpha", scope="file:src/app.py")
@@ -329,6 +336,19 @@ class ReleaseTests(RepoCase):
         removed = self.svc.gc()["removed_worktrees"]
         self.assertIn("alpha", removed)
         self.assertFalse(Path(alpha["worktree"]).exists())
+        # Closed units may hold unmerged work, so their branch is retained.
+        self.assertTrue(self.branch_exists(alpha["branch"]))
+
+    def test_gc_prunes_landed_branch(self):
+        alpha, _ = self.prepare("alpha")
+        self.svc.handoff()
+        # Keep the worktree/branch so gc (not approve) is what prunes them.
+        self.svc.finalize(approve=True, cleanup=False)
+        self.assertTrue(self.branch_exists(alpha["branch"]))
+
+        result = self.svc.gc()
+        self.assertIn(alpha["branch"], result["pruned_branches"])
+        self.assertFalse(self.branch_exists(alpha["branch"]))
 
 
 class StateMigrationTests(RepoCase):

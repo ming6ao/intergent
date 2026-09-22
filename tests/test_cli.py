@@ -237,7 +237,7 @@ class CliTests(unittest.TestCase):
             self.assertEqual(json.loads(out.stdout)["handoff"][0]["status"], "landed")
             self.assertFalse(worktree.exists())
 
-    def test_approve_cleans_worktree_by_default_and_keep_preserves_it(self):
+    def test_approve_cleans_worktree_and_branch_and_keep_preserves_them(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             subprocess.run(["git", "init", "-q", "-b", "main"], cwd=tmp, check=True)
@@ -248,9 +248,26 @@ class CliTests(unittest.TestCase):
             subprocess.run(["git", "commit", "-qm", "init"], cwd=tmp, check=True)
             run_cli(["--json", "start"], root)
 
+            def branch_exists(branch):
+                return (
+                    subprocess.run(
+                        ["git", "rev-parse", "--verify", branch],
+                        cwd=root,
+                        capture_output=True,
+                    ).returncode
+                    == 0
+                )
+
             def approve(*, keep):
                 out = run_cli(["--json", "start", "--name", "alpha"], root)
                 worktree = Path(json.loads(out.stdout)["worktree"])
+                branch = subprocess.run(
+                    ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                    cwd=worktree,
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                ).stdout.strip()
                 run_cli(
                     ["--json", "declare", "--operation", "modify", "--scope", "file:a.txt"],
                     worktree,
@@ -265,10 +282,14 @@ class CliTests(unittest.TestCase):
                     args.append("--keep")
                 out = run_cli(args, root)
                 self.assertEqual(out.returncode, 0, out.stderr)
-                return worktree
+                return worktree, branch
 
-            self.assertFalse(approve(keep=False).exists())
-            self.assertTrue(approve(keep=True).exists())
+            worktree, branch = approve(keep=False)
+            self.assertFalse(worktree.exists())
+            self.assertFalse(branch_exists(branch), branch)
+            worktree, branch = approve(keep=True)
+            self.assertTrue(worktree.exists())
+            self.assertTrue(branch_exists(branch), branch)
 
     def test_mcp_exposes_one_action_tool(self):
         with tempfile.TemporaryDirectory() as tmp:

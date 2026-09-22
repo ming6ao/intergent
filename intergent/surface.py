@@ -74,7 +74,7 @@ ACTIONS: tuple[Action, ...] = (
             Param("short", "boolean", "print only the current unit name"),
             Param("simulate", "boolean", "plan waves and verify the combined tree"),
             Param("health", "boolean", "check git/plane health"),
-            Param("gc", "boolean", "prune worktrees for landed/closed units"),
+            Param("gc", "boolean", "prune worktrees and landed-unit branches"),
             Param("no_checks", "boolean", "with --simulate: plan only, do not run checks"),
         ),
     ),

@@ -694,24 +694,35 @@ class Service:
         }
 
     def gc(self) -> dict[str, Any]:
+        from .util import rmtree
+
         removed = []
+        pruned_branches = []
         for unit in self.store.list_units():
             if unit["state"] in {"landed", "closed"}:
                 path = Path(unit["worktree"])
                 if path.exists():
                     gitutil.remove_worktree(self.root, path, force=True)
-                    from .util import rmtree
-
                     rmtree(path)
                     removed.append(unit["name"])
+                # Landed content is already on main as a squashed commit, so its
+                # `ig/<unit>` branch is disposable; otherwise one branch leaks
+                # per landed unit.  Closed units may hold unmerged work, so keep
+                # their branches.
+                branch = unit.get("branch")
+                if (
+                    unit["state"] == "landed"
+                    and branch
+                    and gitutil.branch_exists(self.root, branch)
+                ):
+                    gitutil.delete_branch(self.root, branch)
+                    pruned_branches.append(branch)
         gitutil.prune_worktrees(self.root)
         scratch = self.root / ".intergent" / "scratch"
         if scratch.exists():
-            from .util import rmtree
-
             rmtree(scratch)
         self.store.conn.commit()
-        return {"removed_worktrees": removed}
+        return {"removed_worktrees": removed, "pruned_branches": pruned_branches}
 
     # ------------------------------------------------------------------
     # Internals

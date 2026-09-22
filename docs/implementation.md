@@ -112,7 +112,7 @@ intergent commit -m "message" [--summary S] [--sync]   # commit + register candi
 intergent handoff [--no-checks]                        # verify + stage a draft on main
 intergent status --simulate [--no-checks]              # wave plan + combined-tree checks
 intergent review                                       # show the pending handoff (human)
-intergent review --approve [--keep]                    # commit + clean up (human)
+intergent review --approve [--keep]                    # commit + remove worktree/branch (human)
 intergent review --reject                              # restore main (human)
 intergent status [--health] [--gc] [--short] [--unit U]
 ```
@@ -195,8 +195,11 @@ The handoff is the single boundary between agent work and human approval:
    (candidates, files, commit message, `open_command`) is persisted and
    returned; main's HEAD does not move.
 2. **Approve** — `review --approve` records one squashed commit and marks the
-   candidates landed, then removes the unit worktrees (branches are kept; pass
-   `--keep` to inspect them instead).
+   candidates landed, then removes the unit worktrees and deletes their
+   `ig/<unit>` branches (the approved squash supersedes them; pass `--keep` to
+   retain both for inspection). `status --gc` does the same for landed units
+   left over from earlier runs, while keeping the branches of closed units that
+   may still hold unmerged work.
 3. **Reject** — `review --reject` runs `git reset --hard` back to the draft base
    and returns the units to `working`.
 
