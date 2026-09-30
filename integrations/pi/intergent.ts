@@ -39,6 +39,8 @@ export const IG_ACTIONS = [
 	"declare",
 	"commit",
 	"handoff",
+	"integrate",
+	"report",
 ] as const;
 
 /** The `ig` tool exposes exactly the agent surface. */
@@ -223,9 +225,10 @@ export default function intergentExtension(pi: ExtensionAPI) {
 		name: "ig",
 		label: "Intergent",
 		description:
-			"Intergent unit lifecycle: start, status, declare, commit, handoff. " +
+			"Intergent unit lifecycle: start, status, declare, commit, handoff, integrate, report. " +
 			"Call `declare` before editing, then `commit`, then `handoff` to verify " +
-			"your work and stage an uncommitted draft on local main for human approval.",
+			"your work and stage an uncommitted draft on local main for human approval. " +
+			"In a campaign, `integrate` lands a verified candidate onto the feature branch.",
 		promptSnippet: "Drive the Intergent unit lifecycle (declare → commit → handoff)",
 		promptGuidelines: [
 			"Use `ig` with action `declare` before editing any file in an Intergent workspace; scope every file or symbol you touch.",
@@ -254,6 +257,34 @@ export default function intergentExtension(pi: ExtensionAPI) {
 			gc: Type.Optional(Type.Boolean({ description: "status: prune landed worktrees" })),
 			short: Type.Optional(Type.Boolean({ description: "status: print only the unit name" })),
 			no_checks: Type.Optional(Type.Boolean({ description: "handoff: skip verification" })),
+			no_unit: Type.Optional(
+				Type.Boolean({ description: "start: initialise the plane without a unit for cwd" }),
+			),
+			main: Type.Optional(
+				Type.String({ description: "start: main/integration branch (default: current)" }),
+			),
+			base: Type.Optional(Type.String({ description: "start: base branch/ref" })),
+			node: Type.Optional(
+				Type.String({ description: "integrate: only the candidate for this node/unit id" }),
+			),
+			cleanup: Type.Optional(
+				StringEnum(["none", "worktrees", "all"] as const, {
+					description: "integrate: post-merge cleanup (default none)",
+				}),
+			),
+			acceptance: Type.Optional(
+				Type.Array(Type.String(), { description: "integrate: node acceptance command" }),
+			),
+			gpu: Type.Optional(
+				StringEnum(["none", "T1", "T2"] as const, { description: "integrate: verifier GPU tier" }),
+			),
+			check_only: Type.Optional(
+				Type.Boolean({ description: "integrate: record the verdict without merging" }),
+			),
+			narrative: Type.Optional(
+				Type.String({ description: "report: what-changed/risks narrative" }),
+			),
+			design: Type.Optional(Type.String({ description: "report: design document reference" })),
 		}),
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			const { action, ...rest } = params as Record<string, unknown> & { action: string };

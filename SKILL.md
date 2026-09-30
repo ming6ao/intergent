@@ -35,19 +35,23 @@ declare ──► edit ──► commit ──► handoff          (agent)
 
 ## The action surface
 
-There are **six** actions, shared by the CLI, MCP, and the pi tool:
+There are **eight** actions, shared by the CLI, MCP, and the pi tool:
 
 | Action | Purpose |
 |---|---|
-| `start` | bootstrap the plane + a unit for this directory (idempotent; alias `init`) |
+| `start` | bootstrap the plane + a unit for this directory (idempotent; alias `init`); `--no-unit` bootstraps the plane only, for a campaign coordinator |
 | `declare` | declare scopes and acquire leases; `--dry-run` checks, `--renew`/`--release` manage leases, `--decide` resolves a conflict |
 | `commit` | commit the worktree and register the candidate; `--sync` rebases first |
 | `handoff` | verify + trial-merge the prepared candidates into an uncommitted draft on main |
+| `integrate` | (campaign) merge a verified candidate onto the feature branch, `--node`, `--acceptance`, `--check-only`, `--cleanup`; refuses the plane's default branch |
+| `report` | (campaign) write the deterministic report skeleton, plus a `--narrative` section |
 | `review` | (human) show the pending handoff; `--approve` commits it and cleans up, `--reject` restores main |
 | `status` | units, candidates, leases, waves; `--health`, `--simulate`, `--gc`, `--short`, `--unit U` |
 
-Agents can call `start`, `declare`, `commit`, `handoff`, `status`. `review` and
-its approval flags are human-only.
+Agents can call `start`, `declare`, `commit`, `handoff`, `integrate`, `report`,
+and `status`. `review` and its approval flags are human-only. In a campaign, a
+top-level **coordinator** calls `integrate --node <id>` after a `pass` verdict
+instead of `handoff`; see [Orchestration](./docs/orchestration.md).
 
 ## Locate the bundled CLI
 

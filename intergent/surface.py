@@ -64,6 +64,7 @@ ACTIONS: tuple[Action, ...] = (
             Param("checks", "list", "trusted check NAME=COMMAND (repeatable)", flag="check"),
             Param("lease_ttl", "int", "lease TTL in seconds"),
             Param("force", "boolean", "overwrite an existing config"),
+            Param("no_unit", "boolean", "initialise the plane without creating a unit for cwd"),
         ),
     ),
     Action(
@@ -115,6 +116,26 @@ ACTIONS: tuple[Action, ...] = (
         summary="verify + trial-merge prepared candidates into an uncommitted draft on main",
         params=(
             Param("no_checks", "boolean", "skip verification and combined-tree checks"),
+        ),
+    ),
+    Action(
+        name="integrate",
+        summary="merge prepared candidates onto the campaign feature branch (agent-callable landing)",
+        params=(
+            Param("node", "string", "only the candidate for this node/unit id"),
+            Param("cleanup", "string", "cleanup after integrating", choices=("none", "worktrees", "all")),
+            Param("acceptance", "list", "node acceptance command (repeatable)", flag="acceptance"),
+            Param("gpu", "string", "GPU tier reserved by the verifier", choices=("none", "T1", "T2")),
+            Param("check_only", "boolean", "record the verdict without merging (orchestrator verify)"),
+            Param("no_checks", "boolean", "skip the plane's trusted checks"),
+        ),
+    ),
+    Action(
+        name="report",
+        summary="write the deterministic campaign report skeleton (plus optional narrative)",
+        params=(
+            Param("narrative", "string", "what-changed/risks text appended to the skeleton"),
+            Param("design", "string", "design document reference (default: dag.json)"),
         ),
     ),
     Action(
@@ -188,6 +209,7 @@ def start(params: dict[str, Any], *, cwd: str | Path | None = None) -> dict[str,
         checks=parse_checks(params.get("checks") or []),
         lease_ttl_seconds=params.get("lease_ttl") or 1800,
         force=bool(params.get("force")),
+        no_unit=bool(params.get("no_unit")),
     )
 
 
@@ -284,6 +306,21 @@ def _dispatch_handoff(service: "Service", p: dict[str, Any]) -> Any:
     }
 
 
+def _dispatch_integrate(service: "Service", p: dict[str, Any]) -> Any:
+    return service.integrate(
+        node=p.get("node"),
+        acceptance=list(p.get("acceptance") or []),
+        gpu=p.get("gpu") or "none",
+        check_only=bool(p.get("check_only")),
+        cleanup=p.get("cleanup") or "none",
+        run_checks_flag=not p.get("no_checks"),
+    )
+
+
+def _dispatch_report(service: "Service", p: dict[str, Any]) -> Any:
+    return service.report(narrative=p.get("narrative"), design=p.get("design"))
+
+
 def _dispatch_review(service: "Service", p: dict[str, Any]) -> Any:
     if p.get("approve") and p.get("reject"):
         raise IntergentError("review --approve and --reject are mutually exclusive")
@@ -301,6 +338,8 @@ _HANDLERS = {
     "declare": _dispatch_declare,
     "commit": _dispatch_commit,
     "handoff": _dispatch_handoff,
+    "integrate": _dispatch_integrate,
+    "report": _dispatch_report,
     "review": _dispatch_review,
 }
 

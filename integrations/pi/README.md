@@ -50,6 +50,8 @@ launching pi, e.g. `INTERGENT_BIN=/home/me/intergent/bin/intergent pi`.
 | `declare` | declare scopes + acquire leases; `dry_run`, `renew`, `release`, `decide` |
 | `commit` | commit the worktree and register the candidate (`sync` rebases first) |
 | `handoff` | **agent's last step**: verify + trial-merge into an uncommitted draft on main |
+| `integrate` | campaign landing: merge a verified candidate onto the feature branch (`node`, `check_only`, `acceptance`, `gpu`, `cleanup`) |
+| `report` | write the deterministic campaign report skeleton, plus `narrative` |
 
 `handoff` is the only landing-adjacent action in the tool. It stages an
 **uncommitted draft** on main and returns it (files, diffstat, commit subject,
@@ -69,6 +71,26 @@ blocking confirmation dialog:
 
 Approval still requires `ctx.hasUI` (TUI or RPC mode). In print/JSON mode the
 extension refuses and points at the equivalent CLI commands.
+
+## Campaign orchestration (the `campaign` tool)
+
+For delivering a design document as a set of components on a feature branch, the
+`campaign` extension drives a top-level coordinator that spawns planner/worker/
+verifier subagents while `intergent` stays the deterministic engine. The DAG in
+`.intergent/<branch-key>.dag.json` is the only schedule. See
+[`docs/orchestration.md`](../../docs/orchestration.md).
+
+```bash
+cp integrations/pi/campaign.ts ~/.pi/agent/extensions/campaign.ts
+mkdir -p ~/.pi/agent/campaign-agents
+cp integrations/pi/agents/*.md ~/.pi/agent/campaign-agents/
+INTERGENT_AUTO_BOOTSTRAP=0 pi    # launch the coordinator on the base checkout
+```
+
+The `campaign` tool has actions `start`, `status`, `ready`, `spawn`, `verify`,
+`integrate`, and `report`. Workers are child processes of the coordinator and
+are not detached, so a crash kills them and a resumed `start` resets `running`
+nodes. Only the verifier is given `tools/gpu.sh`; workers never touch the GPU.
 
 ## Alternative: the skill (CLI only, no extension)
 

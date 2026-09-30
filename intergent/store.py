@@ -139,6 +139,7 @@ CREATE TABLE IF NOT EXISTS fingerprints (
   cmd_digest TEXT NOT NULL,
   toolchain_digest TEXT NOT NULL,
   policy_digest TEXT NOT NULL,
+  source TEXT NOT NULL DEFAULT 'plane',
   created_at REAL NOT NULL,
   UNIQUE(candidate_id, fingerprint)
 );
@@ -150,6 +151,8 @@ CREATE TABLE IF NOT EXISTS verifications (
   status TEXT NOT NULL,
   output TEXT,
   duration REAL,
+  commands TEXT,
+  gpu TEXT,
   created_at REAL NOT NULL
 );
 
@@ -201,7 +204,25 @@ class Store:
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
         self._migrate_states()
+        self._migrate_verification_source()
         self.conn.commit()
+
+    def _migrate_verification_source(self) -> None:
+        """Add the §6.4 source/commands/gpu columns to pre-existing planes.
+
+        The columns are additive and the fingerprint hash already includes the
+        source, so an old row simply reads back as ``plane``.
+        """
+        fingerprint_cols = {r[1] for r in self.conn.execute("PRAGMA table_info(fingerprints)")}
+        if "source" not in fingerprint_cols:
+            self.conn.execute(
+                "ALTER TABLE fingerprints ADD COLUMN source TEXT NOT NULL DEFAULT 'plane'"
+            )
+        verification_cols = {r[1] for r in self.conn.execute("PRAGMA table_info(verifications)")}
+        if "commands" not in verification_cols:
+            self.conn.execute("ALTER TABLE verifications ADD COLUMN commands TEXT")
+        if "gpu" not in verification_cols:
+            self.conn.execute("ALTER TABLE verifications ADD COLUMN gpu TEXT")
 
     def _migrate_states(self) -> None:
         """Collapse pre-handoff/post-handoff states onto the merged model.
@@ -671,6 +692,7 @@ class Store:
         cmd_digest: str,
         toolchain_digest: str,
         policy_digest: str,
+        source: str = "plane",
     ) -> int:
         row = self.conn.execute(
             "SELECT id FROM fingerprints WHERE candidate_id=? AND fingerprint=?",
@@ -681,10 +703,24 @@ class Store:
         with self.tx() as c:
             c.execute(
                 "INSERT INTO fingerprints(candidate_id, fingerprint, tree, cmd_digest,"
-                " toolchain_digest, policy_digest, created_at) VALUES(?,?,?,?,?,?,?)",
-                (candidate_id, fingerprint, tree, cmd_digest, toolchain_digest, policy_digest, now()),
+                " toolchain_digest, policy_digest, source, created_at) VALUES(?,?,?,?,?,?,?,?)",
+                (
+                    candidate_id,
+                    fingerprint,
+                    tree,
+                    cmd_digest,
+                    toolchain_digest,
+                    policy_digest,
+                    source,
+                    now(),
+                ),
             )
             return int(c.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
+
+    def get_fingerprint(self, fingerprint_id: int) -> dict[str, Any] | None:
+        return _dict(
+            self.conn.execute("SELECT * FROM fingerprints WHERE id=?", (fingerprint_id,)).fetchone()
+        )
 
     def add_verification(
         self,
@@ -693,12 +729,23 @@ class Store:
         status: str,
         output: str,
         duration: float,
+        commands: Any = None,
+        gpu: str | None = None,
     ) -> int:
         with self.tx() as c:
             c.execute(
                 "INSERT INTO verifications(candidate_id, fingerprint_id, status, output,"
-                " duration, created_at) VALUES(?,?,?,?,?,?)",
-                (candidate_id, fingerprint_id, status, output, duration, now()),
+                " duration, commands, gpu, created_at) VALUES(?,?,?,?,?,?,?,?)",
+                (
+                    candidate_id,
+                    fingerprint_id,
+                    status,
+                    output,
+                    duration,
+                    json.dumps(commands) if commands is not None else None,
+                    gpu,
+                    now(),
+                ),
             )
             return int(c.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
 
@@ -715,10 +762,42 @@ class Store:
     def latest_verification(self, candidate_id: int) -> dict[str, Any] | None:
         return _dict(
             self.conn.execute(
-                "SELECT * FROM verifications WHERE candidate_id=? ORDER BY id DESC LIMIT 1",
+                "SELECT v.*, f.source AS source, f.fingerprint AS fingerprint"
+                " FROM verifications v JOIN fingerprints f ON f.id = v.fingerprint_id"
+                " WHERE v.candidate_id=? ORDER BY v.id DESC LIMIT 1",
                 (candidate_id,),
             ).fetchone()
         )
+
+    def latest_verification_for_source(
+        self, candidate_id: int, source: str
+    ) -> dict[str, Any] | None:
+        """Newest verdict for a candidate restricted to a fingerprint source.
+
+        ``source`` is ``plane`` for the configured check vector or
+        ``node:<id>`` for a campaign node's acceptance commands (§6.4).
+        """
+        return _dict(
+            self.conn.execute(
+                "SELECT v.*, f.source AS source, f.fingerprint AS fingerprint"
+                " FROM verifications v"
+                " JOIN fingerprints f ON f.id = v.fingerprint_id"
+                " WHERE v.candidate_id=? AND f.source=? ORDER BY v.id DESC LIMIT 1",
+                (candidate_id, source),
+            ).fetchone()
+        )
+
+    def list_verifications(self, *, candidate_id: int | None = None) -> list[dict[str, Any]]:
+        sql = (
+            "SELECT v.*, f.source AS source FROM verifications v"
+            " JOIN fingerprints f ON f.id = v.fingerprint_id"
+        )
+        params: list[Any] = []
+        if candidate_id is not None:
+            sql += " WHERE v.candidate_id=?"
+            params.append(candidate_id)
+        sql += " ORDER BY v.id"
+        return _dicts(self.conn.execute(sql, params).fetchall())
 
     # ---- decisions ----------------------------------------------------
     def add_decision(

@@ -16,6 +16,7 @@
 | [Local plane](./local-plane.md) | Workspaces, sessions/workers, scope lock queue, verification |
 | [Local implementation](./implementation.md) | Reference implementation: CLI/MCP, semantics, data model, tests |
 | [Agent integration](./agents.md) | Run Intergent inside Claude Code, pi, or any CLI/MCP agent |
+| [Orchestration](./orchestration.md) | Deliver a design with a top-level coordinator, planner/worker/verifier subagents, and `dag.json` |
 | [Remote plane](./remote-plane.md) | Conflict graph, wave scheduler, CI batching, integration modes |
 | [Review & submission](./review-workflow.md) | Review packet, gates, pre-approval, workflows |
 | [Operations](./operations.md) | Data model, tech stack, security and trust |

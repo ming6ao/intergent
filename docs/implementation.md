@@ -32,9 +32,12 @@ Config:  .intergent/config.json
 | `intergent/scopes.py` | Scope parsing, canonicalization, and the scope tree |
 | `intergent/locks.py` | IS/IX/S/SIX/X compatibility matrix and requirement closure |
 | `intergent/conflict.py` | Deterministic conflict rules `FM-C001..C003` and matching tiers |
-| `intergent/verifier.py` | Fingerprint computation and trusted-check runner |
+| `intergent/verifier.py` | Fingerprint computation (plane and node sources, §6.4) and trusted-check runner |
 | `intergent/planner.py` | Greedy wave packing + combined-tree simulation |
 | `intergent/landing.py` | Transactional, approval-gated merge into the local main branch |
+| `intergent/integrate.py` | Agent-callable feature-branch landing (`integrate`) + node verification recording |
+| `intergent/campaign.py` | `dag.json`/`state.json` layout, `ready` computation, plan validation |
+| `intergent/report.py` | Deterministic campaign report skeleton |
 
 ## 2. What one user gets
 
@@ -60,7 +63,7 @@ Session ──► Unit (worktree + branch) ──► Intent (scopes + operation)
 
 ## 3. Action reference
 
-There are seven actions. The CLI renders them as subcommands, MCP as one `ig`
+There are eight actions. The CLI renders them as subcommands, MCP as one `ig`
 tool with an `action` enum, and the pi extension as one `ig` tool — all from
 `surface.py`.
 
@@ -68,7 +71,7 @@ tool with an `action` enum, and the pi extension as one `ig` tool — all from
 
 ```bash
 intergent start [--agent NAME] [--name N] [--path DIR] [--main main] [--base main]
-                [--check NAME=COMMAND ...] [--lease-ttl 1800] [--force]
+                [--check NAME=COMMAND ...] [--lease-ttl 1800] [--force] [--no-unit]
 intergent mcp
 ```
 
@@ -76,8 +79,12 @@ intergent mcp
 writes `.intergent/config.json` and `.intergent/state.db` (and adds
 `.intergent/` to the repo-local `.git/info/exclude`) if the plane is missing,
 then creates a unit for the directory unless it is already inside one.
-Re-running it from a unit worktree is a no-op. The programmatic plane-only
-helper is `Service.init_plane(root, ...)`.
+Re-running it from a unit worktree is a no-op. `--no-unit` initialises the plane
+without creating a unit, for a campaign coordinator's checkout; `--main` names
+the integration/feature branch and creates it at `--base` when missing. The
+recorded `default_branch` is captured once at init (origin `HEAD`, else the
+checked-out branch, else `init.defaultBranch`, else `main`). The programmatic
+plane-only helper is `Service.init_plane(root, ...)`.
 
 ### Authoring (agents)
 
@@ -121,6 +128,28 @@ intergent status [--health] [--gc] [--short] [--unit U]
 a scratch worktree first, then written into the real main worktree as staged
 changes. If a merge conflicts or checks fail, main is left untouched and the
 candidate stays `prepared`.
+
+### Campaign integration (`integrate`, `report`)
+
+```bash
+intergent integrate [--node ID] [--acceptance CMD ...] [--gpu none|T1|T2]
+                    [--check-only] [--cleanup none|worktrees|all] [--no-checks]
+intergent report [--narrative TEXT] [--design REF]
+```
+
+`integrate` is the campaign's agent-callable landing: it orders the prepared
+candidates with the wave planner, merges each unit branch onto the plane's
+`main_branch` (the feature branch) with `git merge --no-ff` (branches kept for
+provenance), runs the plane's trusted checks on the combined tree
+(fingerprint-cached), then marks candidates and units `landed` and releases
+their leases. It is idempotent; a merge conflict aborts the merge and returns
+structured findings without leaving the feature branch half-merged; combined
+tree checks that fail reset the branch to its pre-merge tip. A safety rail
+**refuses** to integrate onto the plane's recorded **default branch**, so
+promoting a feature branch to `master` stays a human `git` step. `--check-only`
+records a node's acceptance verdict (fingerprint source `node:<id>`, §6.4)
+without merging, which the orchestrator's `verify` step uses. `report` writes
+the deterministic `<branch-key>.report.md` skeleton plus an optional narrative.
 
 ## 4. Semantics implemented
 
@@ -210,9 +239,10 @@ commit on main.
 ## 5. MCP tool surface
 
 The server exposes exactly one tool, `ig`, with an `action` enum
-(`start`, `status`, `declare`, `commit`, `handoff`). The tool schema —
-enum, properties, types, choices — is generated from `surface.py`, and the same
-module implements dispatch, so the MCP and CLI surfaces cannot drift.
+(`start`, `status`, `declare`, `commit`, `handoff`, `integrate`, `report`). The
+tool schema — enum, properties, types, choices — is generated from
+`surface.py`, and the same module implements dispatch, so the MCP and CLI
+surfaces cannot drift.
 `unit` is optional when the server runs inside a unit worktree. Human-only
 actions and flags (`review --approve/--reject`) are absent from the schema and
 rejected if invoked by name. For pi and generic agents see

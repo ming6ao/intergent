@@ -372,6 +372,69 @@ class CliTests(unittest.TestCase):
             self.assertTrue(lines[5]["result"]["isError"])
             self.assertIn("human action", lines[5]["result"]["content"][0]["text"])
 
+    def test_campaign_no_unit_integrate_and_report(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subprocess.run(["git", "init", "-q", "-b", "main"], cwd=tmp, check=True)
+            subprocess.run(["git", "config", "user.email", "t@e.com"], cwd=tmp, check=True)
+            subprocess.run(["git", "config", "user.name", "T"], cwd=tmp, check=True)
+            (root / "a.txt").write_text("hi\n")
+            (root / "b.txt").write_text("hi\n")
+            subprocess.run(["git", "add", "-A"], cwd=tmp, check=True)
+            subprocess.run(["git", "commit", "-qm", "init"], cwd=tmp, check=True)
+
+            # Campaign bootstrap: no coordinator unit, feature branch created.
+            out = run_cli(
+                ["--json", "start", "--no-unit", "--main", "feat/x", "--base", "main",
+                 "--check", "ok=true"],
+                root,
+            )
+            self.assertEqual(out.returncode, 0, out.stderr)
+            boot = json.loads(out.stdout)
+            self.assertIsNone(boot["unit"])
+
+            # A plain `status` has no units and reports the feature branch.
+            out = run_cli(["status", "--json"], root)
+            self.assertEqual(out.returncode, 0, out.stderr)
+            status = json.loads(out.stdout)
+            self.assertEqual(status["feature_branch"], "feat/x")
+            self.assertEqual(status["units"], [])
+
+            # Build two candidates through the CLI, base = feature branch.
+            for name, rel in (("w1", "a.txt"), ("w2", "b.txt")):
+                out = run_cli(["--json", "start", "--name", name, "--base", "feat/x"], root)
+                self.assertEqual(out.returncode, 0, out.stderr)
+                worktree = Path(json.loads(out.stdout)["worktree"])
+                out = run_cli(
+                    ["--json", "declare", "--operation", "modify", "--scope", f"file:{rel}"],
+                    worktree,
+                )
+                self.assertEqual(json.loads(out.stdout)["status"], "granted")
+                (worktree / rel).write_text(f"{name}\n")
+                out = run_cli(["--json", "commit", "-m", name], worktree)
+                self.assertEqual(out.returncode, 0, out.stderr)
+
+            out = run_cli(["--json", "integrate"], root)
+            self.assertEqual(out.returncode, 0, out.stderr)
+            results = json.loads(out.stdout)["results"]
+            self.assertEqual([r["status"] for r in results], ["landed", "landed"])
+            self.assertEqual(
+                subprocess.run(
+                    ["git", "show", "feat/x:a.txt"], cwd=tmp, capture_output=True, text=True
+                ).stdout,
+                "w1\n",
+            )
+
+            # Re-running integrate is a no-op.
+            out = run_cli(["--json", "integrate"], root)
+            self.assertEqual(json.loads(out.stdout)["results"], [])
+
+            out = run_cli(["--json", "report", "--narrative", "landed both"], root)
+            self.assertEqual(out.returncode, 0, out.stderr)
+            report = json.loads(out.stdout)
+            self.assertTrue(Path(report["path"]).name == "feat--x.report.md")
+            self.assertIn("landed both", report["content"])
+
     def test_cli_surface_matches_registry(self):
         """The CLI subcommands are exactly the registry (plus `mcp` and aliases)."""
         import argparse

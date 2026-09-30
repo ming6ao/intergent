@@ -12,7 +12,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from . import conflict, gitutil, landing, locks, planner
+from . import campaign, conflict, gitutil, integrate, landing, locks, planner, report as report_mod
 from .conflict import Finding, IntentRef
 from .locks import HeldLock, Requirement
 from .scopes import (
@@ -77,13 +77,24 @@ class Service:
         detected = gitutil.current_branch(root) or "main"
         main_branch = main_branch or detected
         if not gitutil.branch_exists(root, main_branch):
-            # An empty repository with no commits yet: create the branch lazily.
-            main_branch = detected
+            # An empty repository with no commits yet, or a campaign feature
+            # branch that does not exist: create the integration branch at the
+            # requested base when one resolves, otherwise fall back to the
+            # checked-out branch.
+            base_ref = base or detected
+            try:
+                base_commit = gitutil.rev_parse(root, base_ref)
+            except IntergentError:
+                main_branch = detected
+            else:
+                gitutil.create_branch(root, main_branch, base_commit)
         base = base or main_branch
+        default_branch = integrate.found_default_branch(root)
         config = {
             "version": 1,
             "main_branch": main_branch,
             "base": base,
+            "default_branch": default_branch,
             "lease_ttl_seconds": lease_ttl_seconds,
             "checks": checks or [],
             "editor": DEFAULT_EDITOR,
@@ -114,6 +125,7 @@ class Service:
         checks: list[dict[str, Any]] | None = None,
         lease_ttl_seconds: int = 1800,
         force: bool = False,
+        no_unit: bool = False,
     ) -> dict[str, Any]:
         """Bootstrap the plane and a unit for *path* (default cwd), idempotently.
 
@@ -151,6 +163,16 @@ class Service:
         # Keep the exclude entry fresh even when the plane already existed and
         # the repo's .git/info/exclude was reset (e.g. re-cloned metadata).
         _ensure_gitignore(root)
+
+        if no_unit:
+            return {
+                "root": str(root),
+                "initialized": initialized,
+                "created": False,
+                "unit": None,
+                "branch": None,
+                "worktree": None,
+            }
 
         service = cls(root)
         try:
@@ -262,7 +284,7 @@ class Service:
         unit["candidates"] = [
             c for c in self.store.list_candidates() if int(c["unit_id"]) == int(unit["id"])
         ]
-        return unit
+        return self._project_unit(unit, self.config.get("main_branch"))
 
     def current_unit(self, path: str | os.PathLike[str] | None = None) -> dict[str, Any]:
         """Resolve the unit whose worktree contains *path* (default cwd).
@@ -674,7 +696,8 @@ class Service:
 
     def status(self) -> dict[str, Any]:
         self._reap_expired()
-        units = self.list_units()
+        branch = self.config.get("main_branch")
+        units = [self._project_unit(u, branch) for u in self.list_units()]
         candidates = self.store.list_candidates()
         waves = planner.plan_waves(
             self.store,
@@ -684,7 +707,9 @@ class Service:
         )
         return {
             "root": str(self.root),
-            "main_branch": self.config.get("main_branch"),
+            "main_branch": branch,
+            "feature_branch": branch,
+            "default_branch": self.config.get("default_branch") or integrate.found_default_branch(self.root),
             "units": units,
             "candidates": candidates,
             "queue": self.store.queued_requests(),
@@ -692,6 +717,104 @@ class Service:
             "handoff": landing.pending_draft(self.store),
             "decisions": self.store.list_decisions()[:20],
         }
+
+    def _project_unit(self, unit: dict[str, Any], branch: str | None) -> dict[str, Any]:
+        """Add the campaign columns the dashboard needs (§6.3).
+
+        ``node``/``log`` come from the campaign layout; ``candidate`` and
+        ``verification`` are the unit's latest candidate row and its latest
+        recorded verdict.
+        """
+        projected = dict(unit)
+        unit_id = int(unit["id"])
+        candidates = [
+            c for c in self.store.list_candidates() if int(c["unit_id"]) == unit_id
+        ]
+        latest = candidates[-1] if candidates else None
+        verification = (
+            self.store.latest_verification(int(latest["id"])) if latest is not None else None
+        )
+        projected["node"] = unit["name"]
+        projected["log"] = str(
+            campaign.worker_log_path(self.root, branch or "main", unit["name"])
+        )
+        projected["candidate"] = int(latest["id"]) if latest is not None else None
+        projected["verification"] = verification
+        return projected
+
+    def integrate(
+        self,
+        *,
+        node: str | None = None,
+        acceptance: list[str] | None = None,
+        gpu: str = "none",
+        check_only: bool = False,
+        cleanup: str = "none",
+        run_checks_flag: bool = True,
+    ) -> dict[str, Any]:
+        """Merge prepared candidates onto the feature branch (agent-callable)."""
+        if cleanup not in {"none", "worktrees", "all"}:
+            raise IntergentError("cleanup must be one of: none, worktrees, all")
+        results = integrate.integrate(
+            self.store,
+            self.root,
+            self.config,
+            node=node,
+            acceptance=acceptance,
+            gpu=gpu,
+            check_only=check_only,
+            run_checks_flag=run_checks_flag,
+        )
+        self._promote_queue()
+        cleanup_result: dict[str, Any] | None = None
+        artifacts_removed: list[str] = []
+        if cleanup in {"worktrees", "all"}:
+            cleanup_result = self.gc()
+        if cleanup == "all":
+            artifacts_removed = self.remove_campaign_artifacts(keep_report=True)
+        return {
+            "main_branch": self.config.get("main_branch"),
+            "node": node,
+            "check_only": check_only,
+            "results": [r.to_dict() for r in results],
+            "cleanup": cleanup_result,
+            "artifacts_removed": artifacts_removed,
+        }
+
+    def report(
+        self, *, narrative: str | None = None, design: str | None = None
+    ) -> dict[str, Any]:
+        """Write the deterministic campaign report plus an optional narrative."""
+        return report_mod.write_report(
+            self.root, self.config, self.store, narrative=narrative, design=design
+        )
+
+    def remove_campaign_artifacts(self, *, keep_report: bool = True) -> list[str]:
+        """Delete ``<branch-key>`` dag/state/worker logs (report kept by default)."""
+        branch = self.config.get("main_branch") or "main"
+        removed: list[str] = []
+        paths = [
+            campaign.dag_path(self.root, branch),
+            campaign.state_path(self.root, branch),
+        ]
+        removed.extend(self._remove_files(paths))
+        for log in sorted(self.root.glob(f".intergent/{campaign.branch_key(branch)}.worker_*.log")):
+            removed.extend(self._remove_files([log]))
+        if not keep_report:
+            removed.extend(self._remove_files([campaign.report_path(self.root, branch)]))
+        return removed
+
+    @staticmethod
+    def _remove_files(paths: list[Path]) -> list[str]:
+        removed: list[str] = []
+        for path in paths:
+            try:
+                if path.is_file() or path.is_symlink():
+                    path.unlink()
+                    removed.append(str(path))
+            except OSError:
+                continue
+        return removed
 
     def gc(self) -> dict[str, Any]:
         removed = []

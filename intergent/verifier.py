@@ -47,6 +47,12 @@ class Fingerprint:
     cmd_digest: str
     toolchain_digest: str
     policy_digest: str
+    source: str = "plane"
+    commands: list[str] = field(default_factory=list)
+
+    @property
+    def is_node(self) -> bool:
+        return self.source.startswith("node:")
 
 
 @dataclass
@@ -107,21 +113,83 @@ def _py_version() -> str:
 
 
 def compute_fingerprint(
-    root: Path, config: dict[str, Any], commit: str
+    root: Path,
+    config: dict[str, Any],
+    commit: str,
+    *,
+    checks: list[CheckSpec] | None = None,
+    source: str = "plane",
 ) -> Fingerprint:
+    """Hash ``(tree, command vector, toolchain, policy, source)``.
+
+    ``checks`` defaults to the plane's configured checks; a campaign node
+    passes its own ``acceptance`` commands and ``source='node:<id>'`` so a node
+    verdict can never collide with a plane-check verdict (§6.4).
+    """
     tree = gitutil.tree_of(root, commit)
-    checks = checks_from_config(config)
+    specs = checks if checks is not None else checks_from_config(config)
     cmd_digest = sha256_json(
         [
             {"name": c.name, "command": c.command, "required": c.required, "timeout": c.timeout}
-            for c in checks
+            for c in specs
         ]
     )
     tool = toolchain_digest(root, commit)
     policy = config.get("policy") or {}
     policy_digest = sha256_json(policy)
-    fingerprint = sha256_text("\n".join([tree, cmd_digest, tool, policy_digest]))
-    return Fingerprint(fingerprint, tree, cmd_digest, tool, policy_digest)
+    fingerprint = sha256_text("\n".join([tree, cmd_digest, tool, policy_digest, source]))
+    return Fingerprint(
+        fingerprint,
+        tree,
+        cmd_digest,
+        tool,
+        policy_digest,
+        source=source,
+        commands=[c.command for c in specs],
+    )
+
+
+def acceptance_checks(acceptance: list[str], *, timeout: int = 3600) -> list[CheckSpec]:
+    """Turn a campaign node's ``acceptance`` command strings into checks."""
+    return [
+        CheckSpec(name=f"acceptance[{i}]", command=command, required=True, timeout=timeout)
+        for i, command in enumerate(acceptance)
+    ]
+
+
+def verify_node(
+    root: Path,
+    config: dict[str, Any],
+    commit: str,
+    acceptance: list[str],
+    *,
+    source: str,
+    gpu: str = "none",
+    worktree: Path | None = None,
+) -> VerificationResult:
+    """Verify a node's acceptance commands at *commit* (source ``node:<id>``).
+
+    The verifier is the only GPU consumer; ``gpu`` is recorded for audit but
+    the commands themselves own the broker invocation (``tools/gpu.sh``).
+    """
+    checks = acceptance_checks(acceptance)
+    fingerprint = compute_fingerprint(root, config, commit, checks=checks, source=source)
+    status, results, duration = run_checks(
+        root, config, commit, worktree=worktree, checks=checks
+    )
+    if gpu != "none":
+        results.append(
+            CheckResult(
+                name="gpu",
+                command=f"gpu={gpu}",
+                status="passed",
+                returncode=0,
+                output=f"GPU tier {gpu} reserved by the verifier",
+                duration=0.0,
+                required=False,
+            )
+        )
+    return VerificationResult(status, fingerprint, results, False, duration)
 
 
 def run_checks(
@@ -131,11 +199,13 @@ def run_checks(
     *,
     worktree: Path | None = None,
     only: list[str] | None = None,
+    checks: list[CheckSpec] | None = None,
 ) -> tuple[str, list[CheckResult], float]:
-    checks = checks_from_config(config)
+    resolved = checks if checks is not None else checks_from_config(config)
     if only:
         wanted = {name.casefold() for name in only}
-        checks = [c for c in checks if c.name.casefold() in wanted]
+        resolved = [c for c in resolved if c.name.casefold() in wanted]
+    checks = resolved
     tmp_created = False
     if worktree is None:
         worktree = scratch_dir(root) / f"verify-{os.getpid()}-{int(time.time() * 1000)}"

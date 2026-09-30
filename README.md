@@ -23,6 +23,7 @@ Start here: **[docs/README.md](./docs/README.md)**
   [Conflict engine](./docs/conflict-engine.md) · [Local plane](./docs/local-plane.md) ·
   [**Local implementation**](./docs/implementation.md) ·
   [**Agent integration**](./docs/agents.md) ·
+  [Orchestration](./docs/orchestration.md) ·
   [Remote plane](./docs/remote-plane.md) · [Review & submission](./docs/review-workflow.md) ·
   [Operations](./docs/operations.md) · [Roadmap & risks](./docs/roadmap.md) ·
   [Prior art & open questions](./docs/prior-art.md)
@@ -53,12 +54,15 @@ combined result to a human as one uncommitted draft on the local main branch.
 ./bin/intergent review --reject    # discard the draft and restore main
 ```
 
-Six actions cover the whole lifecycle: `start`, `declare`, `commit`, `handoff`,
-`review`, `status` (plus `mcp`). `declare` also does `--dry-run` checks,
-`--renew`/`--release` leases, and `--decide` conflict resolution;
-`commit --sync` rebases; `status --health/--simulate/--gc` covers the old
-`debug` group. Agents get exactly **one** tool (MCP and pi) whose `action` is
-one of these verbs. See [docs/implementation.md](./docs/implementation.md).
+Eight actions cover the whole lifecycle: `start`, `declare`, `commit`, `handoff`,
+`integrate`, `report`, `review`, `status` (plus `mcp`). `declare` also does
+`--dry-run` checks, `--renew`/`--release` leases, and `--decide` conflict
+resolution; `commit --sync` rebases; `status --health/--simulate/--gc` covers
+the old `debug` group. Campaign coordinators add `start --no-unit`, `integrate`
+(land a verified candidate on a feature branch), and `report`; see
+[docs/orchestration.md](./docs/orchestration.md). Agents get exactly **one**
+tool (MCP and pi) whose `action` is one of these verbs. See
+[docs/implementation.md](./docs/implementation.md).
 
 Agents may instead drive the same service over MCP: `./bin/intergent mcp`.
 See [docs/implementation.md](./docs/implementation.md) for the full CLI/MCP

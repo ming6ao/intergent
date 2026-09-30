@@ -79,6 +79,22 @@ class SkillPackageTests(unittest.TestCase):
         self.assertNotIn('"verify"', text)
         self.assertIn('"handoff"', text)
 
+    def test_campaign_actions_are_in_lockstep(self):
+        # `integrate` and `report` are agent actions (orchestration §6.3).
+        names = [a.name for a in surface.agent_actions()]
+        self.assertIn("integrate", names)
+        self.assertIn("report", names)
+        self.assertNotIn("review", names)
+        text = PI_EXTENSION.read_text(encoding="utf-8")
+        match = re.search(r"IG_ACTIONS\s*=\s*\[(.*?)\]\s*as const", text, re.DOTALL)
+        self.assertIsNotNone(match)
+        self.assertEqual(re.findall(r'"([a-z_]+)"', match.group(1)), names)
+        # The skill documents the campaign additions.
+        skill = SKILL.read_text(encoding="utf-8")
+        self.assertIn("`integrate`", skill)
+        self.assertIn("`report`", skill)
+        self.assertIn("--no-unit", skill)
+
 
 if __name__ == "__main__":
     unittest.main()

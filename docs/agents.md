@@ -119,7 +119,10 @@ The tools/skill enforce this contract:
    - `queued` → do other work or `declare --renew` and wait, then `commit --sync`;
    - `needs_decision` → **stop and ask the human** (wait / redesign / override).
 3. `commit` → `handoff`. `handoff` verifies the exact commits, trial-merges the
-   wave, and stages an **uncommitted draft** on main.
+   wave, and stages an **uncommitted draft** on main. In a **campaign**, the
+   coordinator instead drives `integrate`: a verified candidate is merged onto
+   the feature branch with one `--no-ff` merge commit per node, and `report`
+   writes the campaign report. See [Orchestration](./orchestration.md).
 4. Report the draft to the human, including its `open_command` so they can
    inspect the main worktree (VS Code by default), then stop.
 5. **Never approve or land.** `review` is human-only; the MCP schema omits it.
@@ -130,10 +133,10 @@ The tools/skill enforce this contract:
 
 `intergent mcp` speaks newline-delimited JSON-RPC over stdio and exposes a
 **single** tool, `ig`, with an `action` enum (`start`, `status`, `declare`,
-`commit`, `handoff`). It is generated from `intergent/surface.py`, the same
-module the CLI renders, so the two surfaces cannot drift. `unit` is optional on
-hot-loop calls; the server resolves it from its cwd. Approval (`review`) is
-human-only and never exposed.
+`commit`, `handoff`, `integrate`, `report`). It is generated from
+`intergent/surface.py`, the same module the CLI renders, so the two surfaces
+cannot drift. `unit` is optional on hot-loop calls; the server resolves it from
+its cwd. Approval (`review`) is human-only and never exposed.
 
 ## Multiple sessions at once
 
@@ -150,7 +153,10 @@ intergent review --approve  # commit it on main + clean up
 ```
 
 `agent start`-style process supervision, tmux attachment, and background
-sessions from the design are not implemented yet; today you launch each agent in
-its unit worktree yourself.
+sessions from the design are not implemented in the plain local plane; a human
+launches each agent in its unit worktree. Campaign orchestration *does* spawn
+one-shot planner/worker/verifier subagents as child processes of the
+coordinator (see [Orchestration](./orchestration.md)); they are not steerable
+RPC workers and a coordinator crash kills them rather than detaching them.
 
 Prev: [Local implementation](./implementation.md) · Next: [Remote plane](./remote-plane.md)
