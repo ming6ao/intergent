@@ -196,8 +196,4 @@ def _combine_output(stdout: str | None, stderr: str | None) -> str:
 
 
 def _cleanup_worktree(root: Path, worktree: Path) -> None:
-    gitutil.remove_worktree(root, worktree, force=True)
-    from .util import rmtree
-
-    rmtree(worktree)
-    gitutil.prune_worktrees(root)
+    gitutil.cleanup_worktree(root, worktree)

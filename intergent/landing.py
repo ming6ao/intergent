@@ -26,7 +26,6 @@ from .util import (
     IntergentError,
     editor_command,
     now,
-    rmtree,
     scratch_dir,
     worktrees_dir,
 )
@@ -77,8 +76,9 @@ def main_worktree(root: Path, branch: str) -> tuple[Path, bool]:
     if entry is not None:
         return entry.path, False
     path = worktrees_dir(root) / "_integration"
-    if path.exists():
-        gitutil.remove_worktree(root, path, force=True)
+    # Clear any leftover directory *and* stale metadata before (re)creating it,
+    # otherwise ``git worktree add`` fails with "already registered".
+    gitutil.cleanup_worktree(root, path)
     gitutil.add_worktree(root, path, branch=branch, base=branch, new_branch=False)
     return path, True
 
@@ -170,8 +170,7 @@ def _stage_draft(
     blocked: list[dict[str, Any]] = []
     failed: list[tuple[dict[str, Any], list[CheckResult]]] = []
     try:
-        if scratch.exists():
-            gitutil.remove_worktree(root, scratch, force=True)
+        gitutil.cleanup_worktree(root, scratch)
         gitutil.add_detached_worktree(root, scratch, base_commit)
         for candidate in ordered:
             cid = int(candidate["id"])
@@ -332,9 +331,7 @@ def _stage_draft(
             )
         return results
     finally:
-        gitutil.remove_worktree(root, scratch, force=True)
-        rmtree(scratch)
-        gitutil.prune_worktrees(root)
+        gitutil.cleanup_worktree(root, scratch)
 
 
 # ---------------------------------------------------------------------------
@@ -467,13 +464,10 @@ def _cleanup_unit(store: Store, root: Path, candidate: dict[str, Any]) -> None:
     if not unit:
         return
     path = Path(unit["worktree"])
-    gitutil.remove_worktree(root, path, force=True)
-    rmtree(path)
     branch = unit["branch"]
     # The approved squash commit on main supersedes the unit branch, so drop the
     # ref as well; otherwise every landed unit leaks an `ig/<unit>` branch.
-    if branch:
-        gitutil.delete_branch(root, branch)
+    gitutil.cleanup_worktree(root, path, branch=branch)
     store.event("unit.cleaned", unit_id=int(unit["id"]), data={"branch": branch})
 
 

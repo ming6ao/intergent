@@ -1,5 +1,6 @@
 """End-to-end tests for the local plane against real git repositories."""
 
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -349,6 +350,39 @@ class ReleaseTests(RepoCase):
         result = self.svc.gc()
         self.assertIn(alpha["branch"], result["pruned_branches"])
         self.assertFalse(self.branch_exists(alpha["branch"]))
+
+    def test_gc_prunes_branch_when_worktree_dir_removed_by_hand(self):
+        # Deleting the worktree directory without `git worktree remove` leaves
+        # stale metadata that makes `git branch -D` fail with "used by
+        # worktree".  gc must prune it first instead of silently leaking the
+        # branch.
+        alpha, _ = self.prepare("alpha")
+        self.svc.handoff()
+        self.svc.finalize(approve=True, cleanup=False)
+        shutil.rmtree(alpha["worktree"])
+        self.assertTrue(self.branch_exists(alpha["branch"]))
+
+        result = self.svc.gc()
+
+        self.assertIn(alpha["branch"], result["pruned_branches"])
+        self.assertFalse(self.branch_exists(alpha["branch"]))
+        worktrees = subprocess.run(
+            ["git", "worktree", "list", "--porcelain"],
+            cwd=self.root,
+            capture_output=True,
+            text=True,
+        ).stdout
+        self.assertNotIn(alpha["worktree"], worktrees)
+
+    def test_approve_cleans_up_after_worktree_dir_removed_by_hand(self):
+        alpha, _ = self.prepare("alpha")
+        shutil.rmtree(alpha["worktree"])
+
+        self.svc.handoff()
+        self.svc.finalize(approve=True)
+
+        self.assertFalse(self.branch_exists(alpha["branch"]))
+        self.assertFalse(Path(alpha["worktree"]).exists())
 
 
 class StateMigrationTests(RepoCase):

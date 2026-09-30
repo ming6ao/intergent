@@ -240,7 +240,7 @@ class Service:
                 agent_id=agent_id,
             )
         except Exception:
-            gitutil.remove_worktree(self.root, worktree, force=True)
+            gitutil.cleanup_worktree(self.root, worktree)
             raise
         self.store.conn.commit()
         self.store.event("unit.created", unit_id=unit_id, data={"branch": branch, "kind": kind})
@@ -694,33 +694,33 @@ class Service:
         }
 
     def gc(self) -> dict[str, Any]:
-        from .util import rmtree
-
         removed = []
         pruned_branches = []
         for unit in self.store.list_units():
-            if unit["state"] in {"landed", "closed"}:
-                path = Path(unit["worktree"])
-                if path.exists():
-                    gitutil.remove_worktree(self.root, path, force=True)
-                    rmtree(path)
-                    removed.append(unit["name"])
-                # Landed content is already on main as a squashed commit, so its
-                # `ig/<unit>` branch is disposable; otherwise one branch leaks
-                # per landed unit.  Closed units may hold unmerged work, so keep
-                # their branches.
-                branch = unit.get("branch")
-                if (
-                    unit["state"] == "landed"
-                    and branch
-                    and gitutil.branch_exists(self.root, branch)
-                ):
-                    gitutil.delete_branch(self.root, branch)
-                    pruned_branches.append(branch)
+            if unit["state"] not in {"landed", "closed"}:
+                continue
+            path = Path(unit["worktree"])
+            branch = unit.get("branch")
+            registered = bool(branch) and gitutil.worktree_for_branch(self.root, branch) is not None
+            if path.exists() or registered:
+                removed.append(unit["name"])
+            # Landed content is already on main as a squashed commit, so its
+            # `ig/<unit>` branch is disposable; otherwise one branch leaks per
+            # landed unit.  Closed units may hold unmerged work, so keep their
+            # branches.  ``cleanup_worktree`` prunes stale metadata before
+            # deleting the branch, so a hand-deleted worktree no longer blocks it.
+            drop_branch = unit["state"] == "landed" and branch
+            branch_existed = bool(drop_branch) and gitutil.branch_exists(self.root, branch)
+            gitutil.cleanup_worktree(
+                self.root, path, branch=branch if drop_branch else None
+            )
+            if branch_existed:
+                pruned_branches.append(branch)
         gitutil.prune_worktrees(self.root)
+        from .util import rmtree
+
         scratch = self.root / ".intergent" / "scratch"
-        if scratch.exists():
-            rmtree(scratch)
+        rmtree(scratch)
         self.store.conn.commit()
         return {"removed_worktrees": removed, "pruned_branches": pruned_branches}
 

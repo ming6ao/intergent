@@ -207,11 +207,7 @@ def simulate(
         except IntergentError:
             wave.check_status = "error"
         finally:
-            gitutil.remove_worktree(root, path, force=True)
-            from .util import rmtree
-
-            rmtree(path)
-            gitutil.prune_worktrees(root)
+            gitutil.cleanup_worktree(root, path)
     return {
         "candidate_count": len(candidates),
         "waves": [w.to_dict() for w in waves],

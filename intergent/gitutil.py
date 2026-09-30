@@ -13,7 +13,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from .util import IntergentError
+from .util import IntergentError, rmtree
 
 
 @dataclass
@@ -182,11 +182,19 @@ def add_detached_worktree(repo: str | os.PathLike[str], path: Path, commit: str)
 
 
 def remove_worktree(repo: str | os.PathLike[str], path: Path, *, force: bool = True) -> None:
-    args = ["worktree", "remove"]
-    if force:
-        args.append("--force")
-    args.append(str(path))
-    git(repo, *args, check=False)
+    path = Path(path)
+    if path.exists():
+        args = ["worktree", "remove"]
+        if force:
+            args.append("--force")
+        args.append(str(path))
+        if git(repo, *args, check=False).ok:
+            return
+    # Either the directory is already gone (deleted by hand or by an
+    # interrupted run) or ``git worktree remove`` could not handle it.  Without
+    # a prune, the stale administrative entry keeps the branch marked as
+    # "used by worktree" and blocks ``git branch -D``.
+    prune_worktrees(repo)
 
 
 def prune_worktrees(repo: str | os.PathLike[str]) -> None:
@@ -196,6 +204,29 @@ def prune_worktrees(repo: str | os.PathLike[str]) -> None:
 def delete_branch(repo: str | os.PathLike[str], branch: str, *, force: bool = True) -> None:
     flag = "-D" if force else "-d"
     git(repo, "branch", flag, branch, check=False)
+
+
+def cleanup_worktree(
+    repo: str | os.PathLike[str],
+    path: Path,
+    *,
+    branch: str | None = None,
+    force: bool = True,
+) -> None:
+    """Tear down a worktree, its directory, and (optionally) its branch.
+
+    Safe to call when the worktree directory has already been deleted: the
+    stale metadata is pruned before the branch is dropped, so
+    ``git branch -D`` never fails with "used by worktree".
+    """
+    path = Path(path)
+    remove_worktree(repo, path, force=force)
+    rmtree(path)
+    # ``remove_worktree`` prunes on failure, but a directory removed here could
+    # still have left metadata behind; prune once more before touching the ref.
+    prune_worktrees(repo)
+    if branch:
+        delete_branch(repo, branch, force=force)
 
 
 @dataclass
