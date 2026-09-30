@@ -1,133 +1,96 @@
 # Using Intergent inside a coding agent
 
-Intergent integrates with a coding agent (Claude Code, pi, Codex, Cursor, …)
-the same way it integrates with a human: the agent drives the `intergent` CLI or
-the MCP server, and the human keeps approval and landing.
+Intergent is driven by a **coordinator** session that spawns planner, worker,
+and verifier subagents around a campaign DAG; the `intergent` engine owns
+isolation (worktrees), scope leases, verification, and integration. This page
+covers wiring an agent to the engine. The workflow itself lives in the
+[`SKILL.md`](../SKILL.md) and its specification in
+[Orchestration](./orchestration.md).
 
 ```
 ┌──────────────────────────┐        ┌──────────────────────────────┐
-│  coding agent session    │        │  Intergent local plane       │
+│  coordinator session     │        │  Intergent local plane       │
 │  (Claude Code / pi / …)  │──CLI──►│  service (single state owner)│
-│  cwd = its unit worktree │◄─MCP───│  git worktrees · leases · DB │
-└──────────────────────────┘        └──────────────┬───────────────┘
-                                                   │ user approves
-                                                   ▼
-                                            local main branch
+│                          │◄─MCP───│  worktrees · leases · DB     │
+└───────────┬──────────────┘        └──────────────┬───────────────┘
+            │ spawns one-shot                       │ verify + integrate
+            ▼                                       ▼
+   planner · worker(s) · verifier            feature branch (per campaign)
 ```
-
-## The one rule that makes it work
-
-**Run the agent inside its own unit worktree.** Intergent gives each session a
-`git worktree` + branch (`ig/<session>/<unit>`, or `ig/<unit>` when the session
-defaults to the unit name). The agent's working directory
-must be that worktree, so its edits, commits, and the tools' cwd all agree.
-The CLI and MCP server resolve the unit from the cwd (`intergent workspace
-current`), so no `--unit` bookkeeping is needed.
-
-```bash
-intergent start --agent claude-code          # idempotent: plane + a unit for cwd
-cd "$(intergent --json start | python3 -c 'import sys,json;print(json.load(sys.stdin)["worktree"])')"
-# now launch the agent here
-```
-
-`start` (alias `init`) is safe to re-run; the pi extension calls it automatically
-when a prompt tags Intergent and rebinds its tools to the returned worktree.
-
-This is exactly the design's "one tmux pane / session per unit". Different
-sessions get different worktrees; scope leases stop them authoring conflicts.
-
-## Install as a skill (`npx skills`)
-
-This repository is a self-contained Agent Skill: the root
-[`SKILL.md`](../SKILL.md) describes the workflow and the repo ships the CLI it
-calls (`bin/intergent` + the `intergent/` Python package). Install it globally
-for the agents you use:
-
-```bash
-npx skills add ming6ao/intergent -g -y -a claude-code -a pi
-```
-
-Target the agent(s) explicitly (`-a`) rather than relying on detection: with
-`-y` the `skills` CLI also counts PromptScript, which is project-only, and prints
-a ``PromptScript does not support global skill installation`` failure. Naming
-the agents skips that path and installs cleanly.
-
-Because the whole repo is installed as the skill, `bin/intergent` and the
-`intergent/` package are present in the installed directory. The skill runs the
-bundled CLI with `python3 <skill-dir>/bin/intergent`, so no separate
-`pip install` is required.
-
-> Discovery note: the `skills` CLI returns the root `SKILL.md` immediately and
-> will not descend into subdirectories unless you pass `--full-depth`. Keep the
-> root [`SKILL.md`](../SKILL.md) as the single source of truth for the skill.
 
 ## Adapters
 
 | Agent | Mechanism | Setup |
 |---|---|---|
-| **Claude Code** | MCP (native) + bundled skill | [`integrations/claude/`](../integrations/claude/README.md) |
-| **pi** | extension (no MCP) + bundled skill | [`integrations/pi/`](../integrations/pi/README.md) |
+| **pi** | native tools + bundled skill | [`integrations/pi/`](../integrations/pi/README.md) |
+| **Claude Code** | MCP + bundled skill | [`integrations/claude/`](../integrations/claude/README.md) |
 | **Any CLI agent** | the bundled `intergent` CLI via the skill | [`SKILL.md`](../SKILL.md) |
 | **MCP-capable agents** | `intergent mcp` (stdio) | this doc |
+
+### pi
+
+pi has no MCP. The repository is a **pi package** that ships the `ig` and
+`campaign` tools, the skill, and the CLI:
+
+```bash
+pi install ./                                       # local checkout
+# pi install git:github.com/ming6ao/intergent
+# pi install npm:intergent
+INTERGENT_AUTO_BOOTSTRAP=0 pi                       # launch the coordinator
+```
 
 ### Claude Code
 
 ```bash
 npx skills add ming6ao/intergent -g -y -a claude-code
 cp integrations/claude/.mcp.json /path/to/repo/   # project MCP server
-cd <unit-worktree> && claude
+claude
 ```
 
-Tools are then available as a single `ig` MCP call. See
-[integrations/claude/README.md](../integrations/claude/README.md).
+Tools are then available as a single `ig` MCP call.
 
-### pi
+### Skill only (`npx skills`)
 
-pi intentionally has no MCP. Install the extension that exposes the `ig` tool,
-and/or the bundled skill:
+The repository is also a self-contained Agent Skill: the root `SKILL.md`
+describes the workflow and the repo bundles the CLI it calls (`bin/intergent` +
+the `intergent/` package). Install it for any Agent Skills harness:
 
 ```bash
-npx skills add ming6ao/intergent -g -y -a pi
-cp integrations/pi/intergent.ts ~/.pi/agent/extensions/intergent.ts
-cd <unit-worktree> && pi
+npx skills add ming6ao/intergent -g -y -a claude-code -a pi
 ```
 
-Tag Intergent in a prompt (e.g. `intergent: add a scope check to Login`) and the
-session bootstraps a unit and injects the lifecycle. See
-[integrations/pi/README.md](../integrations/pi/README.md).
+Target the agent(s) explicitly (`-a`); with `-y` the skills CLI also counts
+PromptScript, which is project-only and fails global installation. The skill
+runs the bundled CLI with `python3 <skill-dir>/bin/intergent`, so no separate
+`pip install` is required.
 
-### Generic CLI agent
+## Agent roles
 
-Point the agent at the root [`SKILL.md`](../SKILL.md) (Agent Skills standard,
-readable by Claude Code, pi, Codex, Cursor, and other harnesses). If the agent
-only reads a repository instruction file, add the workflow to `AGENTS.md` /
-`CLAUDE.md`:
+| Role | Bound to a unit? | Contract |
+|---|---|---|
+| **Coordinator** | no | owns the plan (`dag.json`), spawns agents, calls `integrate` after a pass, writes the report |
+| **Planner** | no | reads the design, writes `dag.json` |
+| **Worker** | yes (its worktree) | `declare` → edit → acceptance (CPU) → `commit` |
+| **Verifier** | no (read-only) | runs acceptance (T0 then `tools/gpu.sh`), returns a verdict, never edits |
 
-```markdown
-This repo uses Intergent. Before editing, run `intergent declare` in your unit
-worktree. Never run `intergent review` (approval is human-only); finish with
-`intergent handoff` and report the draft.
-```
+### Worker contract
 
-## Agent contract
+1. `intergent status --short` must succeed — you are in your unit worktree.
+2. `declare` before editing, scoping every file/symbol.
+   - `granted` → edit.
+   - `queued` → **exit immediately** and report the blocker; the coordinator
+     serializes the node or re-plans. Never `override`.
+   - `needs_decision` → stop; the human decides.
+3. Run the node's acceptance commands (CPU only; never the GPU).
+4. `commit` and stop. Workers never run `handoff`, `integrate`, `review`, or
+   `git merge`.
 
-The tools/skill enforce this contract:
+### Coordinator
 
-1. `status --short` must succeed — you are in a unit worktree.
-2. `declare` before editing. Handle the response:
-   - `granted` → edit;
-   - `queued` → do other work or `declare --renew` and wait, then `commit --sync`;
-   - `needs_decision` → **stop and ask the human** (wait / redesign / override).
-3. `commit` → `handoff`. `handoff` verifies the exact commits, trial-merges the
-   wave, and stages an **uncommitted draft** on main. In a **campaign**, the
-   coordinator instead drives `integrate`: a verified candidate is merged onto
-   the feature branch with one `--no-ff` merge commit per node, and `report`
-   writes the campaign report. See [Orchestration](./orchestration.md).
-4. Report the draft to the human, including its `open_command` so they can
-   inspect the main worktree (VS Code by default), then stop.
-5. **Never approve or land.** `review` is human-only; the MCP schema omits it.
-   In pi, the human uses `/ig-approve` and `/ig-reject`, which show the draft and
-   block on a confirmation. Never claim a merge unless the tool reports success.
+Use the `campaign` tool in pi, or the CLI: `start --no-unit --main <feature>
+--base <base>`, then `spawn`/`verify`/`integrate` per ready node, a final
+idempotent `integrate` sweep, and `report`. See
+[Orchestration](./orchestration.md).
 
 ## MCP surface
 
@@ -138,25 +101,12 @@ The tools/skill enforce this contract:
 cannot drift. `unit` is optional on hot-loop calls; the server resolves it from
 its cwd. Approval (`review`) is human-only and never exposed.
 
-## Multiple sessions at once
+## Process supervision
 
-```bash
-# session A
-intergent start --name payments --agent claude-code
-# session B
-intergent start --name docs --agent pi
-
-# each agent finishes with `handoff`; the human then reviews the draft
-intergent status
-intergent review            # show the staged draft
-intergent review --approve  # commit it on main + clean up
-```
-
-`agent start`-style process supervision, tmux attachment, and background
-sessions from the design are not implemented in the plain local plane; a human
-launches each agent in its unit worktree. Campaign orchestration *does* spawn
-one-shot planner/worker/verifier subagents as child processes of the
-coordinator (see [Orchestration](./orchestration.md)); they are not steerable
-RPC workers and a coordinator crash kills them rather than detaching them.
+Campaign orchestration spawns one-shot subagents as **child processes of the
+coordinator**; they are not detached and are not steerable. A coordinator crash
+kills them, and a resumed campaign resets any `running` node to `pending`.
+`agent start`-style supervision, tmux attachment, and long-lived background
+sessions from the design are not implemented.
 
 Prev: [Local implementation](./implementation.md) · Next: [Remote plane](./remote-plane.md)

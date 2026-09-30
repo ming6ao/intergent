@@ -1,10 +1,12 @@
-"""Guards the repository-root Agent Skill package contract.
+"""Guards the repository packaging contract: the Agent Skill and the pi package.
 
-The repo is installable with `npx skills add ming6ao/intergent -g -y -a claude-code`
-which means the root must contain a valid ``SKILL.md`` and the CLI it references
-must be bundled. These tests fail if that structure regresses.
+The repo is installable both with
+``npx skills add ming6ao/intergent -g -y -a claude-code`` (root ``SKILL.md`` +
+bundled CLI) and with ``pi install ./`` (a pi package with a ``package.json``
+manifest). These tests fail if either structure regresses.
 """
 
+import json
 import re
 import sys
 import unittest
@@ -12,7 +14,11 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SKILL = REPO_ROOT / "SKILL.md"
-PI_EXTENSION = REPO_ROOT / "integrations" / "pi" / "intergent.ts"
+PACKAGE = REPO_ROOT / "package.json"
+PI_DIR = REPO_ROOT / "integrations" / "pi"
+PI_EXTENSION = PI_DIR / "intergent.ts"
+PI_CAMPAIGN = PI_DIR / "campaign.ts"
+PI_COMMON = PI_DIR / "common.ts"
 
 sys.path.insert(0, str(REPO_ROOT))
 from intergent import surface  # noqa: E402
@@ -60,13 +66,35 @@ class SkillPackageTests(unittest.TestCase):
         self.assertEqual(data.get("disable-model-invocation"), "true")
         self.assertNotIn("repository has .intergent/config.json", data.get("description", ""))
 
-    def test_pi_extension_recovers_from_removed_worktree(self):
-        # A session can outlive its unit worktree (it lands and is cleaned up).
-        # The extension must drop the stale binding and re-bootstrap instead of
-        # running every `ig` call in a deleted directory.
+    def test_pi_extension_is_a_thin_forwarder(self):
+        # There is no single-agent bootstrap: the extension only registers the
+        # `ig` tool and forwards to the CLI via the shared helpers.
         text = PI_EXTENSION.read_text(encoding="utf-8")
-        self.assertIn("bindingIsStale(unitCwd, existsSync)", text)
-        self.assertIn("await bootstrap(ctx)", text)
+        self.assertIn('from "./common.ts"', text)
+        self.assertIn("runIg(pi, ctx", text)
+        self.assertNotIn("bindingIsStale", text)
+        self.assertNotIn("bootstrap(ctx)", text)
+        self.assertNotIn("before_agent_start", text)
+
+    def test_pi_package_manifest(self):
+        self.assertTrue(PACKAGE.is_file(), "package.json is required for `pi install`")
+        manifest = json.loads(PACKAGE.read_text(encoding="utf-8"))
+        self.assertIn("pi-package", manifest.get("keywords", []))
+        pi = manifest.get("pi", {})
+        extensions = pi.get("extensions", [])
+        self.assertIn("./integrations/pi/intergent.ts", extensions)
+        self.assertIn("./integrations/pi/campaign.ts", extensions)
+        self.assertIn(".", pi.get("skills", []))
+        # The shared helpers ship with the package and are imported by both tools.
+        self.assertTrue(PI_COMMON.is_file())
+        self.assertIn('from "./common.ts"', PI_CAMPAIGN.read_text(encoding="utf-8"))
+
+    def test_package_ships_the_bundled_cli(self):
+        manifest = json.loads(PACKAGE.read_text(encoding="utf-8"))
+        files = manifest.get("files", [])
+        self.assertIn("bin/", files)
+        self.assertIn("intergent/", files)
+        self.assertIn("SKILL.md", files)
 
     def test_retired_actions_are_gone(self):
         # `submit` and `verify` were folded into `handoff` + `review`.

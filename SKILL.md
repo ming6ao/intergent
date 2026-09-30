@@ -1,6 +1,6 @@
 ---
 name: intergent
-description: 'Coordinate this session with other coding agents on one repository using the Intergent local plane (git worktree per session, declared scope leases, fingerprint-pinned verification, human-approved handoff). Use ONLY when the user explicitly invokes this skill: runs `/skill:intergent`, or names it ("intergent"/"ig") and asks to coordinate parallel agents, declare scopes, or land a wave. Do NOT auto-load it merely because a repository contains .intergent/config.json. Bundles the intergent CLI. Not for read-only research.'
+description: 'Deliver a design document as landed work on a feature branch using the Intergent campaign orchestrator: a coordinator turns the design into a DAG of planner/worker/verifier subagents, each worker isolated by a git worktree and scope leases, each candidate verified against a fingerprint before integration. Use ONLY when the user explicitly invokes this skill: runs `/skill:intergent`, or names it ("intergent"/"ig") and asks to run a campaign, coordinate parallel agents, or land a feature branch. Do NOT auto-load it merely because a repository contains .intergent/config.json. Bundles the intergent CLI. Not for read-only research.'
 license: Apache-2.0
 disable-model-invocation: true
 metadata:
@@ -10,53 +10,31 @@ metadata:
 
 # Intergent
 
-Intergent lets several coding-agent sessions work the same repository in
-parallel without authoring conflicting changes. This session owns one **unit**
-(git worktree + branch). Work reaches the local main branch only through a
-**handoff** that a human approves.
+Intergent delivers a design document as a set of components on a **feature
+branch**. A top-level **coordinator** turns the design into a machine-readable
+DAG (`dag.json`) and drives planner, worker, and verifier subagents. The
+`intergent` engine owns isolation, leases, verification, and integration.
 
-This skill bundles the Intergent CLI. Requires `git` and Python 3.11+.
-
-## The lifecycle in one picture
-
-```
-declare ──► edit ──► commit ──► handoff          (agent)
-                                   │
-                          uncommitted draft on main
-                                   │
-                    review --approve / --reject   (human)
+```text
+COORDINATOR (this session)
+ ├── PLANNER   reads the design, writes dag.json
+ ├── WORKER_*  one-shot per ready DAG node: its own worktree + lease
+ │               declare -> edit -> acceptance (CPU) -> commit
+ └── VERIFIER  read-only per candidate: T0 CPU then tools/gpu.sh
 ```
 
-- Before the handoff the agent owns the worktree.
-- The handoff is the boundary: it verifies the work and stages one uncommitted
-  draft on main.
-- After the handoff the human owns the decision: approve (commit + clean up) or
-  reject (restore main).
-
-## The action surface
-
-There are **eight** actions, shared by the CLI, MCP, and the pi tool:
-
-| Action | Purpose |
-|---|---|
-| `start` | bootstrap the plane + a unit for this directory (idempotent; alias `init`); `--no-unit` bootstraps the plane only, for a campaign coordinator |
-| `declare` | declare scopes and acquire leases; `--dry-run` checks, `--renew`/`--release` manage leases, `--decide` resolves a conflict |
-| `commit` | commit the worktree and register the candidate; `--sync` rebases first |
-| `handoff` | verify + trial-merge the prepared candidates into an uncommitted draft on main |
-| `integrate` | (campaign) merge a verified candidate onto the feature branch, `--node`, `--acceptance`, `--check-only`, `--cleanup`; refuses the plane's default branch |
-| `report` | (campaign) write the deterministic report skeleton, plus a `--narrative` section |
-| `review` | (human) show the pending handoff; `--approve` commits it and cleans up, `--reject` restores main |
-| `status` | units, candidates, leases, waves; `--health`, `--simulate`, `--gc`, `--short`, `--unit U` |
-
-Agents can call `start`, `declare`, `commit`, `handoff`, `integrate`, `report`,
-and `status`. `review` and its approval flags are human-only. In a campaign, a
-top-level **coordinator** calls `integrate --node <id>` after a `pass` verdict
-instead of `handoff`; see [Orchestration](./docs/orchestration.md).
+- The DAG is the **only schedule** — there is no phase/wave engine in the
+  scheduler. `ready(n) := every d in n.depends_on is done`, where `done` means
+  verified **and integrated** onto the feature branch.
+- No two workers write the same file: each declares scope leases before editing.
+- Only the verifier may use the GPU. Workers never touch it.
+- Everything is reconstructable from `.intergent/` + git after a crash.
 
 ## Locate the bundled CLI
 
 The CLI lives at `bin/intergent` **relative to the directory containing this
-SKILL.md**. Resolve it to an absolute path before running, e.g.:
+SKILL.md** (the pi package also resolves it automatically). Resolve it before
+running:
 
 ```bash
 # $SKILL_DIR is the folder containing this SKILL.md
@@ -64,116 +42,89 @@ IG="$SKILL_DIR/bin/intergent"   # absolute path to the bundled CLI
 python3 "$IG" --version
 ```
 
-Always invoke it as `python3 "$IG" ...` (or an array). Do **not** wrap a
-command string in quotes — `IG="python3 $SKILL_DIR/bin/intergent"; "$IG" ...`
-is treated as one executable name and fails with `No such file or directory`.
-
-If `intergent` is already installed on `PATH`, you may use it directly instead:
-
-```bash
-command -v intergent && intergent --version
-```
-
-Add `--json` for parseable output.
+Always invoke it as `python3 "$IG" ...`. Do **not** wrap the command string in
+quotes. If `intergent` is already on `PATH`, use it directly. Add `--json` for
+parseable output.
 
 ## Hard rules
 
-1. **Work inside your unit worktree.** Run `intergent status --short`. If it
-   fails, you are not in a unit worktree — stop and tell the human to launch
-   you inside one (see Setup). Do not edit the main working tree.
-2. **Declare before you edit.** No file edits before `intergent declare`
-   returns `granted`. For read-only work, skip Intergent.
-3. **Never approve or land.** `review` is a human action. Your last step is
-   `handoff`; then report the draft (including its `open_command`) and stop.
-   Never claim a merge happened unless the tool reports success.
-4. **Never override a conflict** unless the human explicitly asks. If a
-   declaration returns `needs_decision`, stop and surface the options.
-5. **Heartbeat** during long tasks (`intergent declare --renew`) so your lease
-   does not expire.
+1. **Workers run inside their unit worktree.** `intergent status --short` must
+   succeed; otherwise stop. Never edit the main working tree.
+2. **Declare before editing.** No edits before `intergent declare` returns
+   `granted`.
+3. **A worker's last step is `commit`.** Workers never run `handoff`,
+   `integrate`, `review`, or `git merge`. The coordinator owns verification and
+   integration.
+4. **Never `override` a conflict.** If a declaration returns `queued`, exit and
+   report the blocker; if it returns `needs_decision`, stop and surface the
+   options to the human.
+5. **The GPU is the verifier's.** T0 CPU is the inner loop; GPU acceptance goes
+   through `tools/gpu.sh --tier <T1|T2> -- <command>`.
 
-## Setup (only when not already in a unit worktree)
+## Campaign loop (the coordinator)
 
-A human (or you, then ask them to relaunch) runs:
+Use the `campaign` tool in pi, or the CLI directly:
 
 ```bash
-WT=$(intergent --json start --agent <agent-name> | python3 -c 'import sys,json;print(json.load(sys.stdin)["worktree"])')
-cd "$WT"
+# 1. Create/verify the feature branch and run the planner -> dag.json
+intergent start --no-unit --main feat/example --base main
+#    (in pi: campaign start with design/feature_branch/base)
+
+# 2. ready -> spawn each node whose dependencies are done
+intergent start --name w1 --base feat/example --kind worker
+#    worker declares, edits, runs acceptance, commits
+
+# 3. verify the latest prepared candidate (records a node verdict)
+intergent integrate --node w1 --check-only --acceptance "<cmd>" --gpu none
+
+# 4. land the verified candidate immediately, before spawning dependents
+intergent integrate --node w1
+
+# 5. final idempotent sweep, then report
+intergent integrate
+intergent report --narrative "what changed / risks"
 ```
 
-Then launch the agent **inside that directory**, so its cwd is the unit
-worktree. `start` is idempotent and is the only bootstrap command.
+The coordinator's own checkout is **not** an Intergent unit; bootstrap the plane
+with `--no-unit`. Promotion from the feature branch to the default branch is a
+human `git` step — `integrate` refuses the plane's recorded default branch.
 
-## Per-task workflow
+## Unit actions (used by workers and the coordinator)
+
+| Action | Purpose |
+|---|---|
+| `start` | bootstrap the plane; `--no-unit` for the coordinator's checkout; `--name N --base <feature>` creates a worker unit |
+| `status` | units, candidates, leases, waves; `--short`, `--unit U`, `--simulate`, `--health` |
+| `declare` | declare scopes and acquire leases; `--dry-run`, `--renew`, `--release`, `--decide` |
+| `commit` | commit the worktree and register the candidate; `--sync` rebases first |
+| `integrate` | merge a verified candidate onto the feature branch; `--node`, `--acceptance`, `--gpu`, `--check-only`, `--cleanup` |
+| `report` | write the deterministic campaign report; `--narrative` appends the coordinator's summary |
+
+`review` (human) and `handoff` (single-unit draft on main) belong to the
+non-campaign path and are **not** part of a campaign.
+
+## Worker workflow
 
 ```bash
-# 1. Declare the exact scopes you will touch. Prefer narrow symbol/file scopes.
 intergent --json declare --operation modify \
-  --scope "symbol:src/login.py#Login.run" \
-  --scope "file:docs/auth.md"
-
-# 2. Edit files in this worktree only.
-
-# 3. Commit and register the candidate in one call.
+  --scope "symbol:src/login.py#Login.run" --scope "file:docs/auth.md"
+# ... edit only your worktree ...
 intergent commit -m "add scope check to Login" --summary "scope check"
-
-# 4. Hand off: verify + trial-merge into an uncommitted draft on main.
-intergent --json handoff
 ```
-
-Then **stop**. Report the draft — including its `open_command` (which opens the
-main worktree) — and let the human decide.
 
 `declare` responses:
 
 | status | Meaning | What to do |
 |---|---|---|
 | `granted` | Leases acquired | Proceed with edits |
-| `queued` | Another unit holds an overlapping scope (`position`, `blocker`, `eta_seconds`) | Do non-conflicting work, or `declare --renew` and wait; after the blocker releases, `commit --sync` and retry |
-| `needs_decision` | Destructive vs additive on an exact scope | **Stop** and ask the human to choose `wait`, `redesign`, or `override` |
+| `queued` | Another unit holds an overlapping scope | Exit and report the blocker; the coordinator serializes or re-plans |
+| `needs_decision` | Destructive vs additive on an exact scope | Stop; the human decides |
 
-## Scope syntax
+Scope syntax is `kind:key[=operation]`, e.g. `file:src/api/routes.py`,
+`symbol:src/api/routes.py#UserRouter.create`, `dir:src/api`, `config:deploy.timeout`,
+`schema:users.email`, `migration:0007_add_scope`, `api:GET /users/{id}`.
+Operations `add`/`extend`/`modify` are additive; `replace`/`remove`/`rename`/
+`migrate` are destructive and queue behind a holder.
 
-`kind:key[=operation]`, for example:
-
-- `file:src/api/routes.py`
-- `symbol:src/api/routes.py#UserRouter.create`
-- `dir:src/api`
-- `config:deploy.timeout`
-- `schema:users.email`
-- `migration:0007_add_scope`
-- `api:GET /users/{id}`
-
-Operations: `add`, `extend`, `modify` (additive) and `replace`, `remove`,
-`rename`, `migrate` (destructive). Destructive declarations of a scope another
-unit holds are queued or escalated — expect a wait.
-
-## Useful commands
-
-```bash
-intergent --json status                 # units, candidates, lease queue, waves
-intergent --json declare --dry-run --operation modify --scope file:x.py
-intergent --json declare --renew        # renew leases
-intergent --json declare --release      # release early (e.g. abandoning the task)
-intergent --json status --simulate      # plan waves over the combined tree
-intergent --json status --health        # git/plane health check
-intergent --json review                 # show the pending handoff (human)
-```
-
-## Human approval
-
-Agents never land. The human runs:
-
-```bash
-intergent status
-intergent review            # show the draft staged on main
-intergent review --approve  # commit it on main + clean up the unit worktrees
-intergent review --reject   # discard it and restore main
-```
-
-`--approve` removes the unit worktree and deletes its `ig/<unit>` branch once
-the approved squash is on main. `--approve --keep` retains the worktree and
-branch for inspection; `status --gc` prunes worktrees and landed-unit branches
-left over from earlier runs.
-
-Reference docs ship alongside this skill: `docs/agents.md`,
-`docs/implementation.md`, `docs/local-plane.md`.
+Full specification: [docs/orchestration.md](./docs/orchestration.md). CLI/MCP
+reference: [docs/implementation.md](./docs/implementation.md).

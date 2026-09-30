@@ -68,35 +68,43 @@ Agents may instead drive the same service over MCP: `./bin/intergent mcp`.
 See [docs/implementation.md](./docs/implementation.md) for the full CLI/MCP
 reference and the mapping from design concepts to code.
 
-### Use it inside Claude Code or pi
+### Orchestrate a campaign inside pi or Claude Code
 
-Launch the agent **inside its unit worktree** and let it call Intergent (pi
-bootstraps when a prompt tags Intergent; see [integrations/pi](./integrations/pi/README.md)):
+A **coordinator** session turns a design into landed work: it writes a DAG
+(`dag.json`), spawns one-shot workers (each in its own worktree + lease), and
+integrates each verified candidate onto the feature branch. See
+[docs/orchestration.md](./docs/orchestration.md).
 
-```bash
-./bin/intergent start --agent claude-code      # plane + a unit for this dir
-cd "$(./bin/intergent --json start | python3 -c 'import sys,json;print(json.load(sys.stdin)["worktree"])')"
-claude          # or: pi
-```
+- **pi** — the repository is a pi package shipping the `ig` and `campaign`
+  tools plus the skill:
 
-- **Claude Code** (MCP): [integrations/claude/](./integrations/claude/README.md)
-- **pi** (extension + skill, no MCP): [integrations/pi/](./integrations/pi/README.md)
-- Bundled skill: [`SKILL.md`](./SKILL.md)
-- Full guide: [docs/agents.md](./docs/agents.md)
+  ```bash
+  pi install ./                                  # or git:/npm: intergent
+  INTERGENT_AUTO_BOOTSTRAP=0 pi                  # launch the coordinator
+  ```
 
-Agents declare intent, commit, and hand off; the handoff boundary is owned by
-the human (`review --approve` / `--reject`). Approval is never exposed to the
-agent.
+- **Claude Code** (MCP): `cp integrations/claude/.mcp.json /path/to/repo/` then
+  install the skill with `npx skills add ming6ao/intergent -g -y -a claude-code`.
+  See [integrations/claude/](./integrations/claude/README.md).
+- **pi install** / **bundled skill**: [integrations/pi/](./integrations/pi/README.md),
+  [`SKILL.md`](./SKILL.md).
+- Full guide: [docs/agents.md](./docs/agents.md).
+
+Workers `declare`, edit, and `commit`; the coordinator runs the read-only
+verifier and lands the candidate with `integrate`. Promotion from the feature
+branch to the default branch stays a human `git` step.
 
 ### Install as an agent skill
 
 ```bash
-npx skills add ming6ao/intergent -g -y -a pi -a opencode
+npx skills add ming6ao/intergent -g -y -a pi -a claude-code
 ```
 
 This repository **is** an Agent Skill: the root [`SKILL.md`](./SKILL.md) bundles
 the CLI (`bin/intergent` + the `intergent/` package), so no separate
-`pip install` is required. See [docs/agents.md](./docs/agents.md).
+`pip install` is required. The same repo is a **pi package** (`package.json`)
+that installs the tools and the skill together with `pi install`. See
+[docs/agents.md](./docs/agents.md).
 
 ```
 CLI:     intergent  (alias: ig)

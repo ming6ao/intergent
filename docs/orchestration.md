@@ -385,6 +385,8 @@ any human-authored prose plan.
 | `dag.json`/`state.json` layout, `ready`, validation | `intergent/campaign.py` |
 | per-node verification fingerprints (§6.4) | `intergent/verifier.py`, `intergent/store.py` |
 | `campaign` coordinator tool + widget + log tee | `integrations/pi/campaign.ts` |
+| shared pi-extension helpers (CLI resolution, state paths, subagent runner) | `integrations/pi/common.ts` |
+| pi package manifest (tools + skill together) | `package.json` |
 | planner/worker/verifier agents | `integrations/pi/agents/*.md` |
 | GPU broker | `tools/gpu.sh` |
 | tests | `tests/test_campaign.py`, `tests/test_cli.py`, `tests/test_skill_package.py` |

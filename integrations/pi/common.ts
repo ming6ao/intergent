@@ -1,0 +1,283 @@
+/**
+ * Shared helpers for the Intergent pi extensions.
+ *
+ * Both `intergent.ts` (the `ig` unit tool) and `campaign.ts` (the coordinator
+ * tool) are thin adapters over the bundled `intergent` CLI.  Keeping the CLI
+ * resolution, JSON helpers, campaign state paths, and subagent runner here
+ * avoids a second copy drifting between the two extensions.
+ */
+
+import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import { fileURLToPath } from "node:url";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+
+export interface IgResult {
+	text: string;
+	json: any;
+}
+
+export interface SubagentResult {
+	exitCode: number;
+	output: string;
+	stderr: string;
+}
+
+export interface IgInvocation {
+	command: string;
+	prefix: string[];
+}
+
+const HERE = (() => {
+	try {
+		return path.dirname(fileURLToPath(import.meta.url));
+	} catch {
+		return process.cwd();
+	}
+})();
+
+/** The package root (the directory containing `bin/`, `integrations/`, `SKILL.md`). */
+export function packageDir(): string {
+	let dir = HERE;
+	for (let i = 0; i < 6; i++) {
+		if (existsSync(path.join(dir, "bin", "intergent"))) return dir;
+		const parent = path.dirname(dir);
+		if (parent === dir) break;
+		dir = parent;
+	}
+	return path.resolve(HERE, "..", "..");
+}
+
+/**
+ * Resolve how to run the bundled CLI. Precedence: `INTERGENT_BIN`, the CLI
+ * shipped inside the pi package (`<package>/bin/intergent`), then `intergent`
+ * on `PATH`. Running the bundled script through `python3` keeps it portable.
+ */
+export function resolveIgInvocation(): IgInvocation {
+	if (process.env.INTERGENT_BIN) {
+		return { command: process.env.INTERGENT_BIN, prefix: [] };
+	}
+	const bundled = path.join(packageDir(), "bin", "intergent");
+	if (existsSync(bundled)) {
+		return { command: "python3", prefix: [bundled] };
+	}
+	return { command: "intergent", prefix: [] };
+}
+
+export function parseJson(text: string): any {
+	try {
+		return JSON.parse(text);
+	} catch {
+		return undefined;
+	}
+}
+
+/** Run the Intergent CLI with `--json` from the session's cwd. */
+export async function runIg(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+	args: string[],
+	signal?: AbortSignal,
+	timeout = 600_000,
+): Promise<IgResult> {
+	const invocation = resolveIgInvocation();
+	const result = await pi.exec(invocation.command, [...invocation.prefix, "--json", ...args], {
+		cwd: ctx.cwd,
+		signal,
+		timeout,
+	});
+	const text = [result.stdout, result.stderr].filter((s) => s?.trim()).join("\n").trim();
+	if (result.code !== 0) {
+		throw new Error(text || `intergent exited with code ${result.code}`);
+	}
+	return { text: text || "ok", json: parseJson(result.stdout) };
+}
+
+// ---------------------------------------------------------------------------
+// Campaign state paths (`docs/orchestration.md` §4)
+// ---------------------------------------------------------------------------
+
+export function branchKey(branch: string): string {
+	return (branch || "main").trim().replace(/\//g, "--") || "main";
+}
+
+export function stateDir(cwd: string): string {
+	return path.join(cwd, ".intergent");
+}
+
+export function dagPath(cwd: string, branch: string): string {
+	return path.join(stateDir(cwd), `${branchKey(branch)}.dag.json`);
+}
+
+export function statePath(cwd: string, branch: string): string {
+	return path.join(stateDir(cwd), `${branchKey(branch)}.state.json`);
+}
+
+export function logPath(cwd: string, branch: string, node: string): string {
+	return path.join(stateDir(cwd), `${branchKey(branch)}.worker_${node}.log`);
+}
+
+export function eventsPath(cwd: string, branch: string): string {
+	return path.join(stateDir(cwd), `${branchKey(branch)}.events.jsonl`);
+}
+
+export function readJson<T>(file: string, fallback: T): T {
+	try {
+		return JSON.parse(fs.readFileSync(file, "utf8")) as T;
+	} catch {
+		return fallback;
+	}
+}
+
+export function writeJson(file: string, data: unknown): void {
+	fs.mkdirSync(path.dirname(file), { recursive: true });
+	fs.writeFileSync(file, JSON.stringify(data, null, 2) + "\n", "utf8");
+}
+
+/**
+ * Append one audit line to the campaign event log. The DAG can be hand-edited,
+ * so plan evolution is recorded here next to commits and fingerprints.
+ */
+export function logEvent(cwd: string, branch: string, kind: string, data: unknown): void {
+	const file = eventsPath(cwd, branch);
+	fs.mkdirSync(path.dirname(file), { recursive: true });
+	fs.appendFileSync(file, JSON.stringify({ kind, data }) + "\n", "utf8");
+}
+
+// ---------------------------------------------------------------------------
+// Subagents
+// ---------------------------------------------------------------------------
+
+function getPiInvocation(args: string[]): { command: string; args: string[] } {
+	const currentScript = process.argv[1];
+	const isBunVirtualScript = currentScript?.startsWith("/$bunfs/root/");
+	if (currentScript && !isBunVirtualScript && fs.existsSync(currentScript)) {
+		return { command: process.execPath, args: [currentScript, ...args] };
+	}
+	const execName = path.basename(process.execPath).toLowerCase();
+	if (!/^(node|bun)(\.exe)?$/.test(execName)) {
+		return { command: process.execPath, args };
+	}
+	return { command: "pi", args };
+}
+
+function agentDir(): string {
+	return process.env.PI_AGENT_DIR || path.join(os.homedir(), ".pi", "agent");
+}
+
+/** Locate an agent definition: packaged first, then the user's campaign-agents. */
+export function findAgentFile(name: string): string | undefined {
+	for (const file of [
+		path.join(packageDir(), "integrations", "pi", "agents", `${name}.md`),
+		path.join(agentDir(), "campaign-agents", `${name}.md`),
+	]) {
+		if (fs.existsSync(file)) return file;
+	}
+	return undefined;
+}
+
+/**
+ * Spawn a one-shot `pi` subagent, tee its raw output to `log`, return the final
+ * assistant text. The child is a direct child of the coordinator and is not
+ * detached, so a coordinator crash kills it.
+ */
+export async function runSubagent(options: {
+	agent: string;
+	task: string;
+	cwd: string;
+	log?: string;
+	signal?: AbortSignal;
+}): Promise<SubagentResult> {
+	const agentFile = findAgentFile(options.agent);
+	const args = ["--mode", "json", "-p", "--no-session"];
+	let promptPath: string | undefined;
+	if (agentFile) {
+		// Strip the YAML frontmatter before appending the system prompt.
+		const stripped = fs.readFileSync(agentFile, "utf8").replace(/^---\n[\s\S]*?\n---\n/, "");
+		promptPath = path.join(
+			os.tmpdir(),
+			`ig-campaign-${options.agent}-${process.pid}-${Date.now()}.md`,
+		);
+		fs.writeFileSync(promptPath, stripped, "utf8");
+		args.push("--append-system-prompt", promptPath);
+	}
+	args.push(options.task);
+
+	const cleanup = () => {
+		if (!promptPath) return;
+		try {
+			fs.unlinkSync(promptPath);
+		} catch {
+			/* ignore */
+		}
+	};
+
+	const invocation = getPiInvocation(args);
+	return new Promise<SubagentResult>((resolve) => {
+		const proc = spawn(invocation.command, invocation.args, {
+			cwd: options.cwd,
+			shell: false,
+			stdio: ["ignore", "pipe", "pipe"],
+		});
+		let buffer = "";
+		let output = "";
+		let stderr = "";
+		let stream: fs.WriteStream | undefined;
+		if (options.log) {
+			fs.mkdirSync(path.dirname(options.log), { recursive: true });
+			stream = fs.createWriteStream(options.log, { flags: "a" });
+		}
+
+		const processLine = (line: string) => {
+			if (!line.trim()) return;
+			stream?.write(line + "\n");
+			let event: any;
+			try {
+				event = JSON.parse(line);
+			} catch {
+				return;
+			}
+			if (event.type === "message_end" && event.message?.role === "assistant") {
+				for (const part of event.message.content ?? []) {
+					if (part.type === "text") output = part.text;
+				}
+			}
+		};
+
+		proc.stdout.on("data", (data) => {
+			buffer += data.toString();
+			const lines = buffer.split("\n");
+			buffer = lines.pop() ?? "";
+			for (const line of lines) processLine(line);
+		});
+		proc.stderr.on("data", (data) => {
+			stderr += data.toString();
+			stream?.write(data.toString());
+		});
+		proc.on("close", (code) => {
+			if (buffer.trim()) processLine(buffer);
+			stream?.end();
+			cleanup();
+			resolve({ exitCode: code ?? 0, output, stderr });
+		});
+		proc.on("error", (err) => {
+			stream?.end();
+			cleanup();
+			resolve({ exitCode: 1, output, stderr: String(err) });
+		});
+
+		if (options.signal) {
+			const kill = () => {
+				proc.kill("SIGTERM");
+				setTimeout(() => {
+					if (!proc.killed) proc.kill("SIGKILL");
+				}, 5000);
+			};
+			if (options.signal.aborted) kill();
+			else options.signal.addEventListener("abort", kill, { once: true });
+		}
+	});
+}
