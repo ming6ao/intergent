@@ -383,8 +383,8 @@ it; both are exercised by the test suite.
 ## 7. Agent integration (pi)
 
 pi is the supported agent harness. The repository is a **pi package** that ships
-the `sliceme` coordinator tool, the `sliceme-unit` worker tool, and the bundled
-skill.
+one extension registering the `sliceme` coordinator tool, the `sliceme-unit`
+worker tool, and the `/sliceme` command. There is no separate skill.
 
 ```bash
 pi install ./                                       # local checkout
@@ -393,12 +393,12 @@ pi install ./                                       # local checkout
 pi                                                  # launch the coordinator
 ```
 
-Both tools register **inactive**: a plain session never lists them nor receives
-their prompt guidelines, so Sliceme is only used when asked for.
-`/skill:sliceme <DESIGN.md>` is the single entry point: when the argument is
-an existing design document, the skill turns `sliceme` and `sliceme-unit` on for
-that session. There is no single-agent bootstrap — a session is only bound to a
-unit when the `spawn` action (or the user) creates one.
+Both tools register **active**, so a plain session can use them; the workflow is
+condensed into their prompt guidelines and documented in
+[docs/workflow.md](./workflow.md). `/sliceme [DESIGN.md]` (default `DESIGN.md`)
+is the discoverable entry point and asks the model to start a campaign. There is
+no single-agent bootstrap — a session is only bound to a unit when the `spawn`
+action (or the user) creates one.
 
 | Role | Bound to a unit? | Contract |
 |---|---|---|
@@ -425,7 +425,7 @@ verifier gets no Sliceme tool at all.
 
 ### Coordinator
 
-Start the coordinator with `/skill:sliceme <DESIGN.md>` in pi, then use the
+Start a campaign with `/sliceme [DESIGN.md]` in pi, then use the
 `sliceme` tool — or drive the CLI directly: `start --no-unit` (which adopts the
 current branch; check out your branch first), then `spawn`/`verify`/`integrate`
 per ready node, a final idempotent `integrate` sweep, and `report`.

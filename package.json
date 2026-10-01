@@ -28,7 +28,6 @@
     "prepublishOnly": "npm test"
   },
   "files": [
-    "SKILL.md",
     "README.md",
     "LICENSE",
     "bin/",
@@ -47,7 +46,7 @@
       "./integrations/pi/unit.ts",
       "./integrations/pi/coordinator.ts"
     ],
-    "skills": ["."]
+    "skills": []
   },
   "peerDependencies": {
     "@earendil-works/pi-agent-core": "*",

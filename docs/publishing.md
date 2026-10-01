@@ -2,15 +2,15 @@
 
 Sliceme ships as **one pi package** (npm) and, secondarily, as a Python wheel.
 The npm tarball is the real distribution unit: it bundles the TypeScript pi
-tools, the bundled skill, the GPU broker, and the entire dependency-free Python
-engine, so `pi install npm:sliceme` needs no `pip install` and no `sliceme` on
-`PATH`.
+tools, the `/sliceme` command, the GPU broker, and the entire dependency-free
+Python engine, so `pi install npm:sliceme` needs no `pip install` and no
+`sliceme` on `PATH`.
 
 ## What ships where
 
 | Artifact | Command | Contains |
 |---|---|---|
-| npm pi package (primary) | `npm pack` / `npm publish` | `integrations/pi/*` tools, `SKILL.md`, `tools/gpu.sh`, `bin/sliceme`, `sliceme/*.py`, `docs/`, `README.md`, `LICENSE` |
+| npm pi package (primary) | `npm pack` / `npm publish` | `integrations/pi/*` tools, `docs/workflow.md`, `tools/gpu.sh`, `bin/sliceme`, `sliceme/*.py`, `docs/`, `README.md`, `LICENSE` |
 | Python wheel (secondary) | `python3 -m build` | only the `sliceme` Python package (engine library); **no** `bin/`, `tools/`, or pi extension |
 
 The `files` array in `package.json` is an allow-list with negations; keep the
@@ -73,7 +73,7 @@ pi                                # launch pi
 Then, inside the session:
 
 ```text
-/skill:sliceme DESIGN.md          # activates the sliceme + sliceme-unit tools
+/sliceme DESIGN.md                # start a campaign (tools are always active)
 sliceme start DESIGN.md           # adopt the current branch + run the planner
 sliceme ready                     # current-wave nodes whose deps are integrated
 sliceme spawn <node>              # one-shot worker
@@ -94,6 +94,6 @@ SLICEME_BIN=/path/to/bin/sliceme pi
 1. `npm test` is green.
 2. `package.json`, `pyproject.toml`, and `sliceme/__init__.py` versions match.
 3. `npm pack --dry-run` shows no `__pycache__`/`.pyc` and includes `bin/`,
-   `tools/`, `sliceme/`, `SKILL.md`, and `integrations/pi/`.
+   `tools/`, `sliceme/`, `docs/workflow.md`, and `integrations/pi/`.
 4. `npm publish` (and, if shipping the library, `python3 -m build && twine upload`).
 5. Tag the release and push; point the README/`pi install` examples at it.

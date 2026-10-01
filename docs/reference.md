@@ -253,7 +253,7 @@ simulation, cleanup, reporting) plus CLI and packaging smoke tests.
 | `tests/test_wave_scope.py` | shared wave worktree, conformance-by-ownership, per-node commits, wave integration |
 | `tests/test_e2e.py` | end-to-end conformance and integration flows |
 | `tests/test_cli.py` | CLI surface and lifecycle |
-| `tests/test_skill_package.py` | pi package contract, tool/action lockstep, docs |
+| `tests/test_pi_package.py` | pi package contract, tool/action lockstep, command gate, docs |
 
 ## 6. Deliberate gaps
 

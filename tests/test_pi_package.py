@@ -1,8 +1,9 @@
 """Guards the pi package contract.
 
-Sliceme supports exactly one install path: ``pi install`` of this package,
-which registers the ``sliceme``/``sliceme-unit`` tools and ships the bundled skill
-and engine. These tests fail if that structure regresses.
+Sliceme supports exactly one install path: ``pi install`` of this package, which
+registers one extension exposing the ``sliceme``/``sliceme-unit`` tools and the
+``/sliceme`` command. There is no separate skill. These tests fail if that
+structure regresses.
 """
 
 import json
@@ -13,7 +14,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 README = REPO_ROOT / "README.md"
-SKILL = REPO_ROOT / "SKILL.md"
+WORKFLOW = REPO_ROOT / "docs" / "workflow.md"
 PACKAGE = REPO_ROOT / "package.json"
 PI_DIR = REPO_ROOT / "integrations" / "pi"
 PI_UNIT = PI_DIR / "unit.ts"
@@ -27,7 +28,7 @@ from sliceme import surface  # noqa: E402
 def _frontmatter(text: str) -> dict[str, str]:
     match = re.match(r"^---\n(.*?)\n---\n", text, re.DOTALL)
     if not match:
-        raise AssertionError("SKILL.md is missing YAML frontmatter")
+        raise AssertionError("file is missing YAML frontmatter")
     data: dict[str, str] = {}
     for line in match.group(1).splitlines():
         if not line.strip() or line.startswith((" ", "\t", "#")):
@@ -38,40 +39,29 @@ def _frontmatter(text: str) -> dict[str, str]:
     return data
 
 
-class SkillPackageTests(unittest.TestCase):
-    def test_root_skill_md_is_valid(self):
-        self.assertTrue(SKILL.is_file(), "root SKILL.md is required as the pi package skill")
-        data = _frontmatter(SKILL.read_text(encoding="utf-8"))
-        self.assertEqual(data.get("name"), "sliceme")
-        self.assertTrue(data.get("description"), "description is required frontmatter")
+class PiPackageTests(unittest.TestCase):
+    def test_workflow_doc_exists(self):
+        # The workflow lives in docs/workflow.md (human docs); the in-session
+        # guidance is the tools' promptGuidelines.
+        self.assertTrue(WORKFLOW.is_file(), "docs/workflow.md is required")
+        text = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("# Sliceme workflow", text)
 
     def test_bundled_cli_and_package_exist(self):
         self.assertTrue((REPO_ROOT / "bin" / "sliceme").is_file())
         self.assertTrue((REPO_ROOT / "sliceme" / "cli.py").is_file())
 
-    def test_no_skills_sh_install_path(self):
-        # pi is the only supported harness; the package installs the skill, so
-        # there is no separate `npx skills add` path to document.
-        docs = (
-            README,
-            SKILL,
-            REPO_ROOT / "docs" / "guide.md",
-            REPO_ROOT / "docs" / "reference.md",
-        )
+    def test_no_alternate_install_path(self):
+        # pi is the only supported harness; the package installs the extension,
+        # so there is no separate `npx skills add` path to document.
+        docs = (README, WORKFLOW, REPO_ROOT / "docs" / "guide.md", REPO_ROOT / "docs" / "reference.md")
         for path in docs:
             self.assertNotIn("npx skills add", path.read_text(encoding="utf-8"))
 
     def test_no_dead_bootstrap_env_or_cli_alias(self):
         # `SLICEME_AUTO_BOOTSTRAP` belonged to a removed auto-bootstrap path,
-        # and the retired `ig` CLI alias is gone (no `bin/ig`, no console
-        # scripts); neither the dead env nor the pre-rename names should
-        # reappear in the docs.
-        docs = (
-            README,
-            SKILL,
-            REPO_ROOT / "docs" / "guide.md",
-            REPO_ROOT / "docs" / "reference.md",
-        )
+        # and the retired `ig` CLI alias is gone; neither should reappear.
+        docs = (README, WORKFLOW, REPO_ROOT / "docs" / "guide.md", REPO_ROOT / "docs" / "reference.md")
         for path in docs:
             text = path.read_text(encoding="utf-8")
             self.assertNotIn("SLICEME_AUTO_BOOTSTRAP", text, path)
@@ -80,25 +70,25 @@ class SkillPackageTests(unittest.TestCase):
             self.assertNotIn("alias: ig", text, path)
             self.assertNotIn("bin/ig", text, path)
 
-    def test_root_skill_is_explicit_invocation_only(self):
-        # The skill must not auto-load just because a repo has a plane; the
-        # user invokes it with `/skill:sliceme`.
-        data = _frontmatter(SKILL.read_text(encoding="utf-8"))
-        self.assertEqual(data.get("disable-model-invocation"), "true")
-        self.assertNotIn("repository has .sliceme/config.json", data.get("description", ""))
+    def test_sliceme_is_extension_only(self):
+        # No skill: the extension owns the `/sliceme` command and both tools.
+        manifest = json.loads(PACKAGE.read_text(encoding="utf-8"))
+        self.assertEqual(manifest.get("pi", {}).get("skills", []), [])
+        coordinator = PI_COORDINATOR.read_text(encoding="utf-8")
+        self.assertIn('pi.registerCommand("sliceme"', coordinator)
+        self.assertIn("sendUserMessage", coordinator)
+        # The old skill-trigger glue is gone.
+        self.assertNotIn("pi.on(\"input\"", coordinator)
+        self.assertNotIn("/skill:sliceme", coordinator)
+        self.assertNotIn("SKILL_INVOCATION", coordinator)
+        self.assertNotIn("hasDesignDocument", coordinator)
 
-    def test_sliceme_tools_are_opt_in(self):
-        # The pi package must not leak Sliceme into every session: both tools
-        # register inactive, and only `/skill:sliceme <design.md>` turns them
-        # on. Without a design document the invocation is dropped.
+    def test_tools_register_active(self):
+        # Relaxed opt-in: both tools are available without an activation step.
         for path in (PI_UNIT, PI_COORDINATOR):
             text = path.read_text(encoding="utf-8")
-            self.assertIn("defaultActive: false", text, path)
-        coordinator = PI_COORDINATOR.read_text(encoding="utf-8")
-        self.assertIn('pi.on("input"', coordinator)
-        self.assertIn("/skill:sliceme", coordinator)
-        self.assertIn("hasDesignDocument", coordinator)
-        self.assertIn('action: "handled"', coordinator)
+            self.assertIn("defaultActive: true", text, path)
+            self.assertNotIn("defaultActive: false", text, path)
 
     def test_pi_extension_is_a_thin_forwarder(self):
         # There is no single-agent bootstrap: the extension only registers the
@@ -118,7 +108,6 @@ class SkillPackageTests(unittest.TestCase):
         extensions = pi.get("extensions", [])
         self.assertIn("./integrations/pi/unit.ts", extensions)
         self.assertIn("./integrations/pi/coordinator.ts", extensions)
-        self.assertIn(".", pi.get("skills", []))
         # The shared helpers ship with the package and are imported by both tools.
         self.assertTrue(PI_COMMON.is_file())
         self.assertIn('from "./common.ts"', PI_COORDINATOR.read_text(encoding="utf-8"))
@@ -153,7 +142,7 @@ class SkillPackageTests(unittest.TestCase):
 
     def test_no_console_scripts(self):
         # The engine is internal: it is invoked from the package, never
-        # installed as a user-facing `sliceme`/`sliceme` command.
+        # installed as a user-facing `sliceme` command.
         pyproject = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
         self.assertNotIn("[project.scripts]", pyproject)
 
@@ -162,7 +151,7 @@ class SkillPackageTests(unittest.TestCase):
         files = manifest.get("files", [])
         self.assertIn("bin/", files)
         self.assertIn("sliceme/", files)
-        self.assertIn("SKILL.md", files)
+        self.assertIn("docs/", files)
 
     def test_retired_actions_are_gone(self):
         # The single-agent path (`handoff`, human `review`) and the old
@@ -183,11 +172,11 @@ class SkillPackageTests(unittest.TestCase):
         match = re.search(r"SLICEME_ACTIONS\s*=\s*\[(.*?)\]\s*as const", text, re.DOTALL)
         self.assertIsNotNone(match)
         self.assertEqual(re.findall(r'"([a-z_]+)"', match.group(1)), names)
-        # The skill documents the campaign additions.
-        skill = SKILL.read_text(encoding="utf-8")
-        self.assertIn("`integrate`", skill)
-        self.assertIn("`report`", skill)
-        self.assertIn("--no-unit", skill)
+        # The workflow doc documents the campaign additions.
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("`integrate`", workflow)
+        self.assertIn("`report`", workflow)
+        self.assertIn("--no-unit", workflow)
 
     def test_campaign_scheduler_is_wave_aware(self):
         # The coordinator projects the DAG into waves via the engine and gates

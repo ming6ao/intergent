@@ -40,7 +40,7 @@ const HERE = (() => {
 	}
 })();
 
-/** The package root (the directory containing `bin/`, `integrations/`, `SKILL.md`). */
+/** The package root (the directory containing `bin/`, `integrations/`, `docs/`). */
 export function packageDir(): string {
 	let dir = HERE;
 	for (let i = 0; i < 6; i++) {

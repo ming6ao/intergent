@@ -23,12 +23,12 @@
  *
  * Workers are child processes of the coordinator and are **not detached**: an
  * orchestrator crash kills them, and on resume any `running` node is reset to
- * `pending`.  Only the verifier is given the GPU broker (`tools/gpu.sh`).
+ * `pending`.  Only the single executor runs checks (and the GPU broker);
+ * verifiers judge the executor's recorded evidence.
  *
- * Both Sliceme tools are registered `defaultActive: false`: a plain session
- * never advertises them.  The `sliceme` skill activates them for the session
- * only when invoked as `/skill:sliceme <design.md>` with an existing design
- * document.
+ * The tools register active, and the extension also provides `/sliceme
+ * [DESIGN.md]`, which nudges the model to start a campaign (defaulting to
+ * ``DESIGN.md``).  There is no separate skill.
  *
  * Install as part of the `sliceme` pi package (`pi install ./` or
  * `pi install npm:sliceme`); shared helpers live in `./common.ts`.
@@ -266,38 +266,24 @@ function summarise(dag: Dag, state: CampaignState): string {
 }
 
 export default function coordinatorExtension(pi: ExtensionAPI) {
-	// Sliceme is opt-in. The `sliceme`/`sliceme-unit` tools are registered inactive, so
-	// a plain session neither lists them nor appends their prompt guidelines.
-	// `/skill:sliceme <design.md>` is the only thing that turns them on for
-	// the session. A design document is required: without one the input is
-	// dropped with a warning rather than starting a campaign.
-	const SKILL_INVOCATION = /^\/skill:sliceme(?:\s+([\s\S]*))?$/;
-
-	function hasDesignDocument(args: string, cwd: string): boolean {
-		for (const raw of args.split(/\s+/)) {
-			if (!raw || raw.startsWith("-")) continue;
-			const candidate = raw.replace(/^['"]|['"]$/g, "");
-			if (fs.existsSync(path.resolve(cwd, candidate))) return true;
-		}
-		return false;
-	}
-
-	pi.on("input", (event, ctx) => {
-		const match = SKILL_INVOCATION.exec(event.text.trim());
-		if (!match) return;
-		if (!hasDesignDocument(match[1] ?? "", ctx.cwd)) {
-			if (ctx.hasUI) {
-				ctx.ui.notify(
-					"sliceme: pass a design document, e.g. /skill:sliceme docs/design.md",
-					"warning",
-				);
+	// Extension-only entry point. The tools register active, so a plain session can
+	// use them; `/sliceme [DESIGN.md]` is a discoverable shortcut that asks the
+	// model to start a campaign. No design document is required up front: `start`
+	// fails loudly if the path is wrong.
+	pi.registerCommand("sliceme", {
+		description: "Start a Sliceme campaign from a design document (default DESIGN.md)",
+		handler: async (args, ctx) => {
+			const design = args.trim() || "DESIGN.md";
+			if (!ctx.isIdle()) {
+				ctx.ui.notify("sliceme: the agent is busy; finish the current turn first.", "warning");
+				return;
 			}
-			return { action: "handled" as const };
-		}
-		const active = new Set(pi.getActiveTools());
-		active.add("sliceme");
-		active.add("sliceme-unit");
-		pi.setActiveTools([...active]);
+			ctx.ui.notify(`sliceme: starting a campaign from ${design}`, "info");
+			pi.sendUserMessage(
+				`Start a Sliceme campaign for the design document "${design}". ` +
+					`Use the sliceme tool with action "start".`,
+			);
+		},
 	});
 
 	const sliceme = (ctx: ExtensionContext, args: string[], signal?: AbortSignal) =>
@@ -897,9 +883,9 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
 				"(--open/--record --wave N), and the check queue (--submit/--run/--wait).",
 			"Integrate each node after its verifier passes; cleanup is offered once per wave.",
 		],
-		// Inert until the `sliceme` skill activates it, so a plain session never
-		// advertises the campaign workflow or injects its guidelines.
-		defaultActive: false,
+		// Active by default: the extension is the only entry point, so the model
+		// can drive a campaign whenever the user asks.
+		defaultActive: true,
 		parameters: Type.Object({
 			action: StringEnum(CAMPAIGN_ACTIONS),
 			design: Type.Optional(Type.String({ description: "start: design document path" })),

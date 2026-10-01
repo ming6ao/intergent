@@ -32,25 +32,23 @@ pi                               # launch a coordinator session
 ```
 
 `pi install` registers both tools (`sliceme` for the coordinator, `sliceme-unit`
-for workers) and installs the bundled skill. Both tools are registered **inactive**:
-a plain session never lists Sliceme, and
-`/skill:sliceme <DESIGN.md>` turns them on for that session (the design path
-must exist). Nothing else is needed: the tools invoke the bundled engine, so
-there is no `pip install` and no `sliceme` on `PATH`.
+for workers); they are active in every session. Start a campaign with
+`/sliceme [DESIGN.md]` (defaults to `DESIGN.md`) or by asking the model to run
+one. Nothing else is needed: the tools invoke the bundled engine, so there is no
+`pip install` and no `sliceme` on `PATH`.
 
 ## Quick start
 
-In pi, run `/skill:sliceme <DESIGN.md>` to start a coordinator session; the
-coordinator then drives the design into landed work with the `sliceme` tool,
-and each spawned worker uses the `sliceme-unit` tool to edit its owned directories
-and commit.
+In pi, run `/sliceme [DESIGN.md]` to start a campaign; the coordinator drives the
+design into landed work with the `sliceme` tool, and each spawned worker uses the
+`sliceme-unit` tool to edit its owned directories and commit.
 
 ```bash
 pi install ./                    # or git:/npm: sliceme
 pi                               # launch a session
 
 # then, in the session:
-#   /skill:sliceme DESIGN.md   activate Sliceme for this session
+#   /sliceme DESIGN.md           start a campaign from a design document
 #   sliceme start <DESIGN.md>    adopt current branch + planner DAG
 #   sliceme ready                current-wave nodes whose dependencies are done
 #   sliceme spawn <node>         one-shot worker in its own worktree

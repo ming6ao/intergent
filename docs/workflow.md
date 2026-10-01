@@ -1,14 +1,9 @@
----
-name: sliceme
-description: 'Deliver a design document as landed work on a feature branch using the Sliceme campaign orchestrator: a coordinator turns the design into a DAG of planner/worker/verifier subagents, each worker isolated by a git worktree, each node owning disjoint directories (plan-time ownership), each candidate verified against a fingerprint before integration. Use ONLY when the user explicitly invokes this skill: runs `/skill:sliceme`, or names it ("sliceme") and asks to run a campaign, coordinate parallel agents, or land a feature branch. Do NOT auto-load it merely because a repository contains .sliceme/config.json. Requires the sliceme pi package. Not for read-only research.'
-license: Apache-2.0
-disable-model-invocation: true
-metadata:
-  version: "0.3.0"
-  author: sliceme
----
+# Sliceme workflow
 
-# Sliceme
+> Human documentation for the Sliceme extension. The workflow below is also
+> condensed into the `sliceme` tool's prompt guidelines; this file is the full
+> reference. Start a campaign with `/sliceme [DESIGN.md]` or by asking the model
+> to run one.
 
 Sliceme delivers a design document as a set of components on a **feature
 branch**. A top-level **coordinator** turns the design into a machine-readable
@@ -59,12 +54,11 @@ COORDINATOR (this session)
   `status`/`ready`/`spawn` replans).
 - Everything is reconstructable from `.sliceme/` + git after a crash.
 
-The pi package provides two tools: `sliceme` for the coordinator and
-`sliceme-unit` for workers. Both register **inactive**, so a plain session never
-lists them or their prompt guidelines; `/skill:sliceme <design.md>` activates
-them for the session when the argument is an existing design document.
-`runSubagent` applies each subagent's `tools:` allowlist, so a worker gets
-`sliceme-unit` but never `sliceme`, and the verifier gets neither.
+The pi package is a single extension that registers two tools: `sliceme` for the
+coordinator and `sliceme-unit` for workers, plus the `/sliceme [DESIGN.md]`
+command. There is no separate skill: the workflow lives here and in the tools'
+prompt guidelines. `runSubagent` applies each subagent's `tools:` allowlist, so
+a worker gets `sliceme-unit` but never `sliceme`, and the verifier gets neither.
 
 ## Hard rules
 
