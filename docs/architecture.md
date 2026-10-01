@@ -82,7 +82,8 @@ and not another.
 intergent start | status | declare | commit | integrate | report
 ```
 
-Flags carry the long tail: `start --no-unit --main <feature> --base <base>`;
+Flags carry the long tail: `start --no-unit` (adopts the current branch) and
+`--main <branch>` (adopt an existing branch);
 `declare --dry-run` (conflict check), `--renew`/`--release` (lease maintenance);
 `integrate --node`, `--acceptance`, `--gpu`, `--check-only`, `--cleanup`;
 `status --health`, `--simulate`, `--gc`, `--short`, `--unit U`; `report

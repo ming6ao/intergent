@@ -56,7 +56,7 @@ ACTIONS: tuple[Action, ...] = (
             Param("kind", "string", "unit kind", choices=("session", "worker")),
             Param("base", "string", "base branch/ref for new worktrees"),
             Param("task", "string", "task description stored on the session"),
-            Param("main_branch", "string", "main/integration branch (default: current)", flag="main"),
+            Param("main_branch", "string", "integration branch to adopt (default: current; must exist)", flag="main"),
             Param("checks", "list", "trusted check NAME=COMMAND (repeatable)", flag="check"),
             Param("lease_ttl", "int", "lease TTL in seconds"),
             Param("force", "boolean", "overwrite an existing config"),

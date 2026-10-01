@@ -54,9 +54,10 @@ the package; there is no separate skill install.
 
 ### Coordinator
 
-Use the `campaign` tool in pi, or the CLI: `start --no-unit --main <feature>
---base <base>`, then `spawn`/`verify`/`integrate` per ready node, a final
-idempotent `integrate` sweep, and `report`. See
+Use the `campaign` tool in pi, or the CLI: `start --no-unit` (which adopts the
+current branch as the feature branch; check out your branch first), then
+`spawn`/`verify`/`integrate` per ready node, a final idempotent `integrate`
+sweep, and `report`. See
 [Orchestration](./orchestration.md).
 
 ## Process supervision

@@ -54,7 +54,7 @@ gets `ig` but never `campaign`, and the verifier gets neither.
 Use the `campaign` tool:
 
 ```
-campaign start <DESIGN.md>   feature branch + planner -> dag.json
+campaign start <DESIGN.md>   adopt current branch + planner -> dag.json
 campaign ready               nodes whose dependencies are integrated
 campaign status              DAG + live child state
 campaign spawn <node>        one-shot worker in its own worktree
@@ -64,9 +64,11 @@ campaign report              deterministic report (`--narrative` appends the sum
 ```
 
 The coordinator's own checkout is **not** an Intergent unit; `campaign start`
-bootstraps the plane with `--no-unit`. Promotion from the feature branch to the
-default branch is a human `git` step — `integrate` refuses the plane's recorded
-default branch.
+bootstraps the plane with `--no-unit` and adopts the **currently checked-out
+branch** as the campaign feature branch — it never creates one. Starting on the
+repository default branch is refused; promotion from the feature branch to the
+default branch is a human `git` step (`integrate` refuses the plane's recorded
+default branch).
 
 ## Unit actions (the `ig` tool)
 

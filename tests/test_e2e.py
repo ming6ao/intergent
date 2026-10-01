@@ -32,7 +32,9 @@ class RepoCase(unittest.TestCase):
         (self.root / "docs" / "api.md").write_text("# Docs\n")
         run("git", "add", "-A", cwd=self.root)
         run("git", "commit", "-qm", "initial", cwd=self.root)
-        Service.init_plane(self.root, main_branch="feat/x", base="main", checks=self.checks)
+        # `start` adopts the current branch; check out the campaign branch first.
+        run("git", "checkout", "-q", "-b", "feat/x", cwd=self.root)
+        Service.init_plane(self.root, checks=self.checks)
         self.svc = Service(self.root)
 
     def tearDown(self):

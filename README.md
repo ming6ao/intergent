@@ -40,7 +40,7 @@ pi install ./                    # or git:/npm: intergent
 pi                               # launch a coordinator session
 
 # then, in the session:
-#   campaign start <DESIGN.md>   feature branch + planner DAG
+#   campaign start <DESIGN.md>   adopt current branch + planner DAG
 #   campaign ready               nodes whose dependencies are done
 #   campaign spawn <node>        one-shot worker in its own worktree
 #   campaign verify <node>       read-only verifier

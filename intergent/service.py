@@ -73,22 +73,23 @@ class Service:
             raise IntergentError(
                 "already initialised (.intergent/config.json exists); use --force to reset config"
             )
-        detected = gitutil.current_branch(root) or "main"
+        detected = gitutil.current_branch(root)
         main_branch = main_branch or detected
+        if not main_branch:
+            raise IntergentError(
+                "not on a branch; create or check out the campaign branch before start"
+            )
         if not gitutil.branch_exists(root, main_branch):
-            # An empty repository with no commits yet, or a campaign feature
-            # branch that does not exist: create the integration branch at the
-            # requested base when one resolves, otherwise fall back to the
-            # checked-out branch.
-            base_ref = base or detected
-            try:
-                base_commit = gitutil.rev_parse(root, base_ref)
-            except IntergentError:
-                main_branch = detected
-            else:
-                gitutil.create_branch(root, main_branch, base_commit)
+            # `start` adopts the branch that is checked out and never creates
+            # one.  A missing integration branch means the caller passed
+            # `--main` explicitly (or HEAD is unborn): fail loudly instead of
+            # silently branching off history the user did not choose.
+            raise IntergentError(
+                f"branch '{main_branch}' does not exist; intergent adopts the current "
+                "branch and never creates one"
+            )
         base = base or main_branch
-        default_branch = integrate.found_default_branch(root)
+        default_branch = integrate.found_default_branch(root, exclude=main_branch)
         config = {
             "version": 1,
             "main_branch": main_branch,
@@ -108,6 +109,30 @@ class Service:
         store.close()
         _ensure_gitignore(root)
         return config
+
+    @classmethod
+    def _retarget_plane(
+        cls, root: Path, *, main_branch: str, base: str | None = None
+    ) -> None:
+        """Point an existing plane's integration branch at **an existing** branch.
+
+        Used by ``start --main`` so a campaign adopts the checked-out branch even
+        when the plane already exists.  It never creates a branch: a missing one
+        is an error.
+        """
+        if not gitutil.branch_exists(root, main_branch):
+            raise IntergentError(
+                f"branch '{main_branch}' does not exist; intergent adopts the current "
+                "branch and never creates one"
+            )
+        cfg = read_json(config_path(root))
+        if cfg is None:
+            raise IntergentError("missing .intergent/config.json")
+        if cfg.get("main_branch") == main_branch:
+            return
+        cfg["main_branch"] = main_branch
+        cfg["base"] = base or main_branch
+        write_json(config_path(root), cfg)
 
     @classmethod
     def init(
@@ -157,6 +182,12 @@ class Service:
                 force=force,
             )
             initialized = True
+        elif main_branch:
+            # An existing plane keeps its identity; re-point its integration
+            # branch only when the caller names one explicitly.  `campaign
+            # start` uses this to adopt the checked-out branch, and — like
+            # `init_plane` — it never creates a branch.
+            cls._retarget_plane(root, main_branch=main_branch, base=base)
 
         # Keep the exclude entry fresh even when the plane already existed and
         # the repo's .git/info/exclude was reset (e.g. re-cloned metadata).

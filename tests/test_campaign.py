@@ -47,7 +47,10 @@ class CampaignCase(unittest.TestCase):
         self.tmp.cleanup()
 
     def campaign_plane(self, branch="feat/x", base="main"):
-        Service.init_plane(self.root, main_branch=branch, base=base, checks=self.checks)
+        # `start` adopts the current branch, so check the campaign branch out
+        # first instead of asking init_plane to create it.
+        run("git", "checkout", "-q", "-b", branch, cwd=self.root)
+        Service.init_plane(self.root, base=base, checks=self.checks)
         self.svc = Service(self.root)
         return self.svc
 
@@ -76,24 +79,45 @@ class CampaignCase(unittest.TestCase):
 
 class NoUnitBootstrapTests(CampaignCase):
     def test_no_unit_leaves_no_phantom_unit_and_records_default(self):
-        result = Service.init(self.root, main_branch="feat/x", base="main", no_unit=True)
+        run("git", "checkout", "-q", "-b", "feat/x", cwd=self.root)
+        result = Service.init(self.root, no_unit=True)
         self.assertIsNone(result["unit"])
         self.assertIsNone(result["worktree"])
         service = Service(self.root)
         try:
             self.assertEqual(service.list_units(), [])
             self.assertTrue(self.branch_exists("feat/x"))
+            self.assertEqual(service.config["main_branch"], "feat/x")
             self.assertEqual(service.config["default_branch"], "main")
         finally:
             service.close()
 
-    def test_init_creates_the_feature_branch_from_base(self):
-        Service.init(self.root, main_branch="feat/new", base="main", no_unit=True)
-        self.assertTrue(self.branch_exists("feat/new"))
-        # It points at the base commit, not at a later main tip.
-        base = run("git", "rev-parse", "main", cwd=self.root).stdout.strip()
-        feat = run("git", "rev-parse", "feat/new", cwd=self.root).stdout.strip()
-        self.assertEqual(base, feat)
+    def test_init_adopts_the_current_branch_and_never_creates_one(self):
+        run("git", "checkout", "-q", "-b", "feat/adopt", cwd=self.root)
+        Service.init(self.root, no_unit=True)
+        service = Service(self.root)
+        try:
+            self.assertEqual(service.config["main_branch"], "feat/adopt")
+            self.assertEqual(service.config["default_branch"], "main")
+        finally:
+            service.close()
+
+    def test_init_rejects_a_missing_branch(self):
+        with self.assertRaises(IntergentError):
+            Service.init(self.root, main_branch="feat/missing", no_unit=True)
+        self.assertFalse(self.branch_exists("feat/missing"))
+
+    def test_start_retargets_an_existing_plane_to_the_current_branch(self):
+        Service.init(self.root, no_unit=True)  # plane starts on main
+        run("git", "checkout", "-q", "-b", "feat/x", cwd=self.root)
+        Service.init(self.root, main_branch="feat/x", no_unit=True)
+        service = Service(self.root)
+        try:
+            self.assertEqual(service.config["main_branch"], "feat/x")
+            self.assertEqual(service.config["base"], "feat/x")
+            self.assertEqual(service.config["default_branch"], "main")
+        finally:
+            service.close()
 
 
 class IntegrateTests(CampaignCase):
@@ -286,6 +310,7 @@ class DagStateTests(unittest.TestCase):
 class ConfigMigrationTests(CampaignCase):
     def test_default_branch_is_recorded_from_origin_head(self):
         # Simulate a remote default of ``main`` while checked out elsewhere.
+        run("git", "checkout", "-q", "-b", "feat/x", cwd=self.root)
         run("git", "update-ref", "refs/remotes/origin/main", "main", cwd=self.root)
         run(
             "git",
@@ -294,12 +319,13 @@ class ConfigMigrationTests(CampaignCase):
             "refs/remotes/origin/main",
             cwd=self.root,
         )
-        Service.init_plane(self.root, main_branch="feat/x", base="main", checks=self.checks)
+        Service.init_plane(self.root, checks=self.checks)
         cfg = json.loads(config_path(self.root).read_text())
         self.assertEqual(cfg["default_branch"], "main")
 
     def test_legacy_plane_without_default_branch_still_integrates(self):
-        Service.init_plane(self.root, main_branch="feat/x", base="main", checks=self.checks)
+        run("git", "checkout", "-q", "-b", "feat/x", cwd=self.root)
+        Service.init_plane(self.root, checks=self.checks)
         cfg = json.loads(config_path(self.root).read_text())
         cfg.pop("default_branch", None)
         config_path(self.root).write_text(json.dumps(cfg))
