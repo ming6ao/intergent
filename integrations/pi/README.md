@@ -5,7 +5,7 @@ The intergent pi package registers **one tool per role**:
 | Tool | Who uses it | Actions |
 |---|---|---|
 | `campaign` | the **coordinator** | `start`, `status`, `ready`, `spawn`, `verify`, `integrate`, `report` |
-| `ig` | **workers** | `start`, `status`, `declare`, `commit`, `integrate`, `report` |
+| `ig` | **workers** | `start`, `status`, `commit`, `integrate`, `report` |
 
 Both are thin forwarders to the bundled `intergent` CLI (resolved from the
 package, or `INTERGENT_BIN`), so the engine stays a separate process and no

@@ -1,7 +1,7 @@
 # Overview
 
 > **Intergent** *(interlock + agent)* — coordination for parallel coding agents:
-> one campaign DAG, a git worktree per worker, scope leases, and
+> one campaign DAG, a git worktree per worker, plan-time directory ownership, and
 > fingerprint-pinned integration onto a feature branch.
 
 ## 1. Summary
@@ -12,15 +12,17 @@ plan contradictory changes. The failure modes are *authoring
 conflicts* (wasted, contradictory work) and *integration conflicts* (stale-tip
 breakage, CI churn).
 
-Intergent isolates each worker in a worktree, records declared intent, prevents
-conflicting scopes from being authored concurrently, verifies each candidate
-against a content fingerprint, and integrates verified candidates one node at a
-time onto a campaign **feature branch**. A coordinator turns a design document
-into a machine-readable DAG (`dag.json`) and drives planner, worker, and verifier
-subagents against it.
+Intergent isolates each worker in a worktree, assigns each node disjoint
+**directories** at plan time, serializes overlapping subtrees into waves, verifies
+each candidate against a content fingerprint, and integrates verified candidates
+one node at a time onto a campaign **feature branch**. A coordinator turns a
+design document into a machine-readable DAG (`dag.json`) and drives planner,
+worker, and verifier subagents against it.
 
-The semantic verdicts are **deterministic** and derived from *declared* intent.
-LLMs draft declarations and the plan; they never decide whether something blocks.
+The semantic decisions are **deterministic** and derived from the *declared
+plan*: ownership is directory subtrees, order is `owns` + `depends_on`, and a
+commit is checked against the node's owned directories. LLMs draft the plan;
+they never decide whether something blocks at runtime.
 
 ## 2. Name
 
@@ -70,12 +72,10 @@ rather than ordered by the dependency graph.
 | **Coordinator** | The top-level session that owns the plan and drives the campaign. |
 | **Node** | One DAG unit of work with `owns`, `depends_on`, `acceptance`, `gpu`. |
 | **Unit** | An isolated writer: a worktree + branch (`ig/<name>`). |
-| **Scope** | Canonical, hierarchical unit of contention: `dir:`, `file:`, `symbol:`, `api:`, `schema:`, `config:`, `migration:`. |
-| **Operation** | Declared intent on a scope: additive (`add`, `extend`, `modify`) or destructive (`replace`, `remove`, `rename`, `migrate`). |
-| **Intent** | `{scopes[], operation, task, summary}` declared before editing. |
-| **Claim / lease** | Time-bounded, heartbeat-renewed grant of a lock mode on a scope. |
+| **Scope / ownership** | The repo-relative **directories** a node may change (`dir:` only), compared by subtree overlap. |
+| **Conformance** | Commit-time check that every changed path lies inside the node's owned directories. |
 | **Candidate** | A committed unit awaiting verification and integration. |
-| **Wave** | An ordered batch of mutually mergeable candidates used to order integration. |
+| **Wave** | A batch of nodes with disjoint owned subtrees that may run concurrently; also the integration order. |
 | **Fingerprint** | Content hash of (commit tree, command vector, toolchain, policy, source) that pins a verification result. |
 
 ---

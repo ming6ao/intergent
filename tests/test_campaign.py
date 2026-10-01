@@ -54,9 +54,8 @@ class CampaignCase(unittest.TestCase):
         self.svc = Service(self.root)
         return self.svc
 
-    def worker(self, name, rel, content, *, base="feat/x", op="modify"):
+    def worker(self, name, rel, content, *, base="feat/x"):
         ws = self.svc.create_workspace(name, base=base)
-        self.svc.declare_intent(name, operation=op, scope_specs=[f"file:{rel}"])
         (Path(ws["worktree"]) / rel).write_text(content)
         self.svc.commit(name, name)
         self.svc.finish(name)
@@ -148,7 +147,6 @@ class IntegrateTests(CampaignCase):
         Service.init_plane(self.root, checks=self.checks)  # plain plane on main
         self.svc = Service(self.root)
         self.svc.create_workspace("alpha")
-        self.svc.declare_intent("alpha", operation="modify", scope_specs=["file:src/a.py"])
         Path(self.svc.store.get_unit("alpha")["worktree"], "src/a.py").write_text("a = 9\n")
         self.svc.commit("alpha", "alpha")
         self.svc.finish("alpha")
@@ -253,7 +251,7 @@ class ReportTests(CampaignCase):
                         "label": "alpha",
                         "phase": "P0",
                         "goal": "g",
-                        "owns": ["file:src/a.py"],
+                        "owns": ["dir:src"],
                         "depends_on": [],
                         "acceptance": ["true"],
                         "gpu": "none",
@@ -301,10 +299,10 @@ class DagWaveStatusTests(CampaignCase):
         self.campaign_plane()
         self._dag(
             [
-                {"id": "w1", "owns": ["file:src/a.py"], "depends_on": []},
-                {"id": "w2", "owns": ["file:src/a.py"], "depends_on": []},
-                {"id": "w3", "owns": ["file:src/c.py"], "depends_on": ["w1"]},
-                {"id": "w4", "owns": ["file:src/d.py"], "depends_on": []},
+                {"id": "w1", "owns": ["dir:a"], "depends_on": []},
+                {"id": "w2", "owns": ["dir:a"], "depends_on": []},
+                {"id": "w3", "owns": ["dir:c"], "depends_on": ["w1"]},
+                {"id": "w4", "owns": ["dir:d"], "depends_on": []},
             ]
         )
         status = self.svc.status()
@@ -320,8 +318,8 @@ class DagWaveStatusTests(CampaignCase):
         self.campaign_plane()
         self._dag(
             [
-                {"id": "w1", "owns": ["file:src/a.py"], "depends_on": ["w2"]},
-                {"id": "w2", "owns": ["file:src/b.py"], "depends_on": ["w1"]},
+                {"id": "w1", "owns": ["dir:a"], "depends_on": ["w2"]},
+                {"id": "w2", "owns": ["dir:b"], "depends_on": ["w1"]},
             ]
         )
         status = self.svc.status()

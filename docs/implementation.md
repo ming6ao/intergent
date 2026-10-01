@@ -20,15 +20,13 @@ Config:  .intergent/config.json
 |---|---|
 | `intergent/cli.py` | generated `argparse` CLI (`intergent`), human + `--json` output |
 | `intergent/surface.py` | **single source of truth**: action registry, validation, dispatch |
-| `intergent/service.py` | **single owner of state**: sessions, units, intents, leases, candidates, integration |
+| `intergent/service.py` | **single owner of state**: sessions, units, candidates, conformance, integration |
 | `intergent/store.py` | SQLite persistence (WAL) |
-| `intergent/gitutil.py` | Git plumbing (`worktree`, `merge-tree`, `merge`, `commit`, `branch`) |
-| `intergent/scopes.py` | Scope parsing, canonicalization, and the scope tree |
-| `intergent/locks.py` | IS/IX/S/SIX/X compatibility matrix and requirement closure |
-| `intergent/conflict.py` | Deterministic conflict rules `FM-C001..C003` and matching tiers |
+| `intergent/gitutil.py` | Git plumbing (`worktree`, `merge-tree`, `merge`, `commit`, `branch`, `changed_files`) |
+| `intergent/scopes.py` | Directory ownership: normalization, `owns` parsing, subtree conflicts |
 | `intergent/verifier.py` | Fingerprints (plane and node sources) and trusted-check runner |
-| `intergent/planner.py` | Greedy candidate wave packing + combined-tree simulation |
-| `intergent/waves.py` | DAG wave projection for the scheduler (strict scope packing, `concurrency` cap) |
+| `intergent/planner.py` | Candidate ordering by DAG wave + combined-tree simulation |
+| `intergent/waves.py` | DAG wave projection (directory-subtree packing, `concurrency` cap) |
 | `intergent/integrate.py` | Agent-callable feature-branch landing and node verification recording |
 | `intergent/commitops.py` | Shared integration primitives (worktree, merge order, landed marking) |
 | `intergent/campaign.py` | `dag.json` / `state.json` layout and readers |
@@ -41,15 +39,16 @@ A coordinator turns a design into a DAG, then for each ready node creates a unit
 integrates the candidate before any dependent node spawns.
 
 ```text
-Node ──► Unit (worktree + branch) ──► Intent (scopes + operation)
+Node ──► Unit (worktree + branch) ──► owns directories (plan-time)
                                           │
-                         ┌────────────────┴────────────────┐
-                  granted │                          queued │ needs_decision
-                 (leases) │                                 │
-                          ▼                                 ▼
-                commit ──► prepared candidate        worker exits; coordinator
-                                    │                 re-plans / serializes
-                                    ▼
+                       wave packing: subtree overlap ⇒ later wave
+                                          │
+                                          ▼
+                        edit owned dirs ──► commit (conformance check)
+                                          │
+                                          ▼
+                              prepared candidate
+                                          │
                     integrate (--no-ff onto feature branch)
                               │            ▲
                      fingerprint-cached    │ node verdict (source node:<id>)
@@ -57,11 +56,13 @@ Node ──► Unit (worktree + branch) ──► Intent (scopes + operation)
 ```
 
 `done` means verified **and** integrated, so a dependent's base already contains
-its dependencies' code.
+its dependencies' code. There is no runtime lease: serialization is entirely a
+projection of `owns` + `depends_on`, and a commit that leaves the owned
+subtrees is rejected.
 
 ## 3. Action reference
 
-Six actions. The CLI renders them as subcommands and the pi `ig` tool mirrors
+Five actions. The CLI renders them as subcommands and the pi `ig` tool mirrors
 them (`IG_ACTIONS`, asserted in lockstep); the `campaign` tool drives the CLI's
 orchestration loop on top. The engine surface comes from `surface.py`.
 
@@ -69,7 +70,7 @@ orchestration loop on top. The engine surface comes from `surface.py`.
 
 ```bash
 intergent start [--agent NAME] [--name N] [--path DIR] [--main main] [--base main]
-                [--check NAME=COMMAND ...] [--lease-ttl 1800] [--force] [--no-unit]
+                [--check NAME=COMMAND ...] [--force] [--no-unit]
 ```
 
 `start` (alias `init`) is idempotent and the single bootstrap entry point: it
@@ -88,28 +89,20 @@ plane-only helper is `Service.init_plane(root, ...)`.
 ### Authoring (workers)
 
 ```bash
-intergent declare --unit U --operation OP --scope "KIND:KEY[=OP]" [--scope ...]
-intergent declare --unit U --dry-run --operation OP --scope "KIND:KEY"   # check only
-intergent declare --unit U --renew                                       # heartbeat
-intergent declare --unit U --release                                     # release leases
 intergent commit --unit U -m "message" [--summary S]
 ```
 
-Agents and sessions are created implicitly: `start` registers the agent/session
-named by `--agent`/`--session`.
+A worker does not declare anything at runtime. Its node's `owns` directories are
+part of `dag.json` and are handed to it by the coordinator's `spawn` action.
+`commit` runs a **plan-conformance check**: it computes
+`git diff --name-only <unit.base_commit> <head>` and rejects the commit if any
+changed path lies outside the node's owned directory subtrees. A rejection means
+the planner under-declared: the coordinator widens `owns` or adds a `depends_on`
+edge, the DAG fingerprint changes, and the waves replan.
 
-Scope syntax is `kind:key[=operation]`, e.g. `file:src/app.py=modify`,
-`symbol:src/app.py#Login.run=replace`, `config:app.timeout=extend`. The
-intent-level `--operation` is the default per scope.
-
-`declare` returns one of:
-
-- `granted` — leases acquired; the worker may edit;
-- `queued` — `{position, blocker, blocker_node, eta_seconds}`; the worker
-  **exits immediately** and reports the blocker (the coordinator serializes the
-  node or re-plans); never block and never force a conflict;
-- `needs_decision` — destructive-vs-additive on an exact scope; the worker stops
-  and the coordinator re-plans.
+Ownership syntax is `dir:PATH` (a bare path is accepted). Non-directory specs
+(`file:`, `symbol:`, …) are rejected when the DAG is projected. See
+[Conflict engine](./conflict-engine.md).
 
 ### Candidates and integration
 
@@ -128,7 +121,7 @@ intergent status [--health] [--gc] [--short] [--unit U]
 - merges each unit branch onto the plane's `main_branch` (the feature branch)
   with `git merge --no-ff` (branches kept for provenance);
 - runs the plane's trusted checks on the combined tree (fingerprint-cached);
-- marks candidates and units `landed` and releases their leases.
+- marks candidates and units `landed`.
 
 It is idempotent; a merge conflict aborts the merge and returns structured
 findings without leaving the feature branch half-merged; combined checks that
@@ -141,42 +134,18 @@ which the orchestrator's verifier uses. `report` writes the deterministic
 
 ## 4. Semantics implemented
 
-### Scope canonicalization (`scopes.py`)
+### Directory ownership (`scopes.py`)
 
-- case-fold, path-clean, strip `./`, de-duplicate;
-- `dir` scopes carry a trailing slash; a file's basename is never treated as a
-  directory ancestor;
-- symbol scopes are `path#Symbol::member`, with the enclosing class as a parent;
-- `api` scopes normalize `METHOD /path`;
-- kinds: `dir, file, symbol, api, schema, config, migration, infra, test`.
+- normalize paths (`dir:src/api/` → `src/api`); the repository root is `"."`
+  and is an ancestor of every directory;
+- `parse_owns` accepts `dir:PATH` / bare paths and rejects every non-directory
+  kind, so a plan cannot silently depend on file-level serialization;
+- `owns_conflict` returns a reason when two owned sets overlap by subtree
+  (equal, ancestor, descendant) on path-segment boundaries; there is no fuzzy
+  matching;
+- `path_within_owns` backs the commit-time conformance check.
 
-### Hierarchical leases (`locks.py`)
-
-Requirement closure computes a lock mode for every node on the scope-tree path
-from `root` to each declared scope:
-
-- additive (`add`/`extend`/`modify`) → `S` on the declared scope, `IS` on
-  ancestors;
-- destructive (`replace`/`remove`/`rename`/`migrate`) → `X` on the declared
-  scope, `IX` on ancestors;
-- a node that is both shared and exclusive-intention becomes `SIX`.
-
-Compatibility is the design matrix. A request is granted only when its closure
-is compatible with every granted claim of other units; otherwise it is queued
-FIFO behind the blocker. `root-to-leaf` closure + per-node compatibility makes
-acquisition order-independent, so there is no deadlock.
-
-### Conflict rules (`conflict.py`)
-
-| Rule | Condition | Severity |
-|---|---|---|
-| `FM-C001 destructive_vs_additive` | one destructive, one additive, overlapping | HIGH if exact/asserted, else MEDIUM |
-| `FM-C002 divergent_rewrite` | both destructive, overlapping | HIGH if exact/asserted, else MEDIUM |
-| `FM-C003 shared_contract` | both additive, overlapping | MEDIUM if exact, else LOW |
-
-Only asserted `FM-C001` requires a decision (`requires_decision`) and returns
-`needs_decision`. `FM-C001`/`FM-C002` also stop two candidates from sharing a
-wave. No model is in the verdict path.
+Ownership is entirely plan-time; see [Conflict engine](./conflict-engine.md).
 
 ### Verification (`verifier.py`)
 
@@ -192,26 +161,23 @@ wave. No model is in the verdict path.
   acceptance fingerprint cannot collide.
 
 Checks run in a clean detached scratch worktree at the commit. A passing
-verification for an unchanged fingerprint is reused from cache. A pass releases
-the unit's leases and promotes queued waiters; a failure keeps them.
+verification for an unchanged fingerprint is reused from cache; verification
+itself never mutates the candidate or the feature branch.
 
 ### Waves and simulation (`planner.py`, `waves.py`)
 
 There are two wave planners, and they answer different questions:
 
 - **`waves.plan_dag_waves`** is the **scheduler**. Before any work runs, it packs
-  DAG nodes into waves from declared `owns` scopes and `depends_on`, capped by
-  `concurrency` (default 3). The policy is strict: any scope match between two
-  nodes forces the later one into a later wave. `Service.status()` exposes the
-  projection as `dag_waves`; the orchestrator persists it and refuses to spawn a
-  node outside the current wave. A changed DAG fingerprint (`id`, `owns`,
-  `depends_on`) triggers a replan.
-- **`planner.plan_waves`** orders *committed candidates* for **integration**.
-  Candidates are packed greedily by real mergeability: a pair is not co-waved if
-  `git merge-tree` conflicts or if `evaluate` reports `FM-C001`/`FM-C002`;
-  lease-ordering dependencies force the waiter into a later wave. Each wave is
-  materialized as a synthetic combined commit and the configured checks run once
-  over the combined tree.
+  DAG nodes into waves from `owns` and `depends_on`, capped by `concurrency`
+  (default 3). Directory-subtree overlap forces the later node into a later
+  wave. `Service.status()` exposes the projection as `dag_waves`; the
+  orchestrator persists it and refuses to spawn a node outside the current wave.
+  A changed DAG fingerprint (`id`, `owns`, `depends_on`) triggers a replan.
+- **`planner.plan_waves`** groups *committed candidates* by their DAG wave index
+  for **integration**. Each wave is materialized as a synthetic combined commit
+  and the configured checks run once over the combined tree; textual merge
+  conflicts are detected by git during `integrate`.
 
 `integrate` flattens the candidate wave plan into a merge order and advances the
 feature branch one `--no-ff` merge at a time, verifying the combined tree after
@@ -230,8 +196,8 @@ The pi package registers two tools:
 
 - `campaign` (coordinator): `start`, `status`, `ready`, `spawn`, `verify`,
   `integrate`, `report`.
-- `ig` (worker): the engine verbs `start`, `status`, `declare`, `commit`,
-  `integrate`, `report`.
+- `ig` (worker): the engine verbs `start`, `status`, `commit`, `integrate`,
+  `report`.
 
 Both are thin forwarders over the CLI (`runIg`), so the engine is never imported
 into the agent runtime and no `PATH` install is needed. Both register
@@ -248,19 +214,19 @@ each agent's `tools:` allowlist to `pi --tools`: a worker gets `ig` but never
 python3 -m unittest discover -s tests -v
 ```
 
-The suite covers scope canonicalization/hierarchy, the lock matrix and closure,
-conflict rules, and end-to-end flows (campaign integration and idempotency,
-conflict atomicity, node verification caching, queueing and promotion, expired
-leases, failing checks, simulation, cleanup, reporting) plus CLI and packaging
-smoke tests.
+The suite covers directory normalization and subtree conflicts, DAG wave
+projection, commit-time plan conformance, and end-to-end flows (campaign
+integration and idempotency, conflict atomicity, node verification caching,
+failing checks, simulation, cleanup, reporting) plus CLI and packaging smoke
+tests.
 
 ## 7. Deliberate gaps
 
-- Symbol/AST extraction is not yet wired to `tree-sitter`; declared scopes and
-  `git merge-tree` are the detectors. Dependency edges beyond declared intent
+- Symbol/AST extraction is not implemented; directory ownership and
+  `git merge-tree` are the detectors. Dependency edges beyond `owns`/`depends_on`
   are not inferred.
 - No long-lived daemon or unix socket yet: the CLI calls the SQLite service
-  directly (WAL). Lease expiry is reaped lazily on the next call.
+  directly (WAL).
 - `jj` workspaces, sandboxing, and shared dependency caches are not implemented.
 
 Prev: [Local plane](./local-plane.md) · Next: [Agent integration](./agents.md)

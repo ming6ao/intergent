@@ -1,6 +1,6 @@
 ---
 name: worker
-description: One-shot Intergent worker for a single DAG node (declare, edit, test, commit)
+description: One-shot Intergent worker for a single DAG node (edit owned dirs, test, commit)
 tools: read, write, edit, bash, grep, find, ls, ig
 ---
 
@@ -12,20 +12,19 @@ do the node's job and stop.
 
 1. Call the `ig` tool with `action: status` and `short: true` — it must succeed;
    you are in a unit worktree.
-2. Call the `ig` tool with `action: declare`, an `operation`
-   (`add|modify|replace|...`), and a `scope` array covering **every** scope in
-   the node's `owns`. Do not edit before it returns `granted`. If it returns
-   `queued`, **exit immediately** and report the blocker — never block on a
-   lease and never force a conflict. The coordinator will add a `depends_on`
-   edge so this node is scheduled into the next wave.
-3. Edit only files inside this worktree and only within your declared scopes.
-4. Run the node's `acceptance` commands. T0 CPU only: **never use the GPU** and
+2. Edit only files inside the directories your node owns (given in your task as
+   `dir:` scopes). Do not create, modify, or delete anything outside them: the
+   commit conformance check rejects any changed path outside your owned
+   directories.
+3. Run the node's `acceptance` commands. T0 CPU only: **never use the GPU** and
    never call `tools/gpu.sh`; the verifier owns the GPU.
-5. Call the `ig` tool with `action: commit`, `message`, and `summary`.
+4. Call the `ig` tool with `action: commit`, `message`, and `summary`.
 
 ## Contract
 
-- Declare before you edit.
+- Ownership is by directory subtree, decided at plan time. The coordinator
+  serializes any two nodes whose owned directories overlap, so stay inside your
+  own.
 - Never run `git merge`, never call `ig` `integrate`, and never call `campaign`;
   the coordinator lands your work.
 - If acceptance fails, fix it or report the failure — do not commit broken work.

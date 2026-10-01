@@ -1,7 +1,7 @@
 # Local plane
 
 Runs per user, on the developer's machine. Advisory but fast; holds isolation,
-leases, and local verification.
+plan-time ownership, and local verification.
 
 ## 1. Workspace isolation
 
@@ -10,64 +10,48 @@ leases, and local verification.
 - Gitignored deps (`node_modules`, `.venv`, `target/`) are the user's
   responsibility; a shared dependency cache is out of scope.
 
-## 2. Units and scopes
+## 2. Units and ownership
 
 ```text
 Campaign (feature branch + dag.json)
  ├─ Coordinator (no unit)
- ├─ Worker (own worktree)   narrow intent + lease   e.g. file:src/tensor.cc
- └─ Verifier (no lease)     read-only; pinned to a commit fingerprint
+ ├─ Worker (own worktree)   owns directories   e.g. dir:src/api
+ └─ Verifier (no unit)      read-only; pinned to a commit fingerprint
 ```
 
-- Coordinate **write units**, not every LLM call: if it can commit, it must
-  declare; if it only reads, it is out of the graph.
-- A worker declares **narrow scopes** before editing; the coordinator serializes
-  or re-plans when two nodes would overlap.
+- Coordinate **write units**, not every LLM call: if it can commit, it owns
+  directories; if it only reads, it is out of the graph.
+- A node owns the **deepest directories** that contain the paths it touches.
+  Two nodes that own overlapping directory subtrees are serialized into
+  different waves; there is no runtime declare, lease, or queue.
+- There is no intent/conflict engine at runtime. The only authored ordering is
+  `dag.json` (`owns` + `depends_on`), and it is fully consumed by the wave
+  projection before any worker starts.
 
-## 3. Scope lock manager and authoring queue
+## 3. Plan-time serialization
 
-**Conflict prevention**, distinct from integration order.
+`intergent/waves.py` packs nodes into waves (see
+[Conflict engine](./conflict-engine.md)):
 
-### Modes (multi-granularity locking over the scope tree)
+- a node is at least `max(wave(dep) + 1)` for every dependency;
+- the per-wave size is capped by `concurrency` (default 3);
+- no two members of a wave own overlapping directory subtrees.
+
+`status.dag_waves` exposes the projection; the orchestrator persists it in
+`state.json` and replans when the DAG fingerprint changes.
+
+### Conformance at commit time
+
+Because there is no lease, the guarantee is enforced after the worker commits:
 
 ```text
-Locks: IS IX S SIX X
-Compatibility (granted \ requested):
-          IS   IX   S    SIX  X
-    IS     ✓    ✓    ✓    ✓    ✗
-    IX     ✓    ✓    ✗    ✗    ✗
-    S      ✓    ✗    ✓    ✗    ✗
-    SIX    ✓    ✗    ✗    ✗    ✗
-    X      ✗    ✗    ✗    ✗    ✗
+changed = git diff --name-only <unit.base_commit> <head>
+any changed path outside the node's owned directories  ->  reject the commit
 ```
 
-Rules: to take `S`/`IS` on a node, hold `IS`+ on its parent; to take
-`X`/`IX`/`SIX`, hold `IX`+ on its parent. Acquire **root-to-leaf in canonical
-scope order** → deadlock-free. Multi-scope requests are all-or-nothing.
-
-### Policy by operation class
-
-| Case | Mode | Behavior |
-|---|---|---|
-| additive, disjoint symbols in same file | S | both proceed; co-test |
-| additive, same symbol | S | both proceed; advisory; co-test |
-| destructive (`replace`/`remove`/…) | X | **queue**: second waits |
-| destructive vs additive | — | **do not silently queue**: return `needs_decision`; the coordinator re-plans |
-
-### Lease lifecycle
-
-```text
-declare → conflict? ──no──► GRANTED ──heartbeat──► commit ──► integrate ──► RELEASE
-                    │           └──── heartbeat lost (TTL) ───────────────────────┘
-                   yes
-                    ▼
-                 QUEUED(position, blocker) ──on release/expiry──► GRANTED
-```
-
-- TTL + heartbeat so a crashed/idle unit cannot stall the queue.
-- Waiting semantics: a worker that receives `queued` **exits immediately** and
-  reports the blocker; the coordinator serializes the node (adds a
-  `depends_on` edge) or re-plans. A worker never blocks or overrides.
+A rejection means the planner under-declared. The coordinator widens `owns` or
+adds a `depends_on` edge; the DAG fingerprint changes and the next
+`status`/`ready`/`spawn` replans.
 
 ## 4. Verification
 
@@ -82,24 +66,19 @@ declare → conflict? ──no──► GRANTED ──heartbeat──► commit 
 
 ## 5. Wave planning and simulation
 
-`status --simulate` merges the prepared candidates into scratch trees and runs
-the combined checks. The same planner orders `integrate`.
-
-The campaign **scheduler** uses a second, stricter projection over the DAG
-itself (`intergent/waves.py`): before any work runs, nodes are packed into
-waves from declared `owns` scopes and `depends_on`, capped by `concurrency`
-(default 3). Any scope overlap forces the later node into a later wave. The
-projection is returned as `status.dag_waves` and persisted by the orchestrator;
-a node may only spawn in the current wave, and the next wave opens after the
-previous one is integrated. See [Orchestration](./orchestration.md) §3/§5.
+`status --simulate` groups the prepared candidates by DAG wave, merges each
+wave's candidates into a scratch tree, and runs the combined checks. The same
+DAG-wave order drives `integrate`.
 
 ```text
 intergent status --simulate
-  wave 1: docs-agent, auth-agent
-  wave 2: payments-agent        (conflicts with wave 1 on symbol:PaymentService)
-  wave 3: pay-agent             (depends on payments-agent)
+  wave 0: docs-agent, auth-agent
+  wave 1: payments-agent        (depends_on auth-agent)
+  wave 2: pay-agent             (depends_on payments-agent)
   combined checks: PASS
 ```
+
+See [Orchestration](./orchestration.md) §3/§5.
 
 ---
 
@@ -113,10 +92,11 @@ is the local store. Key mappings:
 | Design concept | Implementation |
 |---|---|
 | worktree + branch per unit | `start --name` → `ig/<unit>` branch and `.intergent/worktrees/...` |
-| declared intent | `declare --operation ... --scope ...` (`intergent/scopes.py`) |
-| scope lock manager + queue | `intergent/locks.py` (IS/IX/S/SIX/X) and `lock_requests`/`claims` |
+| directory ownership + subtree conflict | `intergent/scopes.py` |
+| wave projection | `intergent/waves.py` |
+| commit plan conformance | `Service._conformance_violations` in `intergent/service.py` |
 | fingerprint-pinned verification | `intergent/verifier.py` (`tree, cmd, toolchain, policy, source`) |
-| wave planning + simulation | `intergent/planner.py`, `intergent/waves.py` |
+| candidate ordering + simulation | `intergent/planner.py` |
 | campaign integration | `intergent/integrate.py` + `intergent/commitops.py` |
 | `dag.json` / `state.json` | `intergent/campaign.py`; report in `intergent/report.py` |
 

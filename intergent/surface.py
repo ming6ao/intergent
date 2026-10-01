@@ -5,8 +5,7 @@ The CLI and the pi extension both derive their verbs/tools from
 :func:`dispatch` is the single implementation every adapter calls; adapters only
 parse arguments and render results.
 
-Names are deliberately few and overloaded by flags: ``declare --renew`` is a
-heartbeat, ``declare --dry-run`` is a conflict check.  Every action is
+Names are deliberately few and overloaded by flags.  Every action is
 agent-callable; there are no human-only actions.
 """
 
@@ -58,14 +57,13 @@ ACTIONS: tuple[Action, ...] = (
             Param("task", "string", "task description stored on the session"),
             Param("main_branch", "string", "integration branch to adopt (default: current; must exist)", flag="main"),
             Param("checks", "list", "trusted check NAME=COMMAND (repeatable)", flag="check"),
-            Param("lease_ttl", "int", "lease TTL in seconds"),
             Param("force", "boolean", "overwrite an existing config"),
             Param("no_unit", "boolean", "initialise the plane without creating a unit for cwd"),
         ),
     ),
     Action(
         name="status",
-        summary="show units, candidates, leases, waves, and health",
+        summary="show units, candidates, waves, and health",
         params=(
             Param("unit", "string", "show one unit instead of the summary"),
             Param("short", "boolean", "print only the current unit name"),
@@ -73,22 +71,6 @@ ACTIONS: tuple[Action, ...] = (
             Param("health", "boolean", "check git/plane health"),
             Param("gc", "boolean", "prune worktrees and landed-unit branches"),
             Param("no_checks", "boolean", "with --simulate: plan only, do not run checks"),
-        ),
-    ),
-    Action(
-        name="declare",
-        summary="declare scopes and acquire leases (also checks, renews, releases)",
-        params=(
-            Param("unit", "string", "unit (defaults to the worktree containing cwd)"),
-            Param("operation", "string", "scope operation", choices=(
-                "add", "extend", "modify", "replace", "remove", "rename", "migrate"
-            )),
-            Param("scopes", "list", "scope spec KIND:KEY[=OP] (repeatable)", flag="scope"),
-            Param("task", "string", "task label for the intent"),
-            Param("summary", "string", "summary for the intent"),
-            Param("dry_run", "boolean", "conflict check only; take no lease"),
-            Param("renew", "boolean", "renew this unit's leases"),
-            Param("release", "boolean", "release this unit's leases and promote waiters"),
         ),
     ),
     Action(
@@ -170,7 +152,6 @@ def start(params: dict[str, Any], *, cwd: str | Path | None = None) -> dict[str,
         kind=params.get("kind") or "worker",
         main_branch=params.get("main_branch"),
         checks=parse_checks(params.get("checks") or []),
-        lease_ttl_seconds=params.get("lease_ttl") or 1800,
         force=bool(params.get("force")),
         no_unit=bool(params.get("no_unit")),
     )
@@ -223,28 +204,6 @@ def _dispatch_status(service: "Service", p: dict[str, Any]) -> Any:
     return service.status()
 
 
-def _dispatch_declare(service: "Service", p: dict[str, Any]) -> Any:
-    unit = _resolve_unit(service, p)
-    if p.get("renew"):
-        return service.heartbeat(unit)
-    if p.get("release"):
-        return service.release(unit)
-    operation = p.get("operation")
-    if not operation:
-        raise IntergentError("declare requires --operation (or --dry-run/--renew/--release)")
-    scopes = list(p.get("scopes") or [])
-    if p.get("dry_run"):
-        findings = service.check_conflicts(unit, operation, scopes)
-        return {"findings": [f.to_dict() for f in findings]}
-    return service.declare_intent(
-        unit,
-        operation=operation,
-        scope_specs=scopes,
-        task=p.get("task"),
-        summary=p.get("summary"),
-    )
-
-
 def _dispatch_commit(service: "Service", p: dict[str, Any]) -> Any:
     unit = _resolve_unit(service, p)
     commit = service.commit(unit, p["message"])
@@ -269,7 +228,6 @@ def _dispatch_report(service: "Service", p: dict[str, Any]) -> Any:
 
 _HANDLERS = {
     "status": _dispatch_status,
-    "declare": _dispatch_declare,
     "commit": _dispatch_commit,
     "integrate": _dispatch_integrate,
     "report": _dispatch_report,

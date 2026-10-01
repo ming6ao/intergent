@@ -55,72 +55,9 @@ CREATE TABLE IF NOT EXISTS units (
   UNIQUE(session_id, name)
 );
 
-CREATE TABLE IF NOT EXISTS scopes (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  kind TEXT NOT NULL,
-  key TEXT NOT NULL,
-  canonical TEXT NOT NULL,
-  node TEXT NOT NULL UNIQUE
-);
-
-CREATE TABLE IF NOT EXISTS intents (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  unit_id INTEGER NOT NULL REFERENCES units(id),
-  task TEXT,
-  summary TEXT,
-  operation TEXT NOT NULL,
-  status TEXT NOT NULL DEFAULT 'active',
-  created_at REAL NOT NULL,
-  updated_at REAL NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS intent_scopes (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  intent_id INTEGER NOT NULL REFERENCES intents(id),
-  scope_id INTEGER NOT NULL REFERENCES scopes(id),
-  operation TEXT NOT NULL,
-  source TEXT NOT NULL DEFAULT 'declared'
-);
-
-CREATE TABLE IF NOT EXISTS lock_requests (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  intent_id INTEGER NOT NULL REFERENCES intents(id),
-  unit_id INTEGER NOT NULL REFERENCES units(id),
-  status TEXT NOT NULL,
-  requirements TEXT NOT NULL,
-  blocker_unit_id INTEGER,
-  position INTEGER,
-  reason TEXT,
-  created_at REAL NOT NULL,
-  updated_at REAL NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS claims (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  request_id INTEGER NOT NULL REFERENCES lock_requests(id),
-  intent_id INTEGER NOT NULL REFERENCES intents(id),
-  unit_id INTEGER NOT NULL REFERENCES units(id),
-  node TEXT NOT NULL,
-  mode TEXT NOT NULL,
-  state TEXT NOT NULL DEFAULT 'granted',
-  ttl_seconds INTEGER NOT NULL,
-  heartbeat_at REAL NOT NULL,
-  created_at REAL NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS dependencies (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  intent_id INTEGER NOT NULL REFERENCES intents(id),
-  depends_on_intent_id INTEGER NOT NULL REFERENCES intents(id),
-  kind TEXT NOT NULL DEFAULT 'lease_order',
-  created_at REAL NOT NULL,
-  UNIQUE(intent_id, depends_on_intent_id, kind)
-);
-
 CREATE TABLE IF NOT EXISTS candidates (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   unit_id INTEGER NOT NULL REFERENCES units(id),
-  intent_id INTEGER REFERENCES intents(id),
   branch TEXT NOT NULL,
   head_commit TEXT NOT NULL,
   base_commit TEXT,
@@ -160,15 +97,11 @@ CREATE TABLE IF NOT EXISTS events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   kind TEXT NOT NULL,
   unit_id INTEGER,
-  intent_id INTEGER,
   candidate_id INTEGER,
   data TEXT,
   created_at REAL NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_claims_node ON claims(node, state);
-CREATE INDEX IF NOT EXISTS idx_claims_unit ON claims(unit_id, state);
-CREATE INDEX IF NOT EXISTS idx_intents_unit ON intents(unit_id, status);
 CREATE INDEX IF NOT EXISTS idx_candidates_status ON candidates(status);
 """
 
@@ -272,14 +205,13 @@ class Store:
         kind: str,
         *,
         unit_id: int | None = None,
-        intent_id: int | None = None,
         candidate_id: int | None = None,
         data: Any = None,
     ) -> None:
         self.conn.execute(
-            "INSERT INTO events(kind, unit_id, intent_id, candidate_id, data, created_at)"
-            " VALUES(?,?,?,?,?,?)",
-            (kind, unit_id, intent_id, candidate_id, json.dumps(data) if data else None, now()),
+            "INSERT INTO events(kind, unit_id, candidate_id, data, created_at)"
+            " VALUES(?,?,?,?,?)",
+            (kind, unit_id, candidate_id, json.dumps(data) if data else None, now()),
         )
 
     # ---- agents -------------------------------------------------------
@@ -367,230 +299,11 @@ class Store:
         sql += " ORDER BY id"
         return _dicts(self.conn.execute(sql).fetchall())
 
-    # ---- scopes -------------------------------------------------------
-    def get_or_create_scope(self, kind: str, key: str, canonical: str) -> int:
-        node = f"{kind}:{canonical}"
-        row = self.conn.execute("SELECT id FROM scopes WHERE node=?", (node,)).fetchone()
-        if row is not None:
-            return int(row["id"])
-        with self.tx() as c:
-            c.execute(
-                "INSERT INTO scopes(kind, key, canonical, node) VALUES(?,?,?,?)",
-                (kind, key, canonical, node),
-            )
-            row = c.execute("SELECT id FROM scopes WHERE node=?", (node,)).fetchone()
-        return int(row["id"])
-
-    # ---- intents ------------------------------------------------------
-    def create_intent(
-        self, unit_id: int, task: str | None, summary: str | None, operation: str
-    ) -> int:
-        ts = now()
-        with self.tx() as c:
-            c.execute(
-                "INSERT INTO intents(unit_id, task, summary, operation, status, created_at,"
-                " updated_at) VALUES(?,?,?,?,?,?,?)",
-                (unit_id, task, summary, operation, "active", ts, ts),
-            )
-            return int(c.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
-
-    def add_intent_scope(
-        self, intent_id: int, scope_id: int, operation: str, source: str = "declared"
-    ) -> None:
-        self.conn.execute(
-            "INSERT INTO intent_scopes(intent_id, scope_id, operation, source) VALUES(?,?,?,?)",
-            (intent_id, scope_id, operation, source),
-        )
-
-    def set_intent_status(self, intent_id: int, status: str) -> None:
-        self.conn.execute(
-            "UPDATE intents SET status=?, updated_at=? WHERE id=?", (status, now(), intent_id)
-        )
-
-    def get_intent(self, intent_id: int) -> dict[str, Any] | None:
-        return _dict(
-            self.conn.execute("SELECT * FROM intents WHERE id=?", (intent_id,)).fetchone()
-        )
-
-    def intent_scopes(self, intent_id: int) -> list[dict[str, Any]]:
-        rows = self.conn.execute(
-            "SELECT i.operation, i.source, s.kind, s.key, s.canonical, s.node"
-            " FROM intent_scopes i JOIN scopes s ON s.id = i.scope_id"
-            " WHERE i.intent_id=? ORDER BY s.node",
-            (intent_id,),
-        ).fetchall()
-        return _dicts(rows)
-
-    def active_intents(self, *, exclude_unit: int | None = None) -> list[dict[str, Any]]:
-        sql = (
-            "SELECT i.*, u.name AS unit_name FROM intents i"
-            " JOIN units u ON u.id = i.unit_id"
-            " WHERE i.status IN ('granted','queued','needs_decision','active')"
-        )
-        params: list[Any] = []
-        if exclude_unit is not None:
-            sql += " AND i.unit_id != ?"
-            params.append(exclude_unit)
-        rows = self.conn.execute(sql, params).fetchall()
-        result = []
-        for row in rows:
-            item = _dict(row)
-            item["scopes"] = self.intent_scopes(int(row["id"]))
-            result.append(item)
-        return result
-
-    def latest_intent_for_unit(self, unit_id: int) -> dict[str, Any] | None:
-        return _dict(
-            self.conn.execute(
-                "SELECT * FROM intents WHERE unit_id=? ORDER BY id DESC LIMIT 1", (unit_id,)
-            ).fetchone()
-        )
-
-    # ---- lock requests / claims --------------------------------------
-    def create_lock_request(
-        self,
-        *,
-        intent_id: int,
-        unit_id: int,
-        status: str,
-        requirements: dict[str, str],
-        blocker_unit_id: int | None = None,
-        position: int | None = None,
-        reason: str | None = None,
-    ) -> int:
-        ts = now()
-        with self.tx() as c:
-            c.execute(
-                "INSERT INTO lock_requests(intent_id, unit_id, status, requirements,"
-                " blocker_unit_id, position, reason, created_at, updated_at)"
-                " VALUES(?,?,?,?,?,?,?,?,?)",
-                (
-                    intent_id,
-                    unit_id,
-                    status,
-                    json.dumps(requirements, sort_keys=True),
-                    blocker_unit_id,
-                    position,
-                    reason,
-                    ts,
-                    ts,
-                ),
-            )
-            return int(c.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
-
-    def set_lock_request_status(
-        self,
-        request_id: int,
-        status: str,
-        *,
-        blocker_unit_id: int | None = None,
-        reason: str | None = None,
-    ) -> None:
-        self.conn.execute(
-            "UPDATE lock_requests SET status=?, blocker_unit_id=?, reason=?, updated_at=?"
-            " WHERE id=?",
-            (status, blocker_unit_id, reason, now(), request_id),
-        )
-
-    def grant_claims(
-        self,
-        *,
-        request_id: int,
-        intent_id: int,
-        unit_id: int,
-        requirements: dict[str, str],
-        ttl_seconds: int,
-    ) -> None:
-        ts = now()
-        with self.tx() as c:
-            for node, mode in requirements.items():
-                c.execute(
-                    "INSERT INTO claims(request_id, intent_id, unit_id, node, mode, state,"
-                    " ttl_seconds, heartbeat_at, created_at) VALUES(?,?,?,?,?,?,?,?,?)",
-                    (request_id, intent_id, unit_id, node, mode, "granted", ttl_seconds, ts, ts),
-                )
-
-    def release_claims(self, unit_id: int, *, state: str = "released") -> None:
-        self.conn.execute(
-            "UPDATE claims SET state=? WHERE unit_id=? AND state='granted'", (state, unit_id)
-        )
-
-    def held_claims(self, *, exclude_unit: int | None = None) -> list[dict[str, Any]]:
-        sql = (
-            "SELECT c.*, u.name AS unit_name FROM claims c"
-            " JOIN units u ON u.id = c.unit_id WHERE c.state='granted'"
-        )
-        params: list[Any] = []
-        if exclude_unit is not None:
-            sql += " AND c.unit_id != ?"
-            params.append(exclude_unit)
-        rows = self.conn.execute(sql, params).fetchall()
-        return _dicts(rows)
-
-    def get_lock_request_for_unit(self, unit_id: int) -> dict[str, Any] | None:
-        return _dict(
-            self.conn.execute(
-                "SELECT * FROM lock_requests WHERE unit_id=? AND status IN"
-                " ('granted','queued','needs_decision') ORDER BY id DESC LIMIT 1",
-                (unit_id,),
-            ).fetchone()
-        )
-
-    def queued_requests(self) -> list[dict[str, Any]]:
-        rows = self.conn.execute(
-            "SELECT lr.*, u.name AS unit_name FROM lock_requests lr"
-            " JOIN units u ON u.id = lr.unit_id"
-            " WHERE lr.status='queued' ORDER BY lr.created_at ASC, lr.id ASC"
-        ).fetchall()
-        return _dicts(rows)
-
-    def expire_claims(self, now_ts: float) -> list[int]:
-        """Return unit ids whose granted claims have gone stale."""
-        rows = self.conn.execute(
-            "SELECT DISTINCT unit_id FROM claims WHERE state='granted'"
-            " AND (heartbeat_at + ttl_seconds) < ?",
-            (now_ts,),
-        ).fetchall()
-        return [int(r["unit_id"]) for r in rows]
-
-    def heartbeat(self, unit_id: int, ttl_seconds: int) -> int:
-        cur = self.conn.execute(
-            "UPDATE claims SET heartbeat_at=?, ttl_seconds=?"
-            " WHERE unit_id=? AND state='granted'",
-            (now(), ttl_seconds, unit_id),
-        )
-        return cur.rowcount
-
-    def queue_position(self, request_id: int) -> int:
-        row = self.conn.execute(
-            "SELECT id FROM lock_requests WHERE status='queued' ORDER BY created_at ASC, id ASC"
-        ).fetchall()
-        for index, r in enumerate(row, start=1):
-            if int(r["id"]) == request_id:
-                return index
-        return 0
-
-    # ---- dependencies -------------------------------------------------
-    def add_dependency(self, intent_id: int, depends_on: int, kind: str = "lease_order") -> None:
-        self.conn.execute(
-            "INSERT OR IGNORE INTO dependencies(intent_id, depends_on_intent_id, kind, created_at)"
-            " VALUES(?,?,?,?)",
-            (intent_id, depends_on, kind, now()),
-        )
-
-    def dependencies_for_intent(self, intent_id: int) -> list[dict[str, Any]]:
-        return _dicts(
-            self.conn.execute(
-                "SELECT * FROM dependencies WHERE intent_id=?", (intent_id,)
-            ).fetchall()
-        )
-
     # ---- candidates ---------------------------------------------------
     def create_candidate(
         self,
         *,
         unit_id: int,
-        intent_id: int | None,
         branch: str,
         head_commit: str,
         base_commit: str,
@@ -600,10 +313,10 @@ class Store:
         ts = now()
         with self.tx() as c:
             c.execute(
-                "INSERT INTO candidates(unit_id, intent_id, branch, head_commit, base_commit,"
+                "INSERT INTO candidates(unit_id, branch, head_commit, base_commit,"
                 " priority, status, summary, created_at, updated_at)"
-                " VALUES(?,?,?,?,?,?,?,?,?,?)",
-                (unit_id, intent_id, branch, head_commit, base_commit, priority, "prepared", summary, ts, ts),
+                " VALUES(?,?,?,?,?,?,?,?,?)",
+                (unit_id, branch, head_commit, base_commit, priority, "prepared", summary, ts, ts),
             )
             return int(c.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
 

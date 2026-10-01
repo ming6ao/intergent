@@ -33,7 +33,7 @@ def run_cli(args, cwd):
 
 
 class CliTests(unittest.TestCase):
-    def test_init_declare_and_status_json(self):
+    def test_init_and_status_json(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             subprocess.run(["git", "init", "-q", "-b", "main"], cwd=tmp, check=True)
@@ -49,15 +49,6 @@ class CliTests(unittest.TestCase):
 
             out = run_cli(["--json", "start", "--name", "alpha"], root)
             self.assertEqual(out.returncode, 0, out.stderr)
-
-            out = run_cli(
-                ["--json", "declare", "--unit", "alpha", "--operation", "modify",
-                 "--scope", "file:a.txt"],
-                root,
-            )
-            self.assertEqual(out.returncode, 0, out.stderr)
-            payload = json.loads(out.stdout)
-            self.assertEqual(payload["status"], "granted")
 
             out = run_cli(["status", "--json"], root)
             self.assertEqual(out.returncode, 0, out.stderr)
@@ -116,18 +107,6 @@ class CliTests(unittest.TestCase):
             run_cli(["--json", "start"], root)
             run_cli(["--json", "start", "--name", "alpha"], root)
             run_cli(["--json", "start", "--name", "beta"], root)
-
-            run_cli(
-                ["--json", "declare", "--unit", "alpha", "--operation", "extend",
-                 "--scope", "config:app.timeout"],
-                root,
-            )
-            out = run_cli(
-                ["--json", "declare", "--unit", "beta", "--operation", "replace",
-                 "--scope", "config:app.timeout"],
-                root,
-            )
-            self.assertEqual(json.loads(out.stdout)["status"], "needs_decision")
 
             out = run_cli(["--json", "status", "--health"], root)
             self.assertEqual(out.returncode, 0, out.stderr)
@@ -195,13 +174,6 @@ class CliTests(unittest.TestCase):
             self.assertEqual(out.returncode, 0, out.stderr)
             self.assertEqual(out.stdout.strip(), "alpha")
 
-            out = run_cli(
-                ["--json", "declare", "--operation", "modify", "--scope", "file:a.txt"],
-                worktree,
-            )
-            self.assertEqual(out.returncode, 0, out.stderr)
-            self.assertEqual(json.loads(out.stdout)["status"], "granted")
-
             (worktree / "a.txt").write_text("changed\n")
             # `commit` commits and registers a prepared candidate in one call.
             out = run_cli(["--json", "commit", "-m", "change"], worktree)
@@ -253,11 +225,6 @@ class CliTests(unittest.TestCase):
                 out = run_cli(["--json", "start", "--name", name, "--base", "feat/x"], root)
                 self.assertEqual(out.returncode, 0, out.stderr)
                 worktree = Path(json.loads(out.stdout)["worktree"])
-                out = run_cli(
-                    ["--json", "declare", "--operation", "modify", "--scope", f"file:{rel}"],
-                    worktree,
-                )
-                self.assertEqual(json.loads(out.stdout)["status"], "granted")
                 (worktree / rel).write_text(f"{name}\n")
                 out = run_cli(["--json", "commit", "-m", name], worktree)
                 self.assertEqual(out.returncode, 0, out.stderr)

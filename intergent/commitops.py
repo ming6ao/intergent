@@ -96,10 +96,6 @@ def mark_landed(store: Store, candidate: dict[str, Any], merge_commit: str) -> N
     unit = store.get_unit(int(candidate["unit_id"]))
     if unit:
         store.set_unit_state(int(unit["id"]), "landed")
-        store.release_claims(int(unit["id"]))
-    intent_id = candidate.get("intent_id")
-    if intent_id:
-        store.set_intent_status(int(intent_id), "released")
     store.conn.commit()
 
 

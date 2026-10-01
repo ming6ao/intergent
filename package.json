@@ -1,7 +1,7 @@
 {
   "name": "intergent",
-  "version": "0.2.0",
-  "description": "Coordination for parallel coding agents: campaign DAG, git worktrees, scope leases, verified integration.",
+  "version": "0.3.0",
+  "description": "Coordination for parallel coding agents: campaign DAG, git worktrees, plan-time directory ownership, verified integration.",
   "license": "Apache-2.0",
   "keywords": ["pi-package", "pi", "pi-coding-agent", "intergent", "agents", "orchestration"],
   "files": [

@@ -1,8 +1,8 @@
 """End-to-end local-plane tests against real git repositories.
 
-The single-agent handoff/approval path is gone; verification and landing are
-exercised through the campaign ``integrate`` action. Lease arbitration, expiry,
-and state migration stay covered here.
+The single-agent handoff/approval path and the lease system are gone;
+verification and landing are exercised through the campaign ``integrate``
+action, and plan conformance is enforced at commit time.
 """
 
 import subprocess
@@ -10,7 +10,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from intergent import campaign
 from intergent.service import Service
+from intergent.util import IntergentError, write_json
 
 
 def run(*args, cwd):
@@ -46,11 +48,17 @@ class RepoCase(unittest.TestCase):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content)
 
-    def prepare(self, unit, *, scope="file:src/app.py", content="a = 1\n", message="change"):
-        """Create a unit, declare, edit, commit, and register a candidate."""
+    def write_dag(self, nodes):
+        branch = self.svc.config["main_branch"]
+        write_json(
+            campaign.dag_path(self.root, branch),
+            {"campaign": "t", "feature_branch": branch, "nodes": nodes},
+        )
+
+    def prepare(self, unit, *, rel="src/app.py", content="a = 1\n", message="change"):
+        """Create a unit, edit, commit, and register a candidate."""
         workspace = self.svc.create_workspace(unit, base="feat/x")
-        self.svc.declare_intent(unit, operation="modify", scope_specs=[scope])
-        self.write(workspace["worktree"], scope.split(":", 1)[1], content)
+        self.write(workspace["worktree"], rel, content)
         self.svc.commit(unit, message)
         candidate = self.svc.finish(unit)
         return workspace, candidate
@@ -70,66 +78,36 @@ class RepoCase(unittest.TestCase):
         )
 
 
-class LeaseTests(RepoCase):
-    def test_destructive_second_queues_then_promotes(self):
-        self.svc.create_workspace("alpha", base="feat/x")
-        self.svc.create_workspace("beta", base="feat/x")
-        alpha = self.svc.declare_intent(
-            "alpha", operation="replace", scope_specs=["symbol:src/app.py#hello"]
-        )
-        self.assertEqual(alpha["status"], "granted")
-        beta = self.svc.declare_intent(
-            "beta", operation="replace", scope_specs=["symbol:src/app.py#hello"]
-        )
-        self.assertEqual(beta["status"], "queued")
-        self.assertEqual(beta["blocker"], "alpha")
-        promoted = self.svc.release("alpha")["promoted"]
-        self.assertEqual(promoted, ["beta"])
+class ConformanceTests(RepoCase):
+    def test_commit_inside_owned_directory_is_accepted(self):
+        self.write_dag([{"id": "alpha", "owns": ["dir:src"], "depends_on": []}])
+        _, candidate = self.prepare("alpha", rel="src/app.py")
+        self.assertEqual(candidate["status"], "prepared")
 
-    def test_destructive_vs_additive_needs_a_decision(self):
-        self.svc.create_workspace("alpha", base="feat/x")
-        self.svc.create_workspace("beta", base="feat/x")
-        self.svc.declare_intent("alpha", operation="extend", scope_specs=["config:app.timeout"])
-        result = self.svc.declare_intent(
-            "beta", operation="replace", scope_specs=["config:app.timeout"]
-        )
-        self.assertEqual(result["status"], "needs_decision")
-        self.assertEqual(result["options"], ["replan"])
+    def test_commit_outside_owned_directory_is_rejected(self):
+        self.write_dag([{"id": "alpha", "owns": ["dir:src"], "depends_on": []}])
+        workspace = self.svc.create_workspace("alpha", base="feat/x")
+        self.write(workspace["worktree"], "docs/api.md", "# changed\n")
+        self.svc.commit("alpha", "docs")
+        with self.assertRaises(IntergentError) as ctx:
+            self.svc.finish("alpha")
+        self.assertIn("owned directories", str(ctx.exception))
 
-    def test_hierarchical_overlap_queues(self):
-        self.svc.create_workspace("alpha", base="feat/x")
-        self.svc.create_workspace("beta", base="feat/x")
-        self.svc.declare_intent("alpha", operation="replace", scope_specs=["file:src/app.py"])
-        beta = self.svc.declare_intent(
-            "beta", operation="modify", scope_specs=["symbol:src/app.py#hello"]
-        )
-        self.assertEqual(beta["status"], "queued")
-        self.assertEqual(beta["blocker_node"], "file:src/app.py")
+    def test_no_dag_means_no_enforcement(self):
+        # A non-campaign plane has no DAG, so any path is allowed.
+        _, candidate = self.prepare("alpha", rel="docs/api.md", content="# x\n")
+        self.assertEqual(candidate["status"], "prepared")
 
-    def test_expired_lease_is_reaped(self):
-        self.svc.create_workspace("alpha", base="feat/x")
-        self.svc.create_workspace("beta", base="feat/x")
-        import json
-        import time
-
-        from intergent.util import config_path
-
-        cfg = json.loads(config_path(self.root).read_text())
-        cfg["lease_ttl_seconds"] = 1
-        config_path(self.root).write_text(json.dumps(cfg))
-        self.svc.declare_intent("alpha", operation="replace", scope_specs=["file:src/app.py"])
-        beta = self.svc.declare_intent("beta", operation="replace", scope_specs=["file:src/app.py"])
-        self.assertEqual(beta["status"], "queued")
-        time.sleep(1.2)
-        # Any subsequent service call reaps the expired lease and promotes beta.
-        self.svc.status()
-        request = self.svc.store.get_lock_request_for_unit(
-            int(self.svc.store.get_unit("beta")["id"])
-        )
-        self.assertEqual(request["status"], "granted")
+    def test_respawn_suffix_still_resolves_the_node(self):
+        self.write_dag([{"id": "alpha", "owns": ["dir:src"], "depends_on": []}])
+        workspace = self.svc.create_workspace("alpha-a2", base="feat/x")
+        self.write(workspace["worktree"], "docs/api.md", "# changed\n")
+        self.svc.commit("alpha-a2", "docs")
+        with self.assertRaises(IntergentError):
+            self.svc.finish("alpha-a2")
 
 
-class VerificationTests(RepoCase):
+class IntegrationTests(RepoCase):
     def test_failed_check_blocks_integration(self):
         import json
 
@@ -163,36 +141,30 @@ class VerificationTests(RepoCase):
         ).fetchone()["c"]
         self.assertEqual(count, 1)
 
-    def test_integrate_releases_lease_and_promotes(self):
-        self.svc.create_workspace("alpha", base="feat/x")
-        self.svc.create_workspace("beta", base="feat/x")
-        self.svc.declare_intent("alpha", operation="replace", scope_specs=["file:src/app.py"])
-        self.svc.declare_intent("beta", operation="replace", scope_specs=["file:src/app.py"])
-        unit = self.svc.store.get_unit("alpha")
-        self.write(unit["worktree"], "src/app.py", "alpha = 1\n")
-        self.svc.commit("alpha", "alpha")
-        self.svc.finish("alpha")
-        self.svc.integrate(node="alpha")
-        request = self.svc.store.get_lock_request_for_unit(
-            int(self.svc.store.get_unit("beta")["id"])
+    def test_integrate_lands_two_candidates(self):
+        self.prepare("alpha", rel="src/app.py", content="alpha = 1\n")
+        self.prepare("beta", rel="docs/api.md", content="# beta\n")
+        results = self.svc.integrate()["results"]
+        self.assertEqual([r["status"] for r in results], ["landed", "landed"])
+        self.assertEqual(self.file_on("feat/x", "src/app.py"), "alpha = 1\n")
+        self.assertEqual(self.file_on("feat/x", "docs/api.md"), "# beta\n")
+
+    def test_integrate_orders_by_dag_wave(self):
+        # beta's node depends on alpha, so alpha must land first even though
+        # beta was prepared first.
+        self.write_dag(
+            [
+                {"id": "alpha", "owns": ["dir:src"], "depends_on": []},
+                {"id": "beta", "owns": ["dir:docs"], "depends_on": ["alpha"]},
+            ]
         )
-        self.assertEqual(request["status"], "granted")
+        self.prepare("beta", rel="docs/api.md", content="# beta\n")
+        self.prepare("alpha", rel="src/app.py", content="alpha = 1\n")
+        results = self.svc.integrate()["results"]
+        self.assertEqual([r["unit"] for r in results], ["alpha", "beta"])
 
 
-class ReleaseTests(RepoCase):
-    def test_release_retires_unit_and_gc_prunes_worktree(self):
-        alpha = self.svc.create_workspace("alpha", base="feat/x")
-        self.assertTrue(Path(alpha["worktree"]).exists())
-
-        self.svc.release("alpha")
-        self.assertEqual(self.svc.store.get_unit("alpha")["state"], "closed")
-
-        removed = self.svc.gc()["removed_worktrees"]
-        self.assertIn("alpha", removed)
-        self.assertFalse(Path(alpha["worktree"]).exists())
-        # Closed units may hold unmerged work, so their branch is retained.
-        self.assertTrue(self.branch_exists(alpha["branch"]))
-
+class GcTests(RepoCase):
     def test_gc_prunes_landed_branch(self):
         alpha, _ = self.prepare("alpha")
         self.svc.integrate()

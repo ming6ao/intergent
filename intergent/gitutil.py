@@ -102,6 +102,16 @@ def head_commit(worktree: str | os.PathLike[str]) -> str:
     return git(worktree, "rev-parse", "HEAD", check=True).stdout.strip()
 
 
+def changed_files(repo: str | os.PathLike[str], base: str, head: str) -> list[str]:
+    """Repo-relative paths changed between *base* and *head* (empty on error)."""
+    if not base or not head:
+        return []
+    res = git(repo, "diff", "--name-only", base, head, check=False)
+    if not res.ok:
+        return []
+    return [line.strip() for line in res.stdout.splitlines() if line.strip()]
+
+
 @dataclass
 class WorktreeEntry:
     path: Path

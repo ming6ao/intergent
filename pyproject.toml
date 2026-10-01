@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "intergent"
-version = "0.2.0"
+version = "0.3.0"
 description = "Coordination for parallel coding agents: campaign DAG, git worktrees, scope leases, verified integration."
 readme = "README.md"
 requires-python = ">=3.11"

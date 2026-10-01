@@ -482,8 +482,10 @@ export default function campaignExtension(pi: ExtensionAPI) {
 			`{"campaign","feature_branch","base","design","concurrency","max_attempts","nodes":[` +
 			`{"id","label","phase","goal","owns","depends_on","acceptance","gpu"}]}. ` +
 			`Rules: the DAG is the only authored schedule; waves are derived from owns + ` +
-			`depends_on with concurrency (default 3) as the per-wave cap, and a strict ` +
-			`scope overlap puts the later node in a later wave; keep same-wave owns disjoint; ` +
+			`depends_on with concurrency (default 3) as the per-wave cap. owns MUST be ` +
+			`directories at the deepest subdirectory that contains each touched path ` +
+			`(e.g. "dir:src/api", never files/symbols); a subtree overlap puts the later ` +
+			`node in a later wave, so keep same-wave owns disjoint; ` +
 			`"phase" is a display label only; ` +
 			`route shared build files (BUILD, Cargo.toml, lockfiles) to an explicit aggregation ` +
 			`node every touched component depends_on; each node lists its acceptance commands; ` +
@@ -562,17 +564,14 @@ export default function campaignExtension(pi: ExtensionAPI) {
 		}
 
 		// A re-spawn uses a fresh unit name so the previous attempt cannot
-		// collide; the old unit is released and pruned first.
+		// collide.  There is no release action any more, so a best-effort gc
+		// prunes any landed worktrees.
 		const attempt = attempts + 1;
 		const unitName = attempt === 1 ? node : `${node}-a${attempt}`;
-		const previous = state.nodes[node]?.unit;
-		if (previous) {
-			try {
-				await ig(ctx, ["declare", "--unit", previous, "--release"]);
-				await ig(ctx, ["status", "--gc"]);
-			} catch {
-				/* the unit may already be gone */
-			}
+		try {
+			await ig(ctx, ["status", "--gc"]);
+		} catch {
+			/* nothing to prune */
 		}
 
 		const created = await ig(
@@ -602,10 +601,11 @@ export default function campaignExtension(pi: ExtensionAPI) {
 			: "";
 		const task =
 			`You are a one-shot worker for DAG node "${node}" (${spec.label ?? ""}). ` +
-			`Goal: ${spec.goal ?? ""}. You own: ${(spec.owns ?? []).join(", ")}. ` +
+			`Goal: ${spec.goal ?? ""}. You own these directories: ${(spec.owns ?? []).join(", ")}. ` +
 			`Run these acceptance commands before committing: ${(spec.acceptance ?? []).join(" ; ")}. ` +
-			`You MUST use the \`ig\` tool: declare every owned scope, edit only your worktree, ` +
-			`then commit. Never use the GPU and never touch another node.` +
+			`You MUST use the \`ig\` tool: edit ONLY files inside your owned directories, then ` +
+			`commit. A commit that touches anything else is rejected. Never use the GPU and ` +
+			`never touch another node.` +
 			previousEvidence;
 		const result = await runSubagent({
 			agent: "worker",
@@ -771,8 +771,9 @@ export default function campaignExtension(pi: ExtensionAPI) {
 			"Spawn every ready node in the current wave together (issue the spawn calls in " +
 				"one turn so they run in parallel); never exceed the wave cap.",
 			"A node is ready only once every dependency is integrated (done), never merely verified.",
-			"If a worker exits on a queued lease, add a depends_on edge in dag.json; the next " +
-				"status/ready/spawn replans the waves to serialize it.",
+			"If a worker's commit is rejected for touching paths outside its owned dirs, widen " +
+				"that node's owns (or add a depends_on edge) in dag.json; the next " +
+				"status/ready/spawn replans the waves.",
 			"Only the verifier may use the GPU (tools/gpu.sh); workers never touch it.",
 			"Integrate each node after its verifier passes; cleanup is offered once per wave.",
 		],

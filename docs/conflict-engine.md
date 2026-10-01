@@ -1,90 +1,91 @@
-# Conflict engine
+# Directory ownership (conflict scheduling)
 
-The deterministic core. This is the part that must be reproducible and
-explainable; an LLM must never sit in the verdict path.
+> Status: **implemented**. Intergent decides serialization entirely at plan
+> time. There is no runtime conflict engine, no operation taxonomy, and no
+> lease queue.
 
-## 1. Conflict taxonomy
+## 1. What a node owns
 
-| Class | Detector | Authority |
-|---|---|---|
-| Textual | `git merge-tree --write-tree` | Git |
-| Symbol direct/dependency | AST (tree-sitter) defines/refs | Static analysis |
-| Operation | Declared scope + operation tuple | Declaration |
-| Intent/semantic | Declared scopes + rules (+ heuristic) | Declaration + rules |
-| Behavioral | Build, tests, differential | Tests |
+Every campaign DAG node declares `owns`: a list of repo-relative
+**directories**. A node must name the deepest directory that contains each path
+it will add, modify, or delete.
 
-## 2. Scope canonicalization
-
-Deterministic, language-aware normalization:
-
-- case-fold; split CamelCase; strip namespace/path prefixes
-  (`App\Services\Report::render` ≡ `Report::render`);
-- path-clean file scopes; sort and de-duplicate;
-- scope kinds: `dir, file, symbol, api, schema, config, migration, infra, test`.
-
-## 3. Operation classes (load-bearing decision)
-
-```
-add | extend | modify              → preserves what others depend on
-replace | remove | rename | migrate → does not
+```jsonc
+{ "id": "w1", "owns": ["dir:src/api", "dir:src/api/v1"], "depends_on": [] }
 ```
 
-The operation is **declared by the agent**, not inferred from prose. Prose
-inference is retained only for a human typing scopes without `=OPERATION`, is
-marked `inferred: true`, and can never assert.
+Normalization:
 
-Rationale (measured in prior art): keyword inference caught 1 of 10 real
-conflicts and raised false HIGH on 9 of 9 compatible pairs.
+| Input | Canonical |
+|---|---|
+| `dir:src/api` | `src/api` |
+| `src/api/` | `src/api` |
+| `dir:.`, ``, `/` | `.` (the repository root) |
 
-## 4. Matching tiers, assertion, severity
+Non-directory specs — `file:`, `symbol:`, `api:`, `schema:`, `config:`,
+`migration:`, `infra:`, `test:` — are rejected when the DAG is projected. A plan
+that tries to own a single file fails loudly rather than silently receiving
+directory-level serialization.
 
-| Tier | Score | Can assert? |
-|---|---|---|
-| Exact canonical scope | 1.00 | **yes** |
-| Same key, different kind | 0.90 | no |
-| Token Jaccard ≥ 0.66 | 0.78–0.85 | no |
+## 2. The conflict rule
 
-- **Asserted**: both sides *declared* operations on the *exact* same scope.
-- **Surfaced**: anything inferred or loosely matched; **capped below HIGH**.
+Ownership is a **subtree**. Two nodes conflict when one owned directory is
 
-| Rule | Condition | Severity |
-|---|---|---|
-| `FM-C001 destructive_vs_additive` | one destructive, one additive, overlapping | HIGH if asserted, else MEDIUM |
-| `FM-C002 divergent_rewrite` | both destructive | HIGH if asserted, else MEDIUM |
-| `FM-C003 shared_contract` | both additive | MEDIUM |
+* equal to,
+* an ancestor of, or
+* a descendant of
 
-Suggestions are scope-kind-aware: `schema`/`migration`/`config` → agree explicit
-migration order; otherwise → extract a stable abstraction.
+the other's, compared on path-segment boundaries. The root `.` is an ancestor
+of every directory, so a node that owns `dir:.` serializes against every other
+node.
 
-> **Destructive vs additive is not silently queued.** If one intent replaces
-> what another extends, "waiting" then extending the old API is pointless. The
-> engine surfaces a HIGH finding and returns `needs_decision`; the worker exits
-> and the coordinator re-plans the node.
+```
+src/api       vs src/api        -> conflict (equal)
+src           vs src/api        -> conflict (ancestor)
+src/api       vs src/api/v1     -> conflict (descendant)
+src/api       vs src/service    -> ok       (siblings)
+src/models    vs src/model      -> ok       (no token similarity tier)
+```
 
-## 5. Declaration vs diff reconciliation
+There is deliberately no fuzzy matching: the old token-Jaccard and
+cross-kind tiers are gone, so a plan's concurrency is explainable from its
+`owns` sets alone.
 
-If a declared operation disagrees with the AST diff (declared `extend` but the
-symbol was removed), emit a finding. This catches confused or stale declarations
-without an LLM.
+## 3. Where it is enforced
 
-## 6. The LLM's role (advisory only)
+`intergent/waves.py` projects `owns` + `depends_on` into waves. A node is placed
+in the earliest wave that
 
-**Allowed**
-- draft a declaration from task text + diff, for the agent to **confirm**;
-- explain a finding and propose a resolution;
-- triage/routing; summarize diffs for review;
-- interpret CI/differential failures.
+* is at least `max(wave(dep) + 1)` for every dependency,
+* has room under the campaign's `concurrency` cap (default 3), and
+* contains no node whose owned directories overlap.
 
-**Forbidden**
-- computing the verdict or severity;
-- blocking a candidate;
-- being the sole basis for a HIGH finding.
+`Service.status()` returns that projection as `dag_waves`; the coordinator
+persists it in `state.json` keyed by a fingerprint of `(id, owns, depends_on)`,
+so editing the DAG automatically replans.
 
-Every LLM-derived finding is tagged `inferred`, capped below blocking severity,
-and requires confirmation to become a declaration. Model + prompt versions are
-pinned for provenance and caching. Deterministic checks stay on-box; LLM calls
-are opt-in and explicit.
+## 4. Conformance: the runtime guarantee
 
----
+Because there are no leases, the pre-edit guarantee is replaced by a post-commit
+check. When a unit finishes:
 
-Prev: [Architecture](./architecture.md) · Next: [Local plane](./local-plane.md)
+```
+changed = git diff --name-only <unit.base_commit> <head>
+violations = [p for p in changed if p not in the subtree of any owned dir]
+```
+
+Any violation raises an error and the candidate is not registered. The
+coordinator then widens the node's `owns` or adds a `depends_on` edge and
+respwns. This keeps "no two same-wave units touch the same directory" auditable
+without runtime locking.
+
+## 5. Authoring guidance
+
+* Own the **deepest** directory that contains the work; owning a parent
+  serializes its whole subtree.
+* Keep same-wave `owns` disjoint.
+* Route shared build files (`BUILD`, `Cargo.toml`, lockfiles) to an explicit
+  aggregation node that every touched component `depends_on`; that node owns the
+  shared directory (`dir:.` for root files).
+* Express ordering that same-directory serialization does not already give you
+  with `depends_on`, never by hoping for a runtime queue.

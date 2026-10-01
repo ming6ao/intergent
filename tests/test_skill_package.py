@@ -148,11 +148,11 @@ class SkillPackageTests(unittest.TestCase):
         # The single-agent path (`handoff`, human `review`) and the old
         # `submit`/`verify` verbs are retired; `integrate` is the landing action.
         names = {a.name for a in surface.ACTIONS}
-        for gone in ("submit", "verify", "handoff", "review"):
+        for gone in ("submit", "verify", "handoff", "review", "declare"):
             self.assertNotIn(gone, names)
         self.assertIn("integrate", names)
         text = PI_EXTENSION.read_text(encoding="utf-8")
-        for gone in ("submit", "verify", "handoff", "review"):
+        for gone in ("submit", "verify", "handoff", "review", "declare"):
             self.assertNotIn(f'"{gone}"', text)
 
     def test_campaign_actions_are_in_lockstep(self):

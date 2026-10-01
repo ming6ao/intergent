@@ -6,7 +6,8 @@ campaign feature branch):
 * candidates are ordered by the existing wave planner, then merged with
   ``git merge --no-ff`` (one merge commit per unit, branches kept);
 * the plane's trusted checks run on the combined tree, fingerprint-cached;
-* candidates move to ``landed``, units to ``landed``, leases release;
+* candidates move to ``landed`` and units to ``landed``, keeping branches for
+  provenance;
 * a merge conflict aborts the merge and returns structured findings, never
   leaving the feature branch half-merged;
 * re-running is a no-op: landed candidates are skipped, and a candidate whose

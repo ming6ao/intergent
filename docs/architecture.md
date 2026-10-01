@@ -1,8 +1,8 @@
 # Architecture
 
-Intergent is **one engine, many adapters**: isolation, leases, verification, and
-integration live in a single service layer; the CLI and the pi extension only
-parse arguments and render results. No adapter owns state.
+Intergent is **one engine, many adapters**: isolation, directory ownership,
+verification, and integration live in a single service layer; the CLI and the pi
+extension only parse arguments and render results. No adapter owns state.
 
 ## Campaign topology
 
@@ -10,8 +10,8 @@ parse arguments and render results. No adapter owns state.
 COORDINATOR (top-level pi session)
  ├── PLANNER   reads the design, writes dag.json
  ├── WORKER_*  one-shot per ready DAG node
- │               unit worktree + scope leases
- │               declare -> edit -> acceptance (CPU) -> commit
+ │               unit worktree + owned directories
+ │               edit owned dirs -> acceptance (CPU) -> commit
  └── VERIFIER  read-only per candidate: T0 CPU then tools/gpu.sh
                     │
                     ▼
@@ -30,15 +30,13 @@ contains its dependencies' code. See [Orchestration](./orchestration.md).
 |---|---|
 | `intergent/surface.py` | **single source of truth**: action registry, validation, dispatch |
 | `intergent/cli.py` | generated `argparse` CLI (`intergent`), human + `--json` output |
-| `intergent/service.py` | **single owner of state**: sessions, units, intents, leases, candidates, integration |
+| `intergent/service.py` | **single owner of state**: sessions, units, candidates, conformance, integration |
 | `intergent/store.py` | SQLite persistence (WAL) |
-| `intergent/gitutil.py` | Git plumbing (worktree, merge, merge-tree, commit, branch) |
-| `intergent/scopes.py` | Scope parsing, canonicalization, and the scope tree |
-| `intergent/locks.py` | IS/IX/S/SIX/X compatibility matrix and requirement closure |
-| `intergent/conflict.py` | Deterministic conflict rules `FM-C001..C003` and matching tiers |
+| `intergent/gitutil.py` | Git plumbing (worktree, merge, merge-tree, commit, branch, changed-files) |
+| `intergent/scopes.py` | Directory ownership: normalization, `owns` parsing, subtree conflicts |
 | `intergent/verifier.py` | Fingerprints (plane and node sources) and trusted-check runner |
-| `intergent/planner.py` | Greedy candidate wave packing + combined-tree simulation |
-| `intergent/waves.py` | DAG wave projection for the scheduler (strict scope packing, `concurrency` cap) |
+| `intergent/planner.py` | Candidate ordering by DAG wave + combined-tree simulation |
+| `intergent/waves.py` | DAG wave projection (directory-subtree packing, `concurrency` cap) |
 | `intergent/integrate.py` | Agent-callable feature-branch landing and node verification recording |
 | `intergent/commitops.py` | Shared integration primitives (worktree, merge order, landed marking) |
 | `intergent/campaign.py` | `dag.json` / `state.json` layout and readers |
@@ -70,8 +68,8 @@ subagent spawning.
 
 ### pi `ig` tool (worker)
 
-The unit lifecycle (`start`, `status`, `declare`, `commit`, `integrate`,
-`report`) wrapped as one tool. `runSubagent` passes each agent's `tools:`
+The unit lifecycle (`start`, `status`, `commit`, `integrate`, `report`) wrapped
+as one tool. `runSubagent` passes each agent's `tools:`
 allowlist to `pi --tools`, so a worker gets `ig` and never `campaign`; the
 verifier gets no Intergent tool at all. The CLI remains the single action
 registry (`intergent/surface.py`), so no engine verb can exist in one adapter
@@ -80,12 +78,11 @@ and not another.
 ### CLI
 
 ```bash
-intergent start | status | declare | commit | integrate | report
+intergent start | status | commit | integrate | report
 ```
 
 Flags carry the long tail: `start --no-unit` (adopts the current branch) and
 `--main <branch>` (adopt an existing branch);
-`declare --dry-run` (conflict check), `--renew`/`--release` (lease maintenance);
 `integrate --node`, `--acceptance`, `--gpu`, `--check-only`, `--cleanup`;
 `status --health`, `--simulate`, `--gc`, `--short`, `--unit U`; `report
 --narrative`. See [Local implementation](./implementation.md).

@@ -3,10 +3,14 @@
  *
  * Registers a native `ig` tool that forwards to the bundled `intergent` CLI.
  * This is the unit lifecycle tool that campaign **workers** use
- * (`declare → commit`). Workers are scoped to it by their agent `tools:`
+ * (`status → commit`). Workers are scoped to it by their agent `tools:`
  * allowlist, so they never see `campaign.ts`; the coordinator drives the
  * campaign with the `campaign` tool instead.  The tool shells out to the
  * bundled CLI, so no `intergent` install on `PATH` is needed.
+ *
+ * Ownership is decided at plan time: a worker edits only the directories its
+ * DAG node owns, and `commit` refuses paths outside them (plan conformance).
+ * There is no runtime declare/lease step.
  *
  * There is no automatic single-agent bootstrap: a session is only bound to a
  * unit when something explicitly creates one (the `campaign` tool's `spawn`,
@@ -27,7 +31,6 @@ import { runIg } from "./common.ts";
 export const IG_ACTIONS = [
 	"start",
 	"status",
-	"declare",
 	"commit",
 	"integrate",
 	"report",
@@ -57,13 +60,13 @@ export default function intergentExtension(pi: ExtensionAPI) {
 		name: "ig",
 		label: "Intergent",
 		description:
-			"Intergent unit lifecycle for campaign workers: `declare` before editing and " +
-			"`commit` when done. The coordinator owns the campaign and lands work with " +
-			"`integrate`; there is no single-agent handoff.",
-		promptSnippet: "Drive the Intergent unit lifecycle (declare → commit)",
+			"Intergent unit lifecycle for campaign workers: edit only the directories your " +
+			"node owns, then `commit`. The coordinator owns the campaign and lands work with " +
+			"`integrate`; there is no single-agent handoff and no declare step.",
+		promptSnippet: "Drive the Intergent unit lifecycle (edit owned dirs → commit)",
 		promptGuidelines: [
-			"Use `ig` action `declare` before editing any file; scope every file or symbol you touch.",
-			"If `declare` returns `queued`, do not edit: report the blocker and stop.",
+			"Edit only files inside the directories your DAG node owns; `commit` rejects paths outside them.",
+			"Use `ig` action `status` with `short: true` to confirm you are inside your unit worktree.",
 			"Finish with `ig` action `commit`. Never run `integrate` or `git merge` yourself.",
 		],
 		// Inert until the `intergent` skill activates it: a plain session must not
@@ -73,18 +76,9 @@ export default function intergentExtension(pi: ExtensionAPI) {
 		parameters: Type.Object({
 			action: StringEnum(IG_TOOL_ACTIONS),
 			unit: Type.Optional(Type.String({ description: "unit (defaults to this worktree)" })),
-			operation: Type.Optional(
-				StringEnum(["add", "extend", "modify", "replace", "remove", "rename", "migrate"]),
-			),
-			scope: Type.Optional(
-				Type.Array(Type.String(), { description: 'scope specs like "file:docs/y.md"' }),
-			),
 			task: Type.Optional(Type.String()),
 			summary: Type.Optional(Type.String()),
 			message: Type.Optional(Type.String({ description: "commit message (action=commit)" })),
-			dry_run: Type.Optional(Type.Boolean({ description: "declare: conflict check only" })),
-			renew: Type.Optional(Type.Boolean({ description: "declare: renew leases" })),
-			release: Type.Optional(Type.Boolean({ description: "declare: release leases" })),
 			no_unit: Type.Optional(
 				Type.Boolean({ description: "start: initialise the plane without a unit for cwd" }),
 			),

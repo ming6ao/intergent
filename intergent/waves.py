@@ -5,20 +5,16 @@ This is the **scheduler** projection of the plan.  The DAG in
 are computed from it, never hand-written.  A wave is a maximal set of nodes that
 
 * may run concurrently (each in its own worktree), and
-* do not conflict on any declared scope.
+* do not conflict on any owned directory.
 
-The policy is deliberately **strict**: any scope match between two nodes
-(``file:`` vs ``file:``, ``dir:`` vs ``file:``, related symbol, token
-similarity) puts the later node in a later wave.  This is stricter than the
-lease system, which permits shared additive scopes; the scheduler trades
-concurrency for a guarantee that no two same-wave workers can collide.
+Ownership is by directory subtree (:mod:`intergent.scopes`): two nodes
+conflict when one owned directory is equal to, an ancestor of, or a descendant
+of the other's.  This is deliberately strict, and it is the *only* runtime
+serialization mechanism: there is no lease system.
 
 Waves obey the DAG's ``depends_on`` edges: a node is never placed earlier than
 ``max(wave(dep) + 1)``, so every dependency is integrated before its dependents
 start.  The per-wave size is capped by ``concurrency`` (default 3).
-
-The candidate-based planner in :mod:`intergent.planner` still orders committed
-candidates for integration; this module orders *work units* before they spawn.
 """
 
 from __future__ import annotations
@@ -26,8 +22,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from .conflict import match_scopes
-from .scopes import make_scope, parse_scope_spec
+from .scopes import owns_conflict, parse_owns
 from .util import IntergentError
 
 DEFAULT_WAVE_SIZE = 3
@@ -54,20 +49,9 @@ def _node_id(node: dict[str, Any]) -> str:
     return str(nid)
 
 
-def _scopes(specs: list[str]) -> list[tuple[Any, str]]:
-    """Parse ``owns`` specs into ``(Scope, operation)`` pairs.
-
-    A malformed spec is ignored rather than aborting planning: the scope
-    conflict engine must never sit in a path where a typo stops a campaign.
-    """
-    parsed: list[tuple[Any, str]] = []
-    for spec in specs:
-        try:
-            kind, key, op = parse_scope_spec(str(spec))
-            parsed.append((make_scope(kind, key), op or "modify"))
-        except Exception:  # pragma: no cover - defensive; scopes are permissive
-            continue
-    return parsed
+def node_owns(node: dict[str, Any]) -> list[str]:
+    """Parse a node's ``owns`` into normalized directories (validates kinds)."""
+    return parse_owns(node.get("owns") or [])
 
 
 def _conflict_reason(a: dict[str, Any], b: dict[str, Any]) -> str | None:
@@ -76,17 +60,12 @@ def _conflict_reason(a: dict[str, Any], b: dict[str, Any]) -> str | None:
     When *a* is compared against *b*, *b* is already placed and *a* is the
     candidate moving later, so the message names the blocker (*b*).
     """
-    scopes_a = _scopes(a.get("owns") or [])
-    if not scopes_a:
+    owns_a = node_owns(a)
+    if not owns_a:
         return None
-    scopes_b = _scopes(b.get("owns") or [])
-    for scope_a, _op_a in scopes_a:
-        for scope_b, _op_b in scopes_b:
-            if match_scopes(scope_a, scope_b) is not None:
-                return (
-                    f"scope conflict with '{_node_id(b)}' on "
-                    f"{scope_a.kind}:{scope_a.canonical}"
-                )
+    reason = owns_conflict(owns_a, node_owns(b))
+    if reason:
+        return f"{reason} with '{_node_id(b)}'"
     return None
 
 
@@ -137,6 +116,13 @@ def _topological_order(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [by_id[nid] for nid in sorted_ids]
 
 
+def validate_dag(nodes: list[dict[str, Any]]) -> None:
+    """Validate a DAG's ids, edges, acyclicity, and directory-only ``owns``."""
+    ordered = _topological_order(nodes)  # raises on duplicates/unknown/cycle
+    for node in ordered:
+        node_owns(node)  # raises on a non-directory owns spec
+
+
 def plan_dag_waves(
     nodes: list[dict[str, Any]],
     *,
@@ -147,9 +133,9 @@ def plan_dag_waves(
     ``wave_size`` is the maximum number of nodes per wave (the campaign's
     ``concurrency``, default 3).  A node is placed in the earliest wave that
 
-    * is at least ``max(wave(dep) + 1)`` for every dependency, and
+    * is at least ``max(wave(dep) + 1)`` for every dependency,
     * has room under ``wave_size``, and
-    * contains no node whose declared scopes conflict (strict).
+    * contains no node whose owned directories overlap (strict subtree rule).
     """
     if wave_size < 1:
         raise IntergentError("wave_size (concurrency) must be >= 1")
@@ -160,6 +146,7 @@ def plan_dag_waves(
 
     for node in _topological_order(nodes):
         nid = _node_id(node)
+        node_owns(node)  # validate directory-only owns, even for lone nodes
         min_wave = 0
         for dep in node.get("depends_on") or []:
             min_wave = max(min_wave, wave_of[str(dep)] + 1)
@@ -195,4 +182,4 @@ def plan_dag_waves(
     return waves
 
 
-__all__ = ["DEFAULT_WAVE_SIZE", "DagWave", "plan_dag_waves"]
+__all__ = ["DEFAULT_WAVE_SIZE", "DagWave", "node_owns", "plan_dag_waves", "validate_dag"]

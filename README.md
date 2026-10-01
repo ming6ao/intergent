@@ -1,8 +1,8 @@
 # Intergent
 
 > *interlock + agent* — coordination for parallel coding agents: one campaign
-> DAG, a git worktree per worker, scope leases, and fingerprint-pinned
-> integration onto a feature branch.
+> DAG, a git worktree per worker, plan-time directory ownership, and
+> fingerprint-pinned integration onto a feature branch.
 
 Intergent lets several coding agents work the same repository in parallel
 without authoring conflicting changes, verifies each candidate against a
@@ -11,7 +11,8 @@ campaign feature branch. It is a dependency-free Python 3.11+ engine
 ([`intergent/`](./intergent)) plus a pi coordinator tool.
 
 - **Isolation:** one `git worktree` + branch per worker unit.
-- **Leases:** declared scopes are granted, queued, or escalated deterministically.
+- **Ownership:** nodes own directories at plan time; overlapping subtrees are
+  serialized into waves, and `commit` rejects paths outside the owned dirs.
 - **Verification:** plane checks and per-node acceptance are pinned to a
   fingerprint and reused across re-integration.
 - **Integration:** ordered `--no-ff` merges onto the feature branch; a safety
@@ -35,7 +36,8 @@ there is no `pip install` and no `intergent` on `PATH`.
 
 In pi, run `/skill:intergent <DESIGN.md>` to start a coordinator session; the
 coordinator then drives the design into landed work with the `campaign` tool,
-and each spawned worker uses the `ig` tool to declare scopes, edit, and commit.
+and each spawned worker uses the `ig` tool to edit its owned directories and
+commit.
 
 ```bash
 pi install ./                    # or git:/npm: intergent
@@ -51,8 +53,8 @@ pi                               # launch a session
 #   campaign report --narrative "what changed / risks"
 ```
 
-Under the hood the tools drive the bundled engine, whose six verbs are `start`,
-`status`, `declare`, `commit`, `integrate`, `report`. See
+Under the hood the tools drive the bundled engine, whose five verbs are `start`,
+`status`, `commit`, `integrate`, `report`. See
 [docs/orchestration.md](./docs/orchestration.md) and
 [docs/implementation.md](./docs/implementation.md).
 
@@ -66,7 +68,7 @@ python3 -m unittest discover -s tests -v
 ```
 
 ```
-intergent/          engine: service, store, git/worktrees, leases, verifier
+intergent/          engine: service, store, git/worktrees, ownership, verifier
 bin/intergent       CLI shim (runs without install)
 integrations/pi/    pi package: campaign.ts tool, common.ts, agents/
 tools/gpu.sh        GPU broker (verifier only)

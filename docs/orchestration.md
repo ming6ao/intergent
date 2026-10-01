@@ -20,7 +20,8 @@ document into landed work by spawning a planner, workers, and a verifier, while
 - One **coordinator** (the top-level session) owns the plan, spawns agents, and
   reports; the user talks to the coordinator directly.
 - Workers are isolated by `intergent` units (one worktree + branch each) and by
-  scope leases; no two workers write the same file.
+  plan-time directory ownership; no two workers in a wave touch the same
+  directory.
 - A **single machine-readable artifact**, `dag.json`, is the plan. No prose plan.
 - Verification is independent of authoring and is the only GPU consumer.
 - State survives a crash: everything is reconstructable from `.intergent` + git.
@@ -50,7 +51,7 @@ COORDINATOR  (top-level pi session — the session the user sees)
  ├── PLANNER   (subagent, invoked by the coordinator via `start`)
  │               reads the design, writes dag.json (plane state, not committed)
  ├── WORKER_*  (one-shot subagent per ready DAG node, own intergent worktree)
- │               declare -> edit -> acceptance tests -> commit  (never GPU)
+ │               edit owned dirs -> acceptance tests -> commit  (never GPU)
  └── VERIFIER  (read-only subagent, invoked per candidate)
                  T0 CPU then tools/gpu.sh; returns a verdict; never edits
 ```
@@ -64,7 +65,7 @@ Rules that fall out of this shape:
 - The planner is invoked by the coordinator, not by the user, and may be
   re-invoked (`start --replan`) after a failure.
 - Workers and the verifier are subagents. Workers run inside their unit
-  worktree and get normal `intergent` behaviour; the verifier has no lease.
+  worktree and get normal `intergent` behaviour; the verifier owns no unit.
 
 ## 3. The plan artifact: `dag.json`
 
@@ -81,20 +82,20 @@ printed by `campaign status` / `campaign start`; it is never written to disk.
   "nodes": [
     { "id": "w1", "label": "runtime-core", "phase": "P0",
       "goal": "Tensor and the CPU reference backend for all of kernels.h",
-      "owns": ["dir:backends/cpu", "file:src/tensor.cc"],
+      "owns": ["dir:backends/cpu", "dir:src"],
       "depends_on": [],
       "acceptance": ["bazel test //... --test_tag_filters=-gpu"],
       "gpu": "none" },
 
     { "id": "w2", "label": "oracle", "phase": "P0",
-      "owns": ["dir:tests", "file:tools/dump_oracle.py"],
+      "owns": ["dir:tests", "dir:tools"],
       "depends_on": ["w1"],
       "acceptance": ["bazel test //tests:oracle_test"],
       "gpu": "none" },
 
     { "id": "w3", "label": "kernel-rms", "phase": "P1",
-      "owns": ["file:backends/cuda/kernels/rms_norm.cu",
-               "file:dev/kernels/rms_norm.cu"],
+      "owns": ["dir:backends/cuda/kernels",
+               "dir:dev/kernels"],
       "depends_on": ["w1"],
       "acceptance": ["//dev/kernels:rms_norm_fd_test"],
       "gpu": "T1" }
@@ -110,7 +111,7 @@ Fields:
 | `label` | Human label for the report and dashboard. |
 | `phase` | **Display/report grouping only.** Never used for scheduling. |
 | `goal` | The prompt seed handed to the worker. |
-| `owns` | Scope specs the worker must `declare` before editing. A spec may pin an operation (`file:src/a.py=modify`); waves use these scopes. |
+| `owns` | Directories the node owns, at the deepest subdirectory that contains each path it touches (`dir:src/api`). Directory **subtrees** are the only conflict unit; a non-directory spec is rejected at plan time. |
 | `depends_on` | Node ids that must be `done` before this node is `ready`. |
 | `acceptance` | Commands the worker must run and the verifier re-runs. |
 | `gpu` | `none`, `T1`, or `T2`; only the verifier may use it. |
@@ -121,16 +122,16 @@ rules
 
 ```text
 wave(n)  :=  max(wave(d) + 1 for d in n.depends_on), then earliest wave with
-             room (<= concurrency) and no strict scope conflict
+             room (<= concurrency) and no directory-subtree conflict
 ready(n) :=  every d in n.depends_on is done AND n is in the current wave
 ```
 
-are the whole executor. The packing is **strict**: any `owns` scope match
-between two nodes (`file:` vs `file:`, `dir:` vs `file:`, related symbol, token
-similarity) puts the later node in a later wave, even if both operations are
-additive. `done` means **verified *and* integrated** onto the feature branch
-(§5), so a later wave's `--base <feature_branch>` checkout already contains the
-previous wave's code. Batching integration until the end would make `depends_on`
+are the whole executor. The packing is **strict**: if one owned directory is
+equal to, an ancestor of, or a descendant of another node's, the later node
+moves to a later wave. There is no fuzzy matching and no operation taxonomy.
+`done` means **verified *and* integrated** onto the feature branch (§5), so a
+later wave's `--base <feature_branch>` checkout already contains the previous
+wave's code. Batching integration until the end would make `depends_on`
 meaningless. A barrier is expressed by `depends_on` or by the wave itself;
 `phase` survives only as a label so reports can group components.
 
@@ -152,7 +153,7 @@ feat/nanochat-cpp   ->   feat--nanochat-cpp
 ```text
 .intergent/
   config.json                          # plane config (as today)
-  state.db                             # units, candidates, leases, verifications
+  state.db                             # units, candidates, fingerprints, verifications
   feat--nanochat-cpp.dag.json          # canonical plan
   feat--nanochat-cpp.state.json        # executor progress (node -> status)
   feat--nanochat-cpp.report.md         # final report (kept on cleanup)
@@ -203,7 +204,7 @@ integrate (idempotent sweep) ──► final cleanup ──► report
    branch is refused), bootstraps the plane with `intergent start --no-unit`
    whose integration branch is that branch, and **invokes the planner** in the
    same action. The planner reads the design and writes `dag.json`; `start`
-   projects it into waves (strict `owns` overlap, `depends_on` barrier,
+   projects it into waves (directory-subtree overlap, `depends_on` barrier,
    `concurrency` cap), stores them in `state.json`, prints the branch and
    summary, and stops for an optional human look.
 2. **`ready`** — returns the nodes in the **current wave** whose dependencies
@@ -228,8 +229,8 @@ integrate (idempotent sweep) ──► final cleanup ──► report
 
 The coordinator drives this loop; it is not itself scheduled. It may re-invoke
 the planner (`start --replan`) or edit `dag.json` after a failure. A
-coordinator-added `depends_on` edge (for example after a `declare` returns
-`queued`) changes the DAG fingerprint, so the next `status`/`ready`/`spawn`
+coordinator-added `depends_on` edge (or a widened `owns` after a rejected
+commit) changes the DAG fingerprint, so the next `status`/`ready`/`spawn`
 reprojects the waves.
 
 ## 6. `intergent` core changes
@@ -258,7 +259,7 @@ plane's `main_branch` (the feature branch):
 - order them with the existing `plan_waves` merge planner, then `git merge
   --no-ff` each unit branch onto the feature branch;
 - run the plane's trusted checks on the combined tree (fingerprint-cached);
-- mark candidates `landed`, units `landed`, release leases, keep branches for
+- mark candidates `landed`, units `landed`, keep branches for
   provenance;
 - idempotent: candidates already contained are skipped;
 - on merge conflict, abort the merge and return structured findings; never
@@ -372,7 +373,7 @@ plane-check fingerprints only.
 |---|---|
 | Worker produces no candidate / fails acceptance | Node `failed`; coordinator retries (bounded), splits the node, or stops. |
 | Verifier `fail` | Same as above, with the verifier's findings attached to the retry prompt. |
-| `declare` returns `queued` | The DAG let two parallel nodes own the same file. The one-shot worker **exits immediately** (it must not block on a lease); the node returns to `ready`; the coordinator adds a `depends_on` edge to serialize (or re-plans), then re-spawns. Never force a conflict. |
+| `commit` changes a path outside the node's `owns` | The planner under-declared. The commit is rejected; the coordinator widens `owns` or adds a `depends_on` edge and re-spawns. |
 | Merge conflict at `integrate` | Merge aborted; findings surfaced. The node stays `failed`; coordinator spawns a resolver or adds an edge. The feature branch is never left half-merged. |
 | Orchestrator crash | Workers are **child processes of the coordinator and are not detached**, so a crash kills them mid-flight. On resume, any node left `running` is reset to `pending` and its worktree reset (partial commits discarded), then re-spawned fresh. `campaign start` reloads `dag.json` + `state.json` + `intergent status`; git and `state.db` win over `state.json`. |
 | `dag.json` hand-edited | Coordinator changes (added edges, split nodes) are appended to the event log, so the plan's evolution is auditable alongside commits and fingerprints. |
@@ -396,7 +397,7 @@ artifacts land on the feature branch; `report.md` and `worker_<id>.log` are
 written; cleanup is offered.
 
 **S2 — resilience.** Resume after kill, retry/split policy, conflict path, caps.
-Acceptance: kill mid-run and resume; force a scope conflict and observe
+Acceptance: kill mid-run and resume; force a directory conflict and observe
 serialization via a new edge.
 
 **Deliberately deferred:** RPC-steerable workers, multiple campaigns per plane,
@@ -407,7 +408,7 @@ any human-authored prose plan.
 | Piece | Location |
 |---|---|
 | `integrate`, `report`, `start --no-unit`, status projection | `intergent/integrate.py`, `intergent/report.py`, `intergent/service.py`, `intergent/surface.py` |
-| DAG wave projection (strict scope packing, `concurrency` cap) | `intergent/waves.py`, `intergent/service.py` (`status.dag_waves`) |
+| DAG wave projection (directory-subtree packing, `concurrency` cap) | `intergent/waves.py`, `intergent/scopes.py`, `intergent/service.py` (`status.dag_waves`) |
 | `dag.json`/`state.json` layout and readers | `intergent/campaign.py` |
 | per-node verification fingerprints (§6.4) | `intergent/verifier.py`, `intergent/store.py` |
 | `campaign` coordinator tool + waves + widget + per-wave cleanup | `integrations/pi/campaign.ts` |
@@ -427,9 +428,10 @@ any human-authored prose plan.
   `depends_on`-respecting barrier, and explicit aggregation nodes remain the
   escape hatch for shared files.
 - Shared build files (Bazel `BUILD`, `Cargo.toml`, lockfiles) make overlap the
-  common case, not an edge case. Rather than letting `declare`'s `queued` path
-  become the main path, the planner must route shared-file edits to an explicit
-  **aggregation node** — a node all touched components `depends_on` — which owns
-  the shared file. Every other node still declares ownership of its own files.
+  common case, not an edge case. Rather than letting a rejected-conformance
+  retry become the main path, the planner must route shared-file edits to an
+  explicit **aggregation node** — a node all touched components `depends_on` —
+  which owns the shared directory (`dir:.` for root files). Every other node
+  still owns only its own directories.
 - Where does feature→`master` promotion happen: a campaign action, or a human
   `git merge`? Current design keeps it a human `git` step.

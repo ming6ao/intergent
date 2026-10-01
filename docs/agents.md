@@ -2,15 +2,16 @@
 
 Intergent is driven by a **coordinator** session that spawns planner, worker,
 and verifier subagents around a campaign DAG; the `intergent` engine owns
-isolation (worktrees), scope leases, verification, and integration. pi is the
-supported agent harness. The workflow itself lives in [`SKILL.md`](../SKILL.md)
-and its specification in [Orchestration](./orchestration.md).
+isolation (worktrees), plan-time directory ownership, verification, and
+integration. pi is the supported agent harness. The workflow itself lives in
+[`SKILL.md`](../SKILL.md) and its specification in
+[Orchestration](./orchestration.md).
 
 ```
 ┌──────────────────────────┐        ┌──────────────────────────────┐
 │  coordinator session     │        │  Intergent local plane       │
 │  (pi)                    │──CLI──►│  service (single state owner)│
-│                          │        │  worktrees · leases · DB     │
+│                          │        │  worktrees · waves · DB      │
 └───────────┬──────────────┘        └──────────────┬───────────────┘
             │ spawns one-shot                       │ verify + integrate
             ▼                                       ▼
@@ -40,28 +41,26 @@ activates them for the session (the path must be an existing design document).
 |---|---|---|
 | **Coordinator** | no | owns the plan (`dag.json`), spawns agents, calls `integrate` after a pass, writes the report |
 | **Planner** | no | reads the design, writes `dag.json` |
-| **Worker** | yes (its worktree) | `declare` → edit → acceptance (CPU) → `commit` |
+| **Worker** | yes (its worktree) | edit owned directories → acceptance (CPU) → `commit` |
 | **Verifier** | no (read-only) | runs acceptance (T0 then `tools/gpu.sh`), returns a verdict, never edits |
 
 ### Worker contract
 
 1. `intergent status --short` must succeed — you are in your unit worktree.
-2. `declare` before editing, scoping every file/symbol.
-   - `granted` → edit.
-   - `queued` → **exit immediately** and report the blocker; the coordinator
-     serializes the node or re-plans. Never force a conflict.
-   - `needs_decision` → stop; the coordinator re-plans.
+2. Edit only files under the directories your DAG node owns (given to you as
+   `dir:` scopes). `commit` enforces this: a changed path outside the owned
+   directories is rejected, and the coordinator widens `owns` or adds a
+   `depends_on` edge in `dag.json`.
 3. Run the node's acceptance commands (CPU only; never the GPU).
 4. `commit` and stop. Workers never run `integrate` or `git merge`.
 
 ### Coordinator
 
 Start the coordinator with `/skill:intergent <DESIGN.md>` in pi, then use the
-`campaign` tool — or drive the CLI directly: `start --no-unit` (which adopts
-the current branch as the feature branch; check out your branch first), then
+`campaign` tool — or drive the CLI directly: `start --no-unit` (which adopts the
+current branch as the feature branch; check out your branch first), then
 `spawn`/`verify`/`integrate` per ready node, a final idempotent `integrate`
-sweep, and `report`. See
-[Orchestration](./orchestration.md).
+sweep, and `report`. See [Orchestration](./orchestration.md).
 
 ## Process supervision
 

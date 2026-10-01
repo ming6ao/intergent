@@ -9,18 +9,13 @@ Every adapter (CLI, pi extension) calls these functions.  This mirrors the
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Any
 
-from . import campaign, conflict, gitutil, integrate, locks, planner, report as report_mod
+from . import campaign, gitutil, integrate, planner, report as report_mod
 from . import waves as waveplan
-from .conflict import Finding, IntentRef
-from .locks import HeldLock, Requirement
-from .scopes import (
-    classify_operation,
-    make_scope,
-    parse_scope_specs,
-)
+from .scopes import parse_owns, path_within_owns
 from .store import Store
 from .util import (
     IntergentError,
@@ -60,7 +55,6 @@ class Service:
         main_branch: str | None = None,
         base: str | None = None,
         checks: list[dict[str, Any]] | None = None,
-        lease_ttl_seconds: int = 1800,
         force: bool = False,
     ) -> dict[str, Any]:
         """Create the on-disk plane (config + state db) for a git repo."""
@@ -96,7 +90,6 @@ class Service:
             "main_branch": main_branch,
             "base": base,
             "default_branch": default_branch,
-            "lease_ttl_seconds": lease_ttl_seconds,
             "checks": checks or [],
             "policy": {"require_verification": True, "allow_auto_approve": []},
             "created_at": now(),
@@ -147,7 +140,6 @@ class Service:
         kind: str = "worker",
         main_branch: str | None = None,
         checks: list[dict[str, Any]] | None = None,
-        lease_ttl_seconds: int = 1800,
         force: bool = False,
         no_unit: bool = False,
     ) -> dict[str, Any]:
@@ -179,7 +171,6 @@ class Service:
                 main_branch=main_branch,
                 base=base,
                 checks=checks,
-                lease_ttl_seconds=lease_ttl_seconds,
                 force=force,
             )
             initialized = True
@@ -299,18 +290,10 @@ class Service:
         return self.store.get_unit(unit_id)  # type: ignore[return-value]
 
     def list_units(self) -> list[dict[str, Any]]:
-        units = self.store.list_units()
-        for unit in units:
-            intent = self.store.latest_intent_for_unit(int(unit["id"]))
-            unit["intent"] = intent
-            request = self.store.get_lock_request_for_unit(int(unit["id"]))
-            unit["lock_request"] = request
-        return units
+        return self.store.list_units()
 
     def unit_detail(self, unit_ref: str | int) -> dict[str, Any]:
         unit = self.store.require_unit(unit_ref)
-        unit["intent"] = self.store.latest_intent_for_unit(int(unit["id"]))
-        unit["lock_request"] = self.store.get_lock_request_for_unit(int(unit["id"]))
         unit["candidates"] = [
             c for c in self.store.list_candidates() if int(c["unit_id"]) == int(unit["id"])
         ]
@@ -346,178 +329,6 @@ class Service:
         )
 
     # ------------------------------------------------------------------
-    # Intent / conflict / leases
-    # ------------------------------------------------------------------
-    def _intent_ref(self, row: dict[str, Any]) -> IntentRef:
-        return IntentRef(
-            intent_id=int(row["id"]),
-            unit_id=int(row["unit_id"]),
-            unit_name=row.get("unit_name") or f"unit-{row['unit_id']}",
-            operation=row["operation"],
-            scopes=[(make_scope(s["kind"], s["key"]), s["operation"]) for s in row.get("scopes", [])],
-        )
-
-    def _other_refs(self, unit_id: int) -> list[IntentRef]:
-        return [self._intent_ref(row) for row in self.store.active_intents(exclude_unit=unit_id)]
-
-    def check_conflicts(
-        self,
-        unit_ref: str | int,
-        operation: str,
-        scope_specs: list[str],
-    ) -> list[Finding]:
-        unit = self.store.require_unit(unit_ref)
-        items = parse_scope_specs(scope_specs, operation)
-        ref = IntentRef(
-            intent_id=0,
-            unit_id=int(unit["id"]),
-            unit_name=unit["name"],
-            operation=operation,
-            scopes=items,
-        )
-        return conflict.evaluate(ref, self._other_refs(int(unit["id"])))
-
-    def declare_intent(
-        self,
-        unit_ref: str | int,
-        *,
-        operation: str,
-        scope_specs: list[str],
-        task: str | None = None,
-        summary: str | None = None,
-    ) -> dict[str, Any]:
-        self._reap_expired()
-        unit = self.store.require_unit(unit_ref)
-        if unit["state"] != "working":
-            raise IntergentError(f"unit {unit['name']} is {unit['state']}, not working")
-        items = parse_scope_specs(scope_specs, operation)
-        operation = classify_operation(operation)
-
-        # Supersede a previous in-flight intent on this unit.
-        previous = self.store.get_lock_request_for_unit(int(unit["id"]))
-        if previous is not None:
-            self._release_unit(int(unit["id"]), status="released")
-            self.store.set_intent_status(int(previous["intent_id"]), "superseded")
-
-        findings = self.check_conflicts(unit_ref, operation, scope_specs)
-        intent_id = self.store.create_intent(
-            int(unit["id"]), task, summary, operation
-        )
-        for scope, op in items:
-            scope_id = self.store.get_or_create_scope(scope.kind, scope.key, scope.canonical)
-            self.store.add_intent_scope(intent_id, scope_id, op)
-        self.store.conn.commit()
-
-        requirements = locks.requirement_closure(items)
-        req_map = {node: req.mode for node, req in requirements.items()}
-        ttl = int(self.config.get("lease_ttl_seconds", 1800))
-
-        if conflict.requires_decision(findings):
-            blocker = self._blocker_from_findings(findings)
-            request_id = self.store.create_lock_request(
-                intent_id=intent_id,
-                unit_id=int(unit["id"]),
-                status="needs_decision",
-                requirements=req_map,
-                blocker_unit_id=blocker,
-                reason="destructive vs additive overlap; the coordinator must re-plan",
-            )
-            self.store.set_intent_status(intent_id, "needs_decision")
-            self.store.conn.commit()
-            self._log("declare", unit, intent_id, {"status": "needs_decision"})
-            return {
-                "intent_id": intent_id,
-                "status": "needs_decision",
-                "requirements": req_map,
-                "findings": [f.to_dict() for f in findings],
-                "request_id": request_id,
-                "blocker": blocker,
-                "options": ["replan"],
-            }
-
-        held = [
-            HeldLock(
-                unit_id=int(c["unit_id"]),
-                unit_name=c["unit_name"],
-                node=c["node"],
-                mode=c["mode"],
-            )
-            for c in self.store.held_claims(exclude_unit=int(unit["id"]))
-        ]
-        blocker_lock = locks.find_blocker(requirements, held)
-        if blocker_lock is None:
-            request_id = self.store.create_lock_request(
-                intent_id=intent_id,
-                unit_id=int(unit["id"]),
-                status="granted",
-                requirements=req_map,
-            )
-            self.store.grant_claims(
-                request_id=request_id,
-                intent_id=intent_id,
-                unit_id=int(unit["id"]),
-                requirements=req_map,
-                ttl_seconds=ttl,
-            )
-            self.store.set_intent_status(intent_id, "granted")
-            self.store.conn.commit()
-            self._log("declare", unit, intent_id, {"status": "granted"})
-            return {
-                "intent_id": intent_id,
-                "status": "granted",
-                "requirements": req_map,
-                "findings": [f.to_dict() for f in findings],
-                "request_id": request_id,
-            }
-
-        # Queue behind the blocker.
-        blocker_intent = self.store.latest_intent_for_unit(blocker_lock.unit_id)
-        if blocker_intent is not None:
-            self.store.add_dependency(intent_id, int(blocker_intent["id"]), "lease_order")
-        request_id = self.store.create_lock_request(
-            intent_id=intent_id,
-            unit_id=int(unit["id"]),
-            status="queued",
-            requirements=req_map,
-            blocker_unit_id=blocker_lock.unit_id,
-            reason=f"waiting on {blocker_lock.unit_name} ({blocker_lock.node}={blocker_lock.mode})",
-        )
-        self.store.set_intent_status(intent_id, "queued")
-        self.store.conn.commit()
-        position = self.store.queue_position(request_id)
-        self._log("declare", unit, intent_id, {"status": "queued", "blocker": blocker_lock.unit_name})
-        return {
-            "intent_id": intent_id,
-            "status": "queued",
-            "requirements": req_map,
-            "findings": [f.to_dict() for f in findings],
-            "request_id": request_id,
-            "position": position,
-            "blocker": blocker_lock.unit_name,
-            "blocker_node": blocker_lock.node,
-            "eta_seconds": ttl,
-        }
-
-    def heartbeat(self, unit_ref: str | int) -> dict[str, Any]:
-        self._reap_expired()
-        unit = self.store.require_unit(unit_ref)
-        ttl = int(self.config.get("lease_ttl_seconds", 1800))
-        count = self.store.heartbeat(int(unit["id"]), ttl)
-        self.store.conn.commit()
-        return {"unit": unit["name"], "renewed": count, "ttl_seconds": ttl}
-
-    def release(self, unit_ref: str | int) -> dict[str, Any]:
-        self._reap_expired()
-        unit = self.store.require_unit(unit_ref)
-        promoted = self._release_unit(int(unit["id"]), status="released")
-        # Retire the unit so `status --gc` can prune its worktree.  (The
-        # internal `_release_unit` is also used to supersede an intent on
-        # re-declare, where the unit must stay active.)
-        self.store.set_unit_state(int(unit["id"]), "closed")
-        self.store.conn.commit()
-        return {"unit": unit["name"], "promoted": [p["unit_name"] for p in promoted]}
-
-    # ------------------------------------------------------------------
     # Work / candidates / verification
     # ------------------------------------------------------------------
     def commit(self, unit_ref: str | int, message: str) -> dict[str, Any]:
@@ -540,7 +351,14 @@ class Service:
                 "worktree has uncommitted changes; commit them (`intergent commit`) before finishing"
             )
         head = gitutil.head_commit(worktree)
-        intent = self.store.latest_intent_for_unit(int(unit["id"]))
+        violations = self._conformance_violations(unit, head)
+        if violations:
+            listing = ", ".join(sorted(violations)[:10])
+            raise IntergentError(
+                f"commit touches paths outside unit '{unit['name']}' owned directories: "
+                f"{listing}; the coordinator must widen `owns` or add a `depends_on` edge "
+                "in dag.json (waves replan on the next status/spawn)"
+            )
         existing = self.store.list_candidates()
         candidate = next(
             (c for c in existing if int(c["unit_id"]) == int(unit["id"]) and c["status"] in {"prepared", "failed", "blocked"}),
@@ -552,7 +370,6 @@ class Service:
         else:
             cid = self.store.create_candidate(
                 unit_id=int(unit["id"]),
-                intent_id=int(intent["id"]) if intent else None,
                 branch=unit["branch"],
                 head_commit=head,
                 base_commit=unit.get("base_commit") or "",
@@ -563,13 +380,44 @@ class Service:
         self.store.event("candidate.prepared", unit_id=int(unit["id"]), candidate_id=cid)
         return self.store.get_candidate(cid)  # type: ignore[return-value]
 
+    # ------------------------------------------------------------------
+    # Plan conformance
+    # ------------------------------------------------------------------
+    def owned_dirs(self, unit_name: str) -> list[str] | None:
+        """The DAG node's owned directories, or ``None`` on a non-campaign plane.
+
+        Re-spawned units are named ``<node>-a<attempt>``; the suffix is stripped
+        so conformance still resolves the original node.
+        """
+        branch = self.config.get("main_branch")
+        if not branch:
+            return None
+        dag = campaign.load_dag(self.root, branch)
+        if not dag or not dag.get("nodes"):
+            return None
+        names = {unit_name}
+        stripped = re.sub(r"-a\d+$", "", unit_name)
+        names.add(stripped)
+        for node in dag["nodes"]:
+            if str(node.get("id")) in names:
+                return parse_owns(node.get("owns") or [])
+        return None
+
+    def _conformance_violations(self, unit: dict[str, Any], head: str) -> list[str]:
+        """Changed paths outside the node's owned directories (empty when fine)."""
+        owns = self.owned_dirs(str(unit["name"]))
+        base = unit.get("base_commit") or ""
+        if owns is None or not base:
+            return []
+        changed = gitutil.changed_files(self.root, base, head)
+        return [path for path in changed if not path_within_owns(path, owns)]
+
     def simulation(self, *, run_checks_flag: bool = True) -> dict[str, Any]:
         return planner.simulate(
             self.store, self.root, self.config, run_checks_flag=run_checks_flag
         )
 
     def status(self) -> dict[str, Any]:
-        self._reap_expired()
         branch = self.config.get("main_branch")
         units = [self._project_unit(u, branch) for u in self.list_units()]
         candidates = self.store.list_candidates()
@@ -587,7 +435,6 @@ class Service:
             "default_branch": self.config.get("default_branch") or integrate.found_default_branch(self.root),
             "units": units,
             "candidates": candidates,
-            "queue": self.store.queued_requests(),
             "waves": [w.to_dict() for w in waves],
             "dag_waves": dag_waves,
             "dag_waves_error": dag_waves_error,
@@ -607,6 +454,7 @@ class Service:
             return [], None
         wave_size = int(dag.get("concurrency") or waveplan.DEFAULT_WAVE_SIZE)
         try:
+            waveplan.validate_dag(list(dag["nodes"]))
             planned = waveplan.plan_dag_waves(list(dag["nodes"]), wave_size=wave_size)
         except IntergentError as exc:
             return [], str(exc)
@@ -659,7 +507,6 @@ class Service:
             check_only=check_only,
             run_checks_flag=run_checks_flag,
         )
-        self._promote_queue()
         cleanup_result: dict[str, Any] | None = None
         artifacts_removed: list[str] = []
         if cleanup in {"worktrees", "all"}:
@@ -741,102 +588,10 @@ class Service:
         self.store.conn.commit()
         return {"removed_worktrees": removed, "pruned_branches": pruned_branches}
 
-    # ------------------------------------------------------------------
-    # Internals
-    # ------------------------------------------------------------------
-    def _blocker_from_findings(self, findings: list[Finding]) -> int | None:
-        for finding in findings:
-            if finding.rule == "FM-C001 destructive_vs_additive" and finding.asserted:
-                row = self.store.get_intent(finding.other_intent_id)
-                if row is not None:
-                    return int(row["unit_id"])
-        return None
-
-    def _release_unit(self, unit_id: int, *, status: str) -> list[dict[str, Any]]:
-        self.store.release_claims(unit_id, state=status)
-        request = self.store.get_lock_request_for_unit(unit_id)
-        if request is not None and request["status"] in {"granted", "queued", "needs_decision"}:
-            self.store.set_lock_request_status(int(request["id"]), status)
-        self.store.conn.commit()
-        return self._promote_queue()
-
-    def _promote_queue(self) -> list[dict[str, Any]]:
-        promoted: list[dict[str, Any]] = []
-        ttl = int(self.config.get("lease_ttl_seconds", 1800))
-        queued = self.store.queued_requests()
-        for request in queued:
-            unit_id = int(request["unit_id"])
-            requirements = {k: str(v) for k, v in _loads(request["requirements"]).items()}
-            held = [
-                HeldLock(
-                    unit_id=int(c["unit_id"]),
-                    unit_name=c["unit_name"],
-                    node=c["node"],
-                    mode=c["mode"],
-                )
-                for c in self.store.held_claims(exclude_unit=unit_id)
-            ]
-            blocker = locks.find_blocker(
-                {node: Requirement(node=node, mode=mode, declared=True) for node, mode in requirements.items()},
-                held,
-            )
-            if blocker is not None:
-                # Keep the closest blocker recorded; do not grant out of order.
-                continue
-            self.store.set_lock_request_status(int(request["id"]), "granted")
-            self.store.grant_claims(
-                request_id=int(request["id"]),
-                intent_id=int(request["intent_id"]),
-                unit_id=unit_id,
-                requirements=requirements,
-                ttl_seconds=ttl,
-            )
-            self.store.set_intent_status(int(request["intent_id"]), "granted")
-            unit = self.store.get_unit(unit_id)
-            self.store.event(
-                "lease.promoted",
-                unit_id=unit_id,
-                intent_id=int(request["intent_id"]),
-                data={"unit": (unit or {}).get("name")},
-            )
-            promoted.append({"unit_name": (unit or {}).get("name", unit_id), "intent_id": request["intent_id"]})
-        self.store.conn.commit()
-        return promoted
-
-    def _reap_expired(self) -> list[dict[str, Any]]:
-        expired_units = self.store.expire_claims(now())
-        reaped: list[dict[str, Any]] = []
-        for unit_id in expired_units:
-            self.store.release_claims(unit_id, state="expired")
-            request = self.store.get_lock_request_for_unit(unit_id)
-            if request is not None and request["status"] == "granted":
-                self.store.set_lock_request_status(int(request["id"]), "expired", reason="lease TTL elapsed")
-                self.store.set_intent_status(int(request["intent_id"]), "expired")
-            unit = self.store.get_unit(unit_id)
-            self.store.event("lease.expired", unit_id=unit_id, data={"unit": (unit or {}).get("name")})
-            reaped.append({"unit_id": unit_id, "unit_name": (unit or {}).get("name")})
-        if expired_units:
-            self.store.conn.commit()
-            self._promote_queue()
-        return reaped
-
-    def _log(self, kind: str, unit: dict[str, Any], intent_id: int, data: dict[str, Any]) -> None:
-        self.store.event(kind, unit_id=int(unit["id"]), intent_id=intent_id, data=data)
-        self.store.conn.commit()
-
 
 # ----------------------------------------------------------------------
 # helpers
 # ----------------------------------------------------------------------
-def _loads(text: str) -> dict[str, Any]:
-    import json
-
-    try:
-        return json.loads(text)
-    except (TypeError, ValueError):
-        return {}
-
-
 def _session_unit_slugs(session: str, name: str) -> tuple[str, str]:
     """Slug the session and unit, collapsing the default ``session == name``.
 
