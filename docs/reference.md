@@ -95,8 +95,8 @@ branch to the default branch stays a human `git` step.
 
 `--node ID` lands only that candidate. `--acceptance CMD` runs the node's
 acceptance commands (repeatable). `--check-only` records a node's acceptance
-verdict (fingerprint source `node:<id>`) without merging; this is what the
-orchestrator's verifier uses. `--cleanup` defaults to `none`.
+verdict (fingerprint source `node:<id>`) without merging. `--cleanup` defaults
+to `none`.
 
 ### `report`
 
@@ -265,8 +265,6 @@ simulation, cleanup, reporting) plus CLI and packaging smoke tests.
 - One campaign per plane; RPC-steerable workers and multiple concurrent
   campaigns are out of scope.
 - `jj` workspaces and shared dependency caches are not implemented.  The
-  sandbox abstraction/manifest/gate (Phase 1–2), the single executor queue
-  (Phase 1), and the shared wave recorder (Phase 3) are implemented; the
-  remaining rollout is flipping the default to wave scope and retiring the
-  per-node worktree path (Phase 5).
+  coordinator still spawns per-node units by default; wave scope
+  (`exec --open/--record`) is engine-level and not yet wired into `spawn`.
 - Promotion from the feature branch to the default branch is a human `git` step.

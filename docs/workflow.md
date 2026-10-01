@@ -14,8 +14,8 @@ serialization is decided at **plan time** from directory ownership.
 ```text
 COORDINATOR (this session)
  ├── PLANNER   reads the design, writes dag.json
- ├── WORKER_*  one-shot per ready DAG node: its own worktree
- │               edit owned dirs -> acceptance (CPU) -> commit
+ ├── WORKER_*  one-shot per ready DAG node, in its unit worktree
+ │               edit owned dirs -> (node scope) acceptance + commit
  ├── VERIFIER  read-only per candidate: reviews evidence
  └── EXECUTOR  the single sandboxed runner: drains a check queue
 ```
@@ -67,10 +67,12 @@ a worker gets `sliceme-unit` but never `sliceme`, and the verifier gets neither.
    (`short: true`) must succeed; otherwise stop. Never edit the main working
    tree.
 2. **Edit only your node's owned directories.** Ownership is declared in
-   `dag.json` and enforced by `commit`; a rejected commit means the planner
-   under-declared, not that you should widen your own scope.
-3. **A worker's last step is `commit`.** Workers never call `sliceme-unit`
-   `integrate` or `git merge`. The coordinator owns verification and integration.
+   `dag.json` and enforced by `commit` (node scope) or the wave recorder (wave
+   scope); a rejection means the planner under-declared, not that you should
+   widen your own scope.
+3. **Finish without landing.** Node scope: run acceptance and `commit`. Wave
+   scope: stop after editing. Workers never call `sliceme-unit` `integrate` or
+   `git merge`; the coordinator owns verification and integration.
 4. **Ordering is authored in the DAG.** If two nodes would touch the same
    directory, the planner must put them in different waves (disjoint `owns`) or
    add a `depends_on` edge. Never rely on runtime arbitration.
@@ -143,5 +145,5 @@ If `commit` rejects a path outside the owned directories, report it and stop.
 The coordinator widens the node's `owns` (or adds a `depends_on` edge) in
 `dag.json`; the next `status`/`ready`/`spawn` replans the waves.
 
-Full specification: [docs/guide.md](./docs/guide.md). Tool
-reference: [docs/reference.md](./docs/reference.md).
+Full specification: [guide.md](./guide.md). Tool reference:
+[reference.md](./reference.md).

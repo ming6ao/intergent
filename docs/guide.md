@@ -1,12 +1,10 @@
 # Sliceme guide
 
 Sliceme *(slice the design into parallel agents)* coordinates parallel coding
-agents around one campaign: a machine-readable DAG, a `git worktree` per worker,
-plan-time **directory ownership**, and fingerprint-pinned integration onto a
-feature
-branch. This guide covers the model, ownership, the orchestration lifecycle, and
-the pi agent integration. The command/action reference lives in
-[reference.md](./reference.md).
+agents around one campaign: a machine-readable DAG, plan-time **directory
+ownership**, git worktrees, and fingerprint-pinned integration onto a feature
+branch. This guide covers the model, ownership, orchestration, and the pi
+integration; the action reference is in [reference.md](./reference.md).
 
 ## 1. The problem
 
@@ -18,7 +16,7 @@ The failure modes are *authoring conflicts* (wasted, contradictory work) and
 Git compares *text*, not *intent*, and landing is per-branch rather than ordered
 by a dependency graph. Sliceme adds a deterministic layer over Git:
 
-- isolates each worker in a worktree;
+- isolates each unit in a git worktree;
 - assigns each DAG node disjoint **directories** at plan time;
 - serializes overlapping directory subtrees into waves;
 - verifies each candidate against a content fingerprint;
@@ -41,12 +39,13 @@ LLMs draft the plan; they never decide at runtime whether something blocks.
 | **Campaign** | One feature branch plus a `dag.json` plan and executor `state.json`. |
 | **Coordinator** | The top-level session that owns the plan and drives the campaign. |
 | **Node** | One DAG unit of work with `owns`, `depends_on`, `acceptance`, `gpu`. |
-| **Unit** | An isolated writer: a worktree + branch (`sliceme/<name>`). |
+| **Unit** | An isolated writer: a worktree + branch (`sliceme/<name>`, or a shared `sliceme/wave-<n>`). |
 | **Ownership** | The repo-relative **directories** a node may change (`dir:` only), compared by subtree overlap. |
-| **Conformance** | Commit-time check that every changed path lies inside the node's owned directories. |
+| **Conformance** | Check that every changed path lies inside the node's owned directories. |
 | **Candidate** | A committed unit awaiting verification and integration. |
 | **Wave** | A derived batch of nodes with disjoint owned subtrees that may run concurrently; also the integration order. |
-| **Fingerprint** | Content hash of (commit tree, command vector, toolchain, policy, source) that pins a verification result. |
+| **Executor** | The single serialized, sandboxed runner that executes check jobs. |
+| **Fingerprint** | Content hash of (tree, command vector, toolchain, policy, sandbox, executor, source) that pins a verification result. |
 
 ## 3. Directory ownership
 
@@ -147,8 +146,8 @@ auditable without runtime locking.
 | `goal` | The prompt seed handed to the worker. |
 | `owns` | Directories the node owns, at the deepest subdirectory that contains each path (`dir:src/api`). Directory subtrees are the only conflict unit. |
 | `depends_on` | Node ids that must be `done` before this node is `ready`. |
-| `acceptance` | Commands the worker must run and the verifier re-runs. |
-| `gpu` | `none`, `T1`, or `T2`; only the verifier may use it. |
+| `acceptance` | Commands the executor runs for this node. |
+| `gpu` | `none`, `T1`, or `T2`; only the executor may use it. |
 | `concurrency` | Per-wave size cap. Defaults to 3 when absent. |
 
 **Phases never schedule; waves do — and waves are derived.** A graph plus the
@@ -179,8 +178,8 @@ COORDINATOR  (top-level pi session — the session the user sees)
  │  tools: sliceme start | status | ready | spawn | verify | integrate | report | exec
  ├── PLANNER   (subagent, invoked by the coordinator via `start`)
  │               reads the design, writes dag.json (plane state, not committed)
- ├── WORKER_*  (one-shot subagent per ready DAG node, own sliceme worktree)
- │               edit owned dirs -> acceptance tests -> commit  (never GPU)
+ ├── WORKER_*  (one-shot subagent per ready DAG node, in its unit worktree)
+ │               edit owned dirs -> (node scope) acceptance + commit  (never GPU)
  └── VERIFIER  (read-only subagent, invoked per candidate)
                  submits checks to the executor; returns a verdict; never edits
 ```
@@ -201,7 +200,7 @@ sliceme start <design>      # adopt current branch, planner -> dag.json + waves
 wave N ready ──► spawn (<= concurrency) ──► worker commits candidate
   ▲                                              │
   │                                              ▼
-  │                                verify (verifier: T0, then gpu.sh)
+  │                                verify (executor runs; verifier judges)
   │                                              │ pass
   │                                              ▼
   │                       node done ◄── integrate --node <id>
@@ -248,11 +247,10 @@ to remove everything. On a conflict, cleanup is never offered.
 
 ### GPU arbitration
 
-`tools/gpu.sh` (flock + foreign-process gate + tiered timeout) is the GPU broker.
-It is **sliceme's**, shipped with the package and invoked by resolved path;
-**only the executor uses it**, workers never touch the GPU, and T0 CPU remains
-the inner development loop. A busy device returns exit 75, reported as a
-retryable failure rather than a code failure. See §6.3.
+Only the executor may use the GPU; T0 CPU remains the inner development loop.
+The executor composes sliceme's `tools/gpu.sh` broker (host lock + tiered
+timeout) for GPU jobs — see §6.3. A busy device returns exit 75, reported as a
+retryable failure rather than a code failure.
 
 ### Failure and resume
 
@@ -267,9 +265,9 @@ retryable failure rather than a code failure. See §6.3.
 Caps: `concurrency`, max attempts per node, and a wall-clock budget bound the
 cost of each spawn.
 
-## 6. Executor, sandbox, and the target wave design
+## 6. Executor, sandbox, and wave scope
 
-### 6.1 The single executor queue (Phase 1, implemented)
+### 6.1 The single executor queue
 
 Multiple verifiers never run commands themselves. They submit **check jobs** to
 one executor:
@@ -301,7 +299,7 @@ Semantics:
 Jobs are recorded in the `jobs` table (`docs/reference.md` §3) with their
 command vector, sandbox digest, fingerprint, exit code, output, and timing.
 
-### 6.2 Sandbox profiles and project manifests (Phase 1–2)
+### 6.2 Sandbox profiles and project manifests
 
 `sliceme/sandbox.py` defines a `Sandbox`: a built-in mode (`none`, `bwrap`,
 `unshare`) or a project `command` prefix, plus network/read-only/writable
@@ -351,7 +349,7 @@ executor → sliceme gpu broker (host lock) → project sandbox → acceptance
 
 A project may override the GPU invocation through `gpu.command` in its manifest.
 
-### 6.4 One worktree per wave (Phase 3)
+### 6.4 One worktree per wave
 
 Because same-wave nodes own **disjoint directory subtrees**, they cannot author
 a file collision, so the per-node worktree is isolation the conflict rule
@@ -377,8 +375,8 @@ Workers become pure editors under wave scope: they never run `git add/commit`
 (the shared index is not multi-process safe) and never run the suite in the
 shared tree; the executor snapshots the tree and runs the combined acceptance
 vector.  Multiple read-only verifiers judge the executor's recorded evidence.
-The per-node worktree path (node scope) remains the default until Phase 5 flips
-it; both are exercised by the test suite.
+The per-node worktree path (node scope) remains the default; both scopes are
+exercised by the test suite.
 
 ## 7. Agent integration (pi)
 

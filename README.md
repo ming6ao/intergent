@@ -1,96 +1,60 @@
 # Sliceme
 
-> *slice the design into parallel agents* — coordination for parallel coding
-> agents: one campaign DAG, a git worktree per worker, plan-time directory
-> ownership, and fingerprint-pinned integration onto a feature branch.
+*Slice a design into parallel coding agents.*
 
-Sliceme lets several coding agents work the same repository in parallel
-without authoring conflicting changes, verifies each candidate against a
-content fingerprint, and lands verified candidates one DAG node at a time on a
-campaign feature branch. It is a dependency-free Python 3.11+ engine
-([`sliceme/`](./sliceme)) plus a pi coordinator tool.
+Sliceme turns a design document into a DAG of work, runs the non-conflicting
+nodes in parallel, verifies each against a content fingerprint, and lands them
+on a feature branch. Ownership is decided at plan time, so parallel agents never
+author the same files.
 
-- **Isolation:** one `git worktree` + branch per wave (or per worker; node
-  scope remains the default) — same-wave nodes own disjoint directories, so the
-  wave can share one checkout.
-- **Ownership:** nodes own directories at plan time; overlapping subtrees are
-  serialized into waves, and `commit` rejects paths outside the owned dirs.
-- **Verification:** plane checks and per-node acceptance are pinned to a
-  fingerprint and reused across re-integration.
-- **Executor:** one serialized, sandboxed runner drains a check queue so
-  multiple verifiers delegate instead of each spawning its own test run; the
-  target repo's `sliceme.sandbox.json` defines how to isolate tests and is
-  gated by the planner/coordinator before any verifier runs.
-- **Integration:** ordered `--no-ff` merges onto the feature branch; a safety
-  rail refuses the default branch.
+- **Plan-time ownership** — nodes own directories; overlapping subtrees are
+  serialized into waves.
+- **Isolation** — each unit runs in a git worktree; same-wave nodes own disjoint
+  directories, so a wave can share one checkout.
+- **One executor** — a single serialized, sandboxed runner drains a check queue,
+  so verifiers judge recorded evidence instead of each running the suite.
+- **Verified integration** — ordered `--no-ff` merges onto the feature branch; a
+  safety rail refuses the default branch.
 
 ## Install
 
 ```bash
 pi install ./                    # or: pi install git:github.com/ming6ao/sliceme
-pi                               # launch a coordinator session
+pi
 ```
 
-`pi install` registers both tools (`sliceme` for the coordinator, `sliceme-unit`
-for workers) **inactive**. `/sliceme [DESIGN.md]` (defaults to `DESIGN.md`)
-activates them for the session and starts a campaign. Nothing else is needed:
-the tools invoke the bundled engine, so there is no `pip install` and no
-`sliceme` on `PATH`.
+`/sliceme [DESIGN.md]` (default `DESIGN.md`) activates the `sliceme` and
+`sliceme-unit` tools for the session and starts a campaign. The tools invoke the
+bundled engine, so there is no `pip install` and no `sliceme` on `PATH`.
 
-## Quick start
+## Use
 
-In pi, run `/sliceme [DESIGN.md]` to start a campaign; the coordinator drives the
-design into landed work with the `sliceme` tool, and each spawned worker uses the
-`sliceme-unit` tool to edit its owned directories and commit.
+In pi, run `/sliceme DESIGN.md`. The coordinator then drives the campaign with
+the `sliceme` tool:
 
-```bash
-pi install ./                    # or git:/npm: sliceme
-pi                               # launch a session
-
-# then, in the session:
-#   /sliceme DESIGN.md           start a campaign from a design document
-#   sliceme start <DESIGN.md>    adopt current branch + planner DAG
-#   sliceme ready                current-wave nodes whose dependencies are done
-#   sliceme spawn <node>         one-shot worker in its own worktree
-#   sliceme verify <node>        read-only verifier
-#   sliceme integrate <node>     land the verified candidate
-#   sliceme report --narrative "what changed / risks"
+```text
+sliceme start <DESIGN.md>   planner -> dag.json + waves
+sliceme ready               current-wave nodes whose dependencies are integrated
+sliceme spawn <node>        one-shot worker
+sliceme verify <node>       executor runs checks; a read-only verifier judges
+sliceme integrate <node>    land the verified candidate
+sliceme report              deterministic report
 ```
 
-Under the hood the tools drive the bundled engine, whose six verbs are `start`,
-`status`, `commit`, `integrate`, `report`, and `exec` (the sandboxed executor
-queue). See [docs/guide.md](./docs/guide.md) for the model and the
-one-worktree-per-wave design, and [docs/reference.md](./docs/reference.md) for
-the action reference.
+## Docs
+
+- [Guide](./docs/guide.md) — model, ownership, orchestration, agent roles.
+- [Reference](./docs/reference.md) — actions, modules, state, verification.
+- [Workflow](./docs/workflow.md) — the campaign loop and worker contract.
+- [Publishing](./docs/publishing.md) — packaging and release.
 
 ## Develop
 
-The engine is Python 3.11+ with no runtime dependencies; the pi adapter is
-TypeScript. Run the suite with:
+The engine is dependency-free Python 3.11+; the pi adapter is TypeScript.
 
 ```bash
 python3 -m unittest discover -s tests -v
 ```
 
-```
-sliceme/          engine: service, store, git/worktrees, ownership, verifier,
-                    sandbox (isolation profiles), executor (sandboxed queue),
-                    integrate (landing + wave ordering + simulation), campaign
-bin/sliceme       CLI shim (runs without install)
-integrations/pi/    pi package: coordinator.ts (sliceme tool), unit.ts
-                    (sliceme-unit tool), common.ts, agents/
-tools/gpu.sh        GPU broker (sliceme-owned; invoked by resolved path)
-tests/              unittest suite
-```
-
-When adding an engine action, update `sliceme/surface.py` (source of truth);
-the CLI follows, and the pi tools drive the CLI. See
-[docs/reference.md](./docs/reference.md).
-
-## Documentation
-
-- [Guide](./docs/guide.md) — model, directory ownership, orchestration, and
-  agent integration.
-- [Reference](./docs/reference.md) — actions, modules, state layout,
-  verification, tests, and gaps.
-- [Publishing](./docs/publishing.md) — packaging, npm/PyPI release, and install.
+When adding an engine action, update `sliceme/surface.py` (the source of truth);
+the CLI and pi tools follow.

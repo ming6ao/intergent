@@ -37,7 +37,7 @@ tag), so update the other two in the same commit.
 ```bash
 npm login                         # once, on the publishing machine
 # bump package.json, pyproject.toml, sliceme/__init__.py together
-npm test                          # 128 tests; also runs via prepublishOnly
+npm test                          # full suite; also runs via prepublishOnly
 npm pack --dry-run                # inspect the exact tarball contents
 npm publish                       # (use --dry-run first if unsure)
 ```
