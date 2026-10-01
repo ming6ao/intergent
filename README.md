@@ -43,7 +43,7 @@ pi                               # launch a session
 
 # then, in the session:
 #   /skill:intergent DESIGN.md   activate Intergent for this session
-#   campaign start <DESIGN.md>   feature branch + planner DAG
+#   campaign start <DESIGN.md>   adopt current branch + planner DAG
 #   campaign ready               nodes whose dependencies are done
 #   campaign spawn <node>        one-shot worker in its own worktree
 #   campaign verify <node>       read-only verifier

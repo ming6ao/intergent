@@ -186,7 +186,8 @@ class CliTests(unittest.TestCase):
             (root / "a.txt").write_text("hi\n")
             subprocess.run(["git", "add", "-A"], cwd=tmp, check=True)
             subprocess.run(["git", "commit", "-qm", "init"], cwd=tmp, check=True)
-            run_cli(["--json", "start", "--no-unit", "--main", "feat/x", "--base", "main"], root)
+            subprocess.run(["git", "checkout", "-q", "-b", "feat/x"], cwd=tmp, check=True)
+            run_cli(["--json", "start", "--no-unit"], root)
             out = run_cli(["--json", "start", "--name", "alpha", "--base", "feat/x"], root)
             worktree = Path(json.loads(out.stdout)["worktree"])
 
@@ -229,10 +230,11 @@ class CliTests(unittest.TestCase):
             subprocess.run(["git", "add", "-A"], cwd=tmp, check=True)
             subprocess.run(["git", "commit", "-qm", "init"], cwd=tmp, check=True)
 
-            # Campaign bootstrap: no coordinator unit, feature branch created.
+            # Campaign bootstrap: check out the feature branch first; `start`
+            # adopts it and never creates one.
+            subprocess.run(["git", "checkout", "-q", "-b", "feat/x"], cwd=tmp, check=True)
             out = run_cli(
-                ["--json", "start", "--no-unit", "--main", "feat/x", "--base", "main",
-                 "--check", "ok=true"],
+                ["--json", "start", "--no-unit", "--check", "ok=true"],
                 root,
             )
             self.assertEqual(out.returncode, 0, out.stderr)

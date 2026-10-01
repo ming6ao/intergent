@@ -77,9 +77,11 @@ writes `.intergent/config.json` and `.intergent/state.db` (and adds
 then creates a unit for the directory unless it is already inside one.
 Re-running it from a unit worktree is a no-op. `--no-unit` initialises the plane
 without creating a unit, for a campaign coordinator's checkout; `--main` names
-the integration/feature branch and creates it at `--base` when missing. The
-recorded `default_branch` is captured once at init (origin `HEAD`, else the
-checked-out branch, else `init.defaultBranch`, else `main`). The programmatic
+the integration/feature branch and **must already exist** — `start` adopts the
+current branch and never creates a branch. `--base` records the fork point
+(default: the integration branch). The recorded `default_branch` is captured once
+at init (origin `HEAD`, else `init.defaultBranch`, else an existing
+`main`/`master`, else `main`). The programmatic
 plane-only helper is `Service.init_plane(root, ...)`.
 
 ### Authoring (workers)

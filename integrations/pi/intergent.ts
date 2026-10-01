@@ -89,7 +89,9 @@ export default function intergentExtension(pi: ExtensionAPI) {
 				Type.Boolean({ description: "start: initialise the plane without a unit for cwd" }),
 			),
 			main: Type.Optional(
-				Type.String({ description: "start: main/integration branch (default: current)" }),
+				Type.String({
+					description: "start: integration branch to adopt (default: current; must exist)",
+				}),
 			),
 			base: Type.Optional(Type.String({ description: "start: base branch/ref" })),
 			node: Type.Optional(

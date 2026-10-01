@@ -9,7 +9,7 @@
  *
  * One tool, `campaign`, wraps the CLI's orchestration verbs:
  *
- *   start <design>   feature branch + no-unit plane + planner -> dag.json
+ *   start <design>   adopt current branch + no-unit plane + planner -> dag.json
  *   status           merge `intergent status --json` with live child state
  *   ready            nodes whose every dependency is done
  *   spawn <node>     create the unit, launch a one-shot worker, tee its log
@@ -179,6 +179,52 @@ export default function campaignExtension(pi: ExtensionAPI) {
 		return String(branch);
 	}
 
+	/** The branch currently checked out in the coordinator's checkout. */
+	async function currentBranch(ctx: ExtensionContext): Promise<string> {
+		const result = await pi.exec("git", ["symbolic-ref", "--quiet", "--short", "HEAD"], {
+			cwd: ctx.cwd,
+		});
+		const branch = result.stdout?.trim();
+		if (result.code !== 0 || !branch) {
+			throw new Error(
+				"campaign: not on a branch (detached HEAD); check out the campaign branch first",
+			);
+		}
+		return branch;
+	}
+
+	/**
+	 * The repository default branch, mirroring `integrate.found_default_branch`:
+	 * origin/HEAD, then init.defaultBranch, then an existing main/master.  The
+	 * checked-out branch is deliberately not a fallback, because `start` adopts
+	 * it as the feature branch.
+	 */
+	async function defaultBranch(ctx: ExtensionContext, feature: string): Promise<string> {
+		const origin = await pi.exec(
+			"git",
+			["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"],
+			{ cwd: ctx.cwd },
+		);
+		if (origin.code === 0 && origin.stdout?.trim()) {
+			return origin.stdout.trim().replace(/^origin\//, "");
+		}
+		const configured = await pi.exec("git", ["config", "--get", "init.defaultBranch"], {
+			cwd: ctx.cwd,
+		});
+		const name = configured.stdout?.trim();
+		if (configured.code === 0 && name && name !== feature) return name;
+		for (const candidate of ["main", "master"]) {
+			if (candidate === feature) continue;
+			const exists = await pi.exec(
+				"git",
+				["rev-parse", "--verify", "--quiet", `refs/heads/${candidate}`],
+				{ cwd: ctx.cwd },
+			);
+			if (exists.code === 0) return candidate;
+		}
+		return "main";
+	}
+
 	function load(ctx: ExtensionContext, branch: string): { dag: Dag; state: CampaignState } {
 		return {
 			dag: readJson<Dag>(dagPath(ctx.cwd, branch), { nodes: [] }),
@@ -209,18 +255,41 @@ export default function campaignExtension(pi: ExtensionAPI) {
 	): Promise<any> {
 		const design = String(params.design ?? "DESIGN.md");
 		const campaign = String(params.campaign ?? path.basename(ctx.cwd));
-		const requestedBranch = params.feature_branch ? String(params.feature_branch) : undefined;
-		const base = String(params.base ?? "main");
 
-		// Resume picks the branch from an existing dag.json; `replan` ignores it.
-		const probeBranch = requestedBranch ?? `feat/${campaign}`;
-		const existing = fs.existsSync(dagPath(ctx.cwd, probeBranch))
-			? readJson<Dag>(dagPath(ctx.cwd, probeBranch), {})
+		// `start` adopts the branch that is already checked out; it never
+		// creates a feature branch.  The branch key selects the plane files.
+		const branch = await currentBranch(ctx);
+		const defaultBr = await defaultBranch(ctx, branch);
+		const existing = fs.existsSync(dagPath(ctx.cwd, branch))
+			? readJson<Dag>(dagPath(ctx.cwd, branch), {})
 			: undefined;
-		const branch = String(existing?.feature_branch ?? probeBranch);
+		const base = params.base ? String(params.base) : String(existing?.base ?? branch);
+		const notice =
+			`campaign: using current branch '${branch}' as the feature branch ` +
+			`(no branch created).`;
+		if (ctx.hasUI) ctx.ui.notify(notice, "info");
 
-		// 1. Feature branch + a plane with no coordinator unit.
-		await ig(ctx, ["start", "--no-unit", "--main", branch, "--base", base], signal);
+		// `integrate` refuses to land on the recorded default branch, so a
+		// campaign can never be delivered from there.  Fail before the plane is
+		// written.
+		if (branch === defaultBr) {
+			return {
+				content: [
+					{
+						type: "text" as const,
+						text:
+							`campaign: '${branch}' is the repository default branch. ` +
+							`Create or check out a feature branch first; intergent adopts the ` +
+							`current branch and never creates one.`,
+					},
+				],
+				isError: true,
+			};
+		}
+
+		// 1. Plane with no coordinator unit; the engine adopts the current branch
+		// as the integration/feature branch (and re-points an existing plane).
+		await ig(ctx, ["start", "--no-unit", "--main", branch], signal);
 
 		const dagFile = dagPath(ctx.cwd, branch);
 		const stateFile = statePath(ctx.cwd, branch);
@@ -257,8 +326,8 @@ export default function campaignExtension(pi: ExtensionAPI) {
 				running_reset: nodeIds(existing).filter((id) => state.nodes[id]?.status === "pending"),
 			});
 			return {
-				content: [{ type: "text" as const, text: summarise(existing, state) }],
-				details: { dag: existing, state, resumed: true },
+				content: [{ type: "text" as const, text: `${notice}\n\n${summarise(existing, state)}` }],
+				details: { dag: existing, state, resumed: true, feature_branch: branch },
 			};
 		}
 
@@ -302,8 +371,8 @@ export default function campaignExtension(pi: ExtensionAPI) {
 			nodes: nodeIds(dag),
 		});
 		return {
-			content: [{ type: "text" as const, text: summarise(dag, state) }],
-			details: { dag, state },
+			content: [{ type: "text" as const, text: `${notice}\n\n${summarise(dag, state)}` }],
+			details: { dag, state, feature_branch: branch },
 		};
 	}
 
@@ -356,6 +425,9 @@ export default function campaignExtension(pi: ExtensionAPI) {
 		);
 		const worktree = created.json?.worktree;
 		if (!worktree) throw new Error(`spawn: could not create a unit for '${node}'`);
+		if (path.resolve(String(worktree)) === path.resolve(ctx.cwd)) {
+			throw new Error("spawn: worker worktree must differ from the coordinator checkout");
+		}
 		const unit = String(created.json?.unit ?? unitName);
 
 		state.nodes[node] = {
@@ -494,7 +566,7 @@ export default function campaignExtension(pi: ExtensionAPI) {
 		if (!failed && ctx.hasUI) {
 			const ok = await ctx.ui.confirm(
 				`Integrate succeeded onto ${branch}.`,
-				"Remove unit worktrees for this campaign?",
+				"Remove the landed unit worktrees and unit branches now?",
 			);
 			if (ok) await ig(ctx, ["integrate", "--cleanup", "worktrees"]);
 		}
@@ -505,7 +577,7 @@ export default function campaignExtension(pi: ExtensionAPI) {
 		name: "campaign",
 		label: "Intergent campaign",
 		description:
-			"Coordinate a design into landed work: start (feature branch + planner), " +
+			"Coordinate a design into landed work: start (adopt current branch + planner), " +
 			"status, ready, spawn (one-shot worker), verify (read-only verifier), " +
 			"integrate (land a verified node), report. The dag.json plan is the only schedule.",
 		promptSnippet: "Drive an Intergent campaign (start → spawn → verify → integrate)",
@@ -522,8 +594,9 @@ export default function campaignExtension(pi: ExtensionAPI) {
 			action: StringEnum(CAMPAIGN_ACTIONS),
 			design: Type.Optional(Type.String({ description: "start: design document path" })),
 			campaign: Type.Optional(Type.String({ description: "start: campaign name" })),
-			feature_branch: Type.Optional(Type.String({ description: "start: feature branch" })),
-			base: Type.Optional(Type.String({ description: "start: base branch" })),
+			base: Type.Optional(
+				Type.String({ description: "start: base branch/ref (default: feature branch)" }),
+			),
 			replan: Type.Optional(Type.Boolean({ description: "start: re-run the planner" })),
 			node: Type.Optional(Type.String({ description: "node id for spawn/verify/integrate" })),
 			narrative: Type.Optional(Type.String({ description: "report: what-changed/risks text" })),

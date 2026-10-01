@@ -165,7 +165,7 @@ before re-spawn). In-memory state is never trusted.
 ## 5. Lifecycle
 
 ```text
-campaign start <design>            # create feature branch, invoke planner, write dag.json
+campaign start <design>            # adopt current branch, invoke planner, write dag.json
         │
         ▼  (user may review the printed summary)
 ready ──► spawn (<= concurrency) ──► worker commits candidate
@@ -183,11 +183,13 @@ ready ──► spawn (<= concurrency) ──► worker commits candidate
 integrate (sweep) ──► offer cleanup (worktrees / artifacts) ──► report
 ```
 
-1. **`start`** — creates or verifies the feature branch, points the plane's
-   integration branch at it (`intergent start --no-unit --main <feature_branch>
-   --base <base>`, §6), and **invokes the planner** in the same action. The
-   planner reads the design and writes `dag.json`; `start` prints the summary
-   and stops for an optional human look.
+1. **`start`** — adopts the **currently checked-out branch** as the campaign
+   feature branch (it never creates one; starting on the repository default
+   branch is refused), bootstraps the plane with `intergent start --no-unit`
+   whose integration branch is that branch, and **invokes the planner** in the
+   same action. The planner reads the design and writes `dag.json`; `start`
+   prints the branch it adopted plus the summary, and stops for an optional
+   human look.
 2. **`ready`** — returns the nodes whose dependencies are all `done`.
 3. **`spawn`** — creates an `intergent` unit for a node
    (`intergent start --name <id> --base <feature_branch>`), launches a one-shot worker
@@ -217,7 +219,8 @@ feature branch, so the campaign wiring needs **no schema migration** — the
 exception is §6.4, which extends the verification store:
 
 ```bash
-intergent start --no-unit --main feat/nanochat-cpp --base master
+git checkout -b feat/nanochat-cpp   # the user chooses the branch
+intergent start --no-unit           # the plane adopts it; no branch is created
 ```
 
 `--no-unit` is a new small flag: it initialises the plane without creating a
@@ -304,7 +307,7 @@ One tool, `campaign`, mirroring the shape of the `intergent` CLI. `start` and `p
 
 | Action | Purpose |
 |---|---|
-| `start <design>` | Create/verify the feature branch, invoke the planner, write `dag.json`, print the summary. `--replan` re-invokes the planner. |
+| `start <design>` | Adopt the current branch as the feature branch, invoke the planner, write `dag.json`, print the summary. `--replan` re-invokes the planner. |
 | `status` | Merge `intergent status --json` with live child state; print the summary. |
 | `ready` | Return ready nodes. |
 | `spawn <node>` | Create the unit, launch the one-shot worker, tee `worker_<id>.log`. |

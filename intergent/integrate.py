@@ -50,30 +50,37 @@ from .verifier import (
 __all__ = ["integrate", "record_node_verification", "found_default_branch"]
 
 
-def found_default_branch(root: Path) -> str:
-    """Derive the default branch the way plane init does.
+def found_default_branch(root: Path, *, exclude: str | None = None) -> str:
+    """Derive the repository's default branch.
 
     Used as a fallback for planes created before the value was recorded.
-    Precedence: ``refs/remotes/origin/HEAD``, the checked-out branch,
-    ``init.defaultBranch``, then ``main``.
+    Precedence: ``refs/remotes/origin/HEAD``, ``init.defaultBranch``, the first
+    existing branch among ``main``/``master`` (skipping *exclude*), then
+    ``main``.
+
+    The checked-out branch is deliberately **not** a fallback: ``start`` adopts
+    the current branch as the campaign feature branch, so at plane-init time the
+    current branch is the feature branch, never the default.
     """
     origin = gitutil.git(root, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD")
     if origin.ok and origin.stdout.strip():
         return origin.stdout.strip().removeprefix("origin/")
-    current = gitutil.current_branch(root)
-    if current:
-        return current
     configured = gitutil.git(root, "config", "--get", "init.defaultBranch", check=False)
     if configured.ok and configured.stdout.strip():
-        return configured.stdout.strip()
+        name = configured.stdout.strip()
+        if name != exclude:
+            return name
+    for candidate in ("main", "master"):
+        if candidate != exclude and gitutil.branch_exists(root, candidate):
+            return candidate
     return "main"
 
 
-def _recorded_default(config: dict[str, Any], root: Path) -> str:
+def _recorded_default(config: dict[str, Any], root: Path, *, exclude: str | None = None) -> str:
     recorded = config.get("default_branch")
     if recorded:
         return str(recorded)
-    return found_default_branch(root)
+    return found_default_branch(root, exclude=exclude)
 
 
 def _verify_and_record_plane(
@@ -221,7 +228,7 @@ def integrate(
     run_checks_flag: bool = True,
 ) -> list[LandResult]:
     main_branch = main_branch_of(config)
-    default_branch = _recorded_default(config, root)
+    default_branch = _recorded_default(config, root, exclude=main_branch)
     if main_branch == default_branch:
         raise IntergentError(
             f"refusing to integrate onto the plane's default branch '{main_branch}'; "

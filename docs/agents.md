@@ -57,9 +57,10 @@ activates them for the session (the path must be an existing design document).
 ### Coordinator
 
 Start the coordinator with `/skill:intergent <DESIGN.md>` in pi, then use the
-`campaign` tool — or drive the CLI directly: `start --no-unit --main <feature>
---base <base>`, then `spawn`/`verify`/`integrate` per ready node, a final
-idempotent `integrate` sweep, and `report`. See
+`campaign` tool — or drive the CLI directly: `start --no-unit` (which adopts
+the current branch as the feature branch; check out your branch first), then
+`spawn`/`verify`/`integrate` per ready node, a final idempotent `integrate`
+sweep, and `report`. See
 [Orchestration](./orchestration.md).
 
 ## Process supervision
