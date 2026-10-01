@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from .sandbox import SANDBOX_MODES
 from .util import SlicemeError
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -99,6 +100,27 @@ ACTIONS: tuple[Action, ...] = (
         params=(
             Param("narrative", "string", "what-changed/risks text appended to the skeleton"),
             Param("design", "string", "design document reference (default: dag.json)"),
+        ),
+    ),
+    Action(
+        name="exec",
+        summary="single sandboxed verification executor: submit/run/wait/cancel check jobs",
+        params=(
+            Param("submit", "boolean", "enqueue a check job"),
+            Param("run", "boolean", "drain the queue with the single executor"),
+            Param("wait", "boolean", "wait for a job to finish (requires --job)"),
+            Param("cancel", "boolean", "cancel a queued job (requires --job)"),
+            Param("job", "string", "job id for --wait/--cancel"),
+            Param("source", "string", "fingerprint source, e.g. node:w1 or wave:0"),
+            Param("commit", "string", "commit/ref to run the checks at"),
+            Param("command", "list", "check command (repeatable)", flag="command"),
+            Param("sandbox", "string", "sandbox mode", choices=SANDBOX_MODES),
+            Param("gpu", "string", "GPU tier reserved by the executor", choices=("none", "T1", "T2")),
+            Param("priority", "int", "higher priority runs first"),
+            Param("timeout", "int", "per-command timeout seconds"),
+            Param("wave", "int", "campaign wave the job belongs to"),
+            Param("requester", "string", "verifier id that submitted the job"),
+            Param("limit", "int", "with --run: at most this many jobs"),
         ),
     ),
 )
@@ -224,11 +246,41 @@ def _dispatch_report(service: "Service", p: dict[str, Any]) -> Any:
     return service.report(narrative=p.get("narrative"), design=p.get("design"))
 
 
+def _dispatch_exec(service: "Service", p: dict[str, Any]) -> Any:
+    executor = service.executor()
+    if p.get("cancel"):
+        if not p.get("job"):
+            raise SlicemeError("exec --cancel requires --job")
+        return {"job": executor.cancel(p["job"])}
+    if p.get("wait"):
+        if not p.get("job"):
+            raise SlicemeError("exec --wait requires --job")
+        return {"job": executor.wait(p["job"], timeout=float(p.get("timeout") or 600))}
+    if p.get("run"):
+        jobs = executor.drain(limit=p.get("limit") or None)
+        return {"executed": len(jobs), "jobs": jobs}
+    if p.get("submit"):
+        result = executor.submit(
+            source=p.get("source"),
+            commit=p.get("commit"),
+            commands=list(p.get("command") or []),
+            sandbox=p.get("sandbox"),
+            gpu=p.get("gpu") or "none",
+            wave=p.get("wave"),
+            requester=p.get("requester"),
+            priority=int(p.get("priority") or 0),
+            timeout=int(p.get("timeout") or 3600),
+        )
+        return {"cached": result["cached"], "job": result["job"]}
+    return executor.status()
+
+
 _HANDLERS = {
     "status": _dispatch_status,
     "commit": _dispatch_commit,
     "integrate": _dispatch_integrate,
     "report": _dispatch_report,
+    "exec": _dispatch_exec,
 }
 
 

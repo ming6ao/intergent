@@ -80,6 +80,35 @@ CREATE TABLE IF NOT EXISTS verifications (
 );
 
 CREATE INDEX IF NOT EXISTS idx_candidates_status ON candidates(status);
+
+CREATE TABLE IF NOT EXISTS jobs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  wave INTEGER,
+  requester TEXT,
+  source TEXT NOT NULL,
+  commit_ref TEXT NOT NULL,
+  tree TEXT,
+  commands TEXT NOT NULL,
+  sandbox TEXT,
+  sandbox_digest TEXT,
+  gpu TEXT NOT NULL DEFAULT 'none',
+  priority INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'queued',
+  fingerprint TEXT,
+  attempt INTEGER NOT NULL DEFAULT 0,
+  timeout INTEGER NOT NULL DEFAULT 3600,
+  requested_at REAL NOT NULL,
+  started_at REAL,
+  finished_at REAL,
+  duration REAL,
+  exit_code INTEGER,
+  output TEXT,
+  error TEXT,
+  runner_pid INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
+CREATE INDEX IF NOT EXISTS idx_jobs_fingerprint ON jobs(fingerprint, status);
 """
 
 
@@ -101,7 +130,21 @@ class Store:
         self.conn = sqlite3.connect(str(path), timeout=10.0)
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
+        self._migrate()
         self.conn.commit()
+
+    def _migrate(self) -> None:
+        """Additive column migrations for planes created by older versions."""
+        self._ensure_columns("jobs", {"timeout": "INTEGER NOT NULL DEFAULT 3600"})
+
+    def _ensure_columns(self, table: str, columns: dict[str, str]) -> None:
+        existing = {
+            row["name"]
+            for row in self.conn.execute(f"PRAGMA table_info({table})").fetchall()
+        }
+        for name, decl in columns.items():
+            if name not in existing:
+                self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
 
     def close(self) -> None:
         self.conn.close()
@@ -344,3 +387,146 @@ class Store:
         if unit is None:
             raise SlicemeError(f"unknown unit: {name_or_id}")
         return unit
+
+    # ---- executor jobs ------------------------------------------------
+    JOB_FIELDS = frozenset(
+        {
+            "wave",
+            "requester",
+            "source",
+            "commit_ref",
+            "tree",
+            "commands",
+            "sandbox",
+            "sandbox_digest",
+            "gpu",
+            "priority",
+            "status",
+            "fingerprint",
+            "attempt",
+            "timeout",
+            "requested_at",
+            "started_at",
+            "finished_at",
+            "duration",
+            "exit_code",
+            "output",
+            "error",
+            "runner_pid",
+        }
+    )
+
+    def create_job(
+        self,
+        *,
+        source: str,
+        commit_ref: str,
+        commands: list[str],
+        wave: int | None = None,
+        requester: str | None = None,
+        tree: str | None = None,
+        sandbox: dict[str, Any] | None = None,
+        sandbox_digest: str | None = None,
+        gpu: str = "none",
+        priority: int = 0,
+        fingerprint: str | None = None,
+        timeout: int = 3600,
+    ) -> int:
+        ts = now()
+        with self.tx() as c:
+            c.execute(
+                "INSERT INTO jobs(wave, requester, source, commit_ref, tree, commands,"
+                " sandbox, sandbox_digest, gpu, priority, status, fingerprint, attempt,"
+                " timeout, requested_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    wave,
+                    requester,
+                    source,
+                    commit_ref,
+                    tree,
+                    json.dumps(commands),
+                    json.dumps(sandbox) if sandbox is not None else None,
+                    sandbox_digest,
+                    gpu,
+                    priority,
+                    "queued",
+                    fingerprint,
+                    0,
+                    int(timeout),
+                    ts,
+                ),
+            )
+            return int(c.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
+
+    def get_job(self, job_id: str | int) -> dict[str, Any] | None:
+        return _dict(
+            self.conn.execute("SELECT * FROM jobs WHERE id=?", (int(job_id),)).fetchone()
+        )
+
+    def list_jobs(
+        self, *, statuses: Sequence[str] | None = None, limit: int | None = None
+    ) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM jobs"
+        params: list[Any] = []
+        if statuses:
+            placeholders = ",".join("?" for _ in statuses)
+            sql += f" WHERE status IN ({placeholders})"
+            params.extend(statuses)
+        sql += " ORDER BY priority DESC, requested_at ASC, id ASC"
+        if limit:
+            sql += " LIMIT ?"
+            params.append(int(limit))
+        return _dicts(self.conn.execute(sql, params).fetchall())
+
+    def update_job(self, job_id: str | int, **fields: Any) -> None:
+        unknown = set(fields) - self.JOB_FIELDS
+        if unknown:
+            raise SlicemeError(f"unknown job fields: {', '.join(sorted(unknown))}")
+        if not fields:
+            return
+        sets = ", ".join(f"{name}=?" for name in fields)
+        params = list(fields.values()) + [int(job_id)]
+        self.conn.execute(f"UPDATE jobs SET {sets} WHERE id=?", params)
+
+    def claim_next_job(self, *, runner_pid: int | None = None) -> dict[str, Any] | None:
+        """Atomically claim the highest-priority queued job."""
+        with self.tx() as c:
+            row = c.execute(
+                "SELECT * FROM jobs WHERE status='queued'"
+                " ORDER BY priority DESC, requested_at ASC, id ASC LIMIT 1"
+            ).fetchone()
+            if row is None:
+                return None
+            c.execute(
+                "UPDATE jobs SET status='running', started_at=?, runner_pid=? WHERE id=?",
+                (now(), runner_pid, int(row["id"])),
+            )
+            claimed = c.execute("SELECT * FROM jobs WHERE id=?", (int(row["id"]),)).fetchone()
+            return _dict(claimed)
+
+    def find_passed_job(self, fingerprint: str) -> dict[str, Any] | None:
+        """A passing job for the same fingerprint, for cache/dedupe."""
+        return _dict(
+            self.conn.execute(
+                "SELECT * FROM jobs WHERE fingerprint=? AND status='passed'"
+                " ORDER BY id DESC LIMIT 1",
+                (fingerprint,),
+            ).fetchone()
+        )
+
+    def recover_orphan_jobs(self, *, cutoff: float) -> int:
+        """Reset ``running`` jobs older than *cutoff* back to ``queued``."""
+        with self.tx() as c:
+            cursor = c.execute(
+                "UPDATE jobs SET status='queued', started_at=NULL, runner_pid=NULL,"
+                " error='recovered orphaned lease'"
+                " WHERE status='running' AND (started_at IS NULL OR started_at < ?)",
+                (cutoff,),
+            )
+            return int(cursor.rowcount)
+
+    def job_counts(self) -> dict[str, int]:
+        rows = self.conn.execute(
+            "SELECT status, COUNT(*) AS c FROM jobs GROUP BY status"
+        ).fetchall()
+        return {str(r["status"]): int(r["c"]) for r in rows}

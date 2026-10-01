@@ -34,6 +34,7 @@ export const SLICEME_ACTIONS = [
 	"commit",
 	"integrate",
 	"report",
+	"exec",
 ] as const;
 
 /** The `sliceme` tool exposes exactly the agent surface. */
@@ -114,6 +115,28 @@ export default function slicemeExtension(pi: ExtensionAPI) {
 			gc: Type.Optional(Type.Boolean({ description: "status: prune landed worktrees" })),
 			short: Type.Optional(Type.Boolean({ description: "status: print only the unit name" })),
 			no_checks: Type.Optional(Type.Boolean({ description: "skip verification" })),
+			submit: Type.Optional(Type.Boolean({ description: "exec: enqueue a check job" })),
+			run: Type.Optional(Type.Boolean({ description: "exec: drain the queue" })),
+			wait: Type.Optional(Type.Boolean({ description: "exec: wait for a job" })),
+			cancel: Type.Optional(Type.Boolean({ description: "exec: cancel a queued job" })),
+			job: Type.Optional(Type.String({ description: "exec: job id" })),
+			source: Type.Optional(
+				Type.String({ description: "exec: fingerprint source, e.g. node:w1 or wave:0" }),
+			),
+			commit: Type.Optional(Type.String({ description: "exec: commit/ref to run checks at" })),
+			command: Type.Optional(
+				Type.Array(Type.String(), { description: "exec: check command (repeatable)" }),
+			),
+			sandbox: Type.Optional(
+				StringEnum(["none", "bwrap", "unshare"] as const, {
+					description: "exec: sandbox mode",
+				}),
+			),
+			priority: Type.Optional(Type.Number({ description: "exec: higher runs first" })),
+			timeout: Type.Optional(Type.Number({ description: "exec: per-command timeout seconds" })),
+			wave: Type.Optional(Type.Number({ description: "exec: campaign wave" })),
+			requester: Type.Optional(Type.String({ description: "exec: verifier id" })),
+			limit: Type.Optional(Type.Number({ description: "exec: max jobs to drain" })),
 		}),
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			const { action, ...rest } = params as Record<string, unknown> & { action: string };

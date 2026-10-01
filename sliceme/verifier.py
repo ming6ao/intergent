@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from . import gitutil
+from .sandbox import Sandbox, wrap_command
 from .util import SlicemeError, scratch_dir, sha256_json, sha256_text
 
 
@@ -115,12 +116,16 @@ def compute_fingerprint(
     *,
     checks: list[CheckSpec] | None = None,
     source: str = "plane",
+    sandbox_digest: str = "",
+    executor_digest: str = "",
 ) -> Fingerprint:
-    """Hash ``(tree, command vector, toolchain, policy, source)``.
+    """Hash ``(tree, command vector, toolchain, policy, sandbox, executor, source)``.
 
     ``checks`` defaults to the plane's configured checks; a campaign node
     passes its own ``acceptance`` commands and ``source='node:<id>'`` so a node
-    verdict can never collide with a plane-check verdict (§6.4).
+    verdict can never collide with a plane-check verdict (§6.4).  A non-empty
+    ``sandbox_digest`` pins the isolation profile and ``executor_digest`` pins
+    the executor semantics, so tightening either invalidates a cached verdict.
     """
     tree = gitutil.tree_of(root, commit)
     specs = checks if checks is not None else checks_from_config(config)
@@ -133,7 +138,11 @@ def compute_fingerprint(
     tool = toolchain_digest(root, commit)
     policy = config.get("policy") or {}
     policy_digest = sha256_json(policy)
-    fingerprint = sha256_text("\n".join([tree, cmd_digest, tool, policy_digest, source]))
+    fingerprint = sha256_text(
+        "\n".join(
+            [tree, cmd_digest, tool, policy_digest, sandbox_digest, executor_digest, source]
+        )
+    )
     return Fingerprint(
         fingerprint,
         tree,
@@ -196,6 +205,7 @@ def run_checks(
     worktree: Path | None = None,
     only: list[str] | None = None,
     checks: list[CheckSpec] | None = None,
+    sandbox: "Sandbox | None" = None,
 ) -> tuple[str, list[CheckResult], float]:
     resolved = checks if checks is not None else checks_from_config(config)
     if only:
@@ -211,7 +221,7 @@ def run_checks(
     started = time.time()
     try:
         for check in checks:
-            results.append(_run_one(worktree, check))
+            results.append(_run_one(worktree, check, sandbox=sandbox))
     finally:
         if tmp_created:
             _cleanup_worktree(root, worktree)
@@ -225,11 +235,18 @@ def run_checks(
     return "passed", results, duration
 
 
-def _run_one(worktree: Path, check: CheckSpec) -> CheckResult:
+def _run_one(
+    worktree: Path, check: CheckSpec, *, sandbox: "Sandbox | None" = None
+) -> CheckResult:
     started = time.time()
+    command = (
+        wrap_command(check.command, sandbox, worktree=str(worktree))
+        if sandbox is not None
+        else check.command
+    )
     try:
         proc = subprocess.run(
-            check.command,
+            command,
             cwd=str(worktree),
             shell=True,
             capture_output=True,

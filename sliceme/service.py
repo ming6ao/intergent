@@ -405,6 +405,14 @@ class Service:
             self.store, self.root, self.config, run_checks_flag=run_checks_flag
         )
 
+    def executor(self):
+        """Build the single sandboxed verification executor for this plane."""
+        from .executor import Executor
+
+        branch = self.config.get("main_branch")
+        dag = campaign.load_dag(self.root, branch) if branch else None
+        return Executor(self.root, self.store, self.config, dag=dag)
+
     def status(self) -> dict[str, Any]:
         branch = self.config.get("main_branch")
         units = [self._project_unit(u, branch) for u in self.list_units()]
@@ -426,6 +434,7 @@ class Service:
             "waves": [w.to_dict() for w in waves],
             "dag_waves": dag_waves,
             "dag_waves_error": dag_waves_error,
+            "executor": self.store.job_counts(),
         }
 
     def _dag_waves(self, branch: str | None) -> tuple[list[dict[str, Any]], str | None]:

@@ -21,7 +21,8 @@ COORDINATOR (this session)
  ├── PLANNER   reads the design, writes dag.json
  ├── WORKER_*  one-shot per ready DAG node: its own worktree
  │               edit owned dirs -> acceptance (CPU) -> commit
- └── VERIFIER  read-only per candidate: T0 CPU then tools/gpu.sh
+ ├── VERIFIER  read-only per candidate: reviews evidence
+ └── EXECUTOR  the single sandboxed runner: drains a check queue
 ```
 
 - The DAG is the **only authored schedule**. Waves are a deterministic
@@ -36,7 +37,17 @@ COORDINATOR (this session)
 - A node starts only in the current wave; a later wave begins after every
   member of the previous wave is integrated, so its units fork from the updated
   feature branch.
-- Only the verifier may use the GPU. Workers never touch it.
+- Only the executor runs checks and only the executor may use the GPU. Workers
+  never run the acceptance suite in a shared tree; verifiers delegate to the
+  executor and judge its recorded evidence.
+- The executor is a **single serialized runner** (`exec --run`/`--wait`) over a
+  SQLite-backed queue. It runs each job in a **sandbox** resolved by
+  `sliceme/sandbox.py`; the sandbox digest is part of the verification
+  fingerprint, so tightening isolation invalidates cached verdicts.
+- `tools/gpu.sh` is **sliceme's** broker, shipped with the package and invoked
+  by resolved path; a project may override the GPU invocation through its
+  sandbox manifest. The target repository owns *how to run tests in isolation*,
+  not sliceme's GPU locking policy.
 - Cleanup is grouped by wave: the coordinator asks once per completed wave.
 - `commit` enforces **plan conformance**: a worker whose commit changes a path
   outside its node's owned directories is rejected, and the coordinator widens
@@ -104,6 +115,7 @@ default branch).
 | `commit` | commit the worktree, enforce plan conformance, and register the candidate |
 | `integrate` | merge a verified candidate onto the feature branch; `node`, `acceptance`, `gpu`, `check_only`, `cleanup` |
 | `report` | write the deterministic campaign report; `narrative` appends the coordinator's summary |
+| `exec` | the sandboxed executor queue: `submit`, `run`, `wait`, `cancel` check jobs; `source`, `commit`, `command`, `sandbox`, `gpu` |
 
 ## Worker workflow
 

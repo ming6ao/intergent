@@ -182,12 +182,15 @@ COORDINATOR  (top-level pi session — the session the user sees)
  ├── WORKER_*  (one-shot subagent per ready DAG node, own sliceme worktree)
  │               edit owned dirs -> acceptance tests -> commit  (never GPU)
  └── VERIFIER  (read-only subagent, invoked per candidate)
-                 T0 CPU then tools/gpu.sh; returns a verdict; never edits
+                 submits checks to the executor; returns a verdict; never edits
 ```
 
 The coordinator is **not** an `sliceme` unit: plane bootstrap uses
 `start --no-unit`, so campaign setup leaves no phantom unit in the coordinator's
 checkout.
+
+The verifier never runs commands itself: it delegates to the single sandboxed
+**executor** (§6), which owns the check queue, the GPU broker, and isolation.
 
 ### Lifecycle
 
@@ -222,7 +225,8 @@ integrate (idempotent sweep) ──► final cleanup ──► report
    (`--base <feature_branch>`) and launches a one-shot worker in that worktree.
    Because the previous wave was integrated first, the base already contains it.
 4. **`verify`** runs the read-only verifier on the node's latest prepared
-   candidate and records the verdict.
+   candidate. The verifier submits the node's acceptance vector to the
+   executor (§6) and records the verdict from its evidence.
 5. **`integrate --node <id>`** lands that one verified candidate, then the node
    is marked `done`. When the last member of a wave lands, the next wave opens.
 6. **`integrate` (final)** merges any remaining prepared candidates.
@@ -245,9 +249,10 @@ to remove everything. On a conflict, cleanup is never offered.
 ### GPU arbitration
 
 `tools/gpu.sh` (flock + foreign-process gate + tiered timeout) is the GPU broker.
-**Only the verifier is given it**; workers never touch the GPU, and T0 CPU
-remains the inner development loop. A busy device returns exit 75, reported as a
-retryable failure rather than a code failure.
+It is **sliceme's**, shipped with the package and invoked by resolved path;
+**only the executor uses it**, workers never touch the GPU, and T0 CPU remains
+the inner development loop. A busy device returns exit 75, reported as a
+retryable failure rather than a code failure. See §6.3.
 
 ### Failure and resume
 
@@ -262,7 +267,107 @@ retryable failure rather than a code failure.
 Caps: `concurrency`, max attempts per node, and a wall-clock budget bound the
 cost of each spawn.
 
-## 6. Agent integration (pi)
+## 6. Executor, sandbox, and the target wave design
+
+### 6.1 The single executor queue (Phase 1, implemented)
+
+Multiple verifiers never run commands themselves. They submit **check jobs** to
+one executor:
+
+```text
+VERIFIER A ─┐  submit(job)                    ┌─ wait/notify ─▶ VERIFIER A
+VERIFIER B ─┼────────────▶ EXECUTOR QUEUE ────┼─ wait/notify ─▶ VERIFIER B
+VERIFIER C ─┘   (SQLite `jobs`, 1 runner)     └─ wait/notify ─▶ VERIFIER C
+```
+
+- `sliceme exec --submit --source node:w1 --commit <sha> --command "<cmd>"` enqueues.
+- `sliceme exec --run` opens the single-executor lock and drains the queue.
+- `sliceme exec --wait --job <id>` blocks until the job is terminal.
+- `sliceme exec --cancel --job <id>` cancels a queued job.
+- `sliceme exec` with no flags prints the queue status.
+
+Semantics:
+
+- **One runner.** `run`/`drain` hold an exclusive `flock` on
+  `.sliceme/executor.lock`, so no two check vectors run concurrently.
+- **Dedupe by fingerprint.** A submit whose `(tree, commands, toolchain, policy,
+  sandbox, source)` fingerprint already passed returns the cached job; the
+  commands are not re-run.
+- **Sandboxed.** Each job carries a `sandbox` profile; the executor resolves it
+  and every command is wrapped (see 6.2).
+- **Crash-safe.** A `running` job whose lease expired is reset to `queued`
+  before a drain.
+
+Jobs are recorded in the `jobs` table (`docs/reference.md` §3) with their
+command vector, sandbox digest, fingerprint, exit code, output, and timing.
+
+### 6.2 Sandbox profiles (Phase 1) and project manifests (Phase 2)
+
+`sliceme/sandbox.py` defines a `Sandbox`: mode (`none`, `bwrap`, `unshare`),
+network, read-only host, and extra writable paths. `Sandbox.digest()` is folded
+into the verification fingerprint, so tightening isolation invalidates cached
+verdicts.
+
+Resolution precedence: explicit `--sandbox` > `dag.json.sandbox` >
+`policy.sandbox` > `none`. `none` is unsandboxed and must be explicit; a
+requested backend that is not installed fails closed.
+
+The **target repository owns how to run tests in isolation**. Phase 2 adds a
+tracked manifest (`sliceme.sandbox.json`, not under `.sliceme/`, which is
+git-excluded):
+
+```jsonc
+{
+  "version": 1,
+  "command": ["tools/run-in-sandbox.sh", "--"],
+  "network": false,
+  "readonly_repo": true,
+  "writable": ["/tmp", ".cache"],
+  "setup": ["tools/setup-deps.sh"],
+  "gpu": { "command": ["sliceme-gpu", "--tier", "{tier}", "--"] }
+}
+```
+
+The **planner** locates the manifest and records `{path, digest, gpu_required}`
+in `dag.json`; the **coordinator** validates the gate before opening a wave or
+running the executor, so the sandbox is present before any verifier runs.
+
+### 6.3 GPU broker ownership
+
+`tools/gpu.sh` is **sliceme's** broker: a host `flock`, a foreign-process gate,
+and a tiered timeout. It is shipped with the package and invoked by resolved
+path, not as `tools/gpu.sh` relative to the target. The executor composes it
+outside the project sandbox for GPU jobs:
+
+```text
+executor → sliceme gpu broker (host lock) → project sandbox → acceptance
+```
+
+A project may override the GPU invocation through `gpu.command` in its manifest.
+
+### 6.4 Target design: one worktree per wave
+
+Because same-wave nodes own **disjoint directory subtrees**, they cannot author
+a file collision, so the per-node worktree is isolation the conflict rule
+already guarantees. The target design makes the wave the isolation and
+integration unit:
+
+```text
+wave open N   -> ONE branch sliceme/wave-<N> + worktree off the feature tip
+spawn         -> all ready workers of wave N into that worktree (pure editors)
+exec record   -> conformance-by-ownership -> per-node commits (serialized)
+exec verify   -> verifiers submit command vectors; the single executor runs them
+integrate     -> merge sliceme/wave-<N> --no-ff; mark nodes done; open N+1
+```
+
+Workers become pure editors: they never run `git add/commit` (the shared index
+is not multi-process safe) and never run the suite in the shared tree. The
+executor snapshots the wave tree into a detached scratch worktree and runs the
+combined acceptance vector there, so concurrent edits cannot invalidate a run.
+Multiple read-only verifiers judge the executor's recorded evidence. Per-node
+commits preserve retry and provenance, and a failed node blocks the wave merge.
+
+## 7. Agent integration (pi)
 
 pi is the supported agent harness. The repository is a **pi package** that ships
 the `campaign` coordinator tool, the `sliceme` worker tool, and the bundled skill.
@@ -286,7 +391,7 @@ when the campaign `spawn` action (or the user) creates one.
 | **Coordinator** | no | owns the plan (`dag.json`), spawns agents, calls `integrate` after a pass, writes the report |
 | **Planner** | no | reads the design, writes `dag.json` |
 | **Worker** | yes (its worktree) | edit owned directories → acceptance (CPU) → `commit` |
-| **Verifier** | no (read-only) | runs acceptance (T0 then `tools/gpu.sh`), returns a verdict, never edits |
+| **Verifier** | no (read-only) | submits acceptance to the executor, judges the recorded evidence, never edits |
 
 `runSubagent` passes each agent's `tools:` allowlist to `pi --tools`, so a
 worker gets `sliceme` but never `campaign`, and the verifier gets no Sliceme tool

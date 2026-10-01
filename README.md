@@ -10,11 +10,15 @@ content fingerprint, and lands verified candidates one DAG node at a time on a
 campaign feature branch. It is a dependency-free Python 3.11+ engine
 ([`sliceme/`](./sliceme)) plus a pi coordinator tool.
 
-- **Isolation:** one `git worktree` + branch per worker unit.
+- **Isolation:** one `git worktree` + branch per worker unit (today); the
+  scheduler's wave is the planned isolation unit, since same-wave nodes own
+  disjoint directories.
 - **Ownership:** nodes own directories at plan time; overlapping subtrees are
   serialized into waves, and `commit` rejects paths outside the owned dirs.
 - **Verification:** plane checks and per-node acceptance are pinned to a
   fingerprint and reused across re-integration.
+- **Executor:** one serialized, sandboxed runner drains a check queue so
+  multiple verifiers delegate instead of each spawning its own test run.
 - **Integration:** ordered `--no-ff` merges onto the feature branch; a safety
   rail refuses the default branch.
 
@@ -53,10 +57,11 @@ pi                               # launch a session
 #   campaign report --narrative "what changed / risks"
 ```
 
-Under the hood the tools drive the bundled engine, whose five verbs are `start`,
-`status`, `commit`, `integrate`, `report`. See [docs/guide.md](./docs/guide.md)
-for the model and [docs/reference.md](./docs/reference.md) for the action
-reference.
+Under the hood the tools drive the bundled engine, whose six verbs are `start`,
+`status`, `commit`, `integrate`, `report`, and `exec` (the sandboxed executor
+queue). See [docs/guide.md](./docs/guide.md) for the model and the target
+one-worktree-per-wave design, and [docs/reference.md](./docs/reference.md) for
+the action reference.
 
 ## Develop
 
@@ -69,10 +74,11 @@ python3 -m unittest discover -s tests -v
 
 ```
 sliceme/          engine: service, store, git/worktrees, ownership, verifier,
+                    sandbox (isolation profiles), executor (sandboxed queue),
                     integrate (landing + wave ordering + simulation), campaign
 bin/sliceme       CLI shim (runs without install)
 integrations/pi/    pi package: campaign.ts tool, sliceme tool, common.ts, agents/
-tools/gpu.sh        GPU broker (verifier only)
+tools/gpu.sh        GPU broker (sliceme-owned; invoked by resolved path)
 tests/              unittest suite
 ```
 
