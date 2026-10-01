@@ -1,8 +1,8 @@
-"""Unit tests for directory ownership (``intergent/scopes.py``)."""
+"""Unit tests for directory ownership (``intergent/ownership.py``)."""
 
 import unittest
 
-from intergent.scopes import (
+from intergent.ownership import (
     normalize_dir,
     owns_conflict,
     parse_owns,

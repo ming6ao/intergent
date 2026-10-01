@@ -65,7 +65,7 @@ class CliTests(unittest.TestCase):
             subprocess.run(["git", "commit", "-qm", "init"], cwd=tmp, check=True)
 
             # First call from the main checkout initialises the plane and a unit.
-            out = run_cli(["--json", "start", "--agent", "pi"], root)
+            out = run_cli(["--json", "start"], root)
             self.assertEqual(out.returncode, 0, out.stderr)
             first = json.loads(out.stdout)
             self.assertTrue(first["initialized"])

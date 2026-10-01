@@ -1,33 +1,122 @@
-"""Deterministic wave planning over the campaign DAG.
+"""Plan-time directory ownership and the DAG wave projection.
 
-This is the **scheduler** projection of the plan.  The DAG in
-``.intergent/<branch-key>.dag.json`` remains the only authored schedule; waves
-are computed from it, never hand-written.  A wave is a maximal set of nodes that
+Ownership is by **directory subtree**. A campaign node declares the deepest
+repo-relative directories that contain the paths it will touch; two nodes
+conflict when their owned directories overlap by subtree (equal, ancestor, or
+descendant). Files, symbols, APIs, and operations do not participate: the
+planner is the single author of ownership, and the wave projection here
+serializes overlapping nodes.
 
-* may run concurrently (each in its own worktree), and
-* do not conflict on any owned directory.
+Waves are the **scheduler** projection of ``dag.json``. The DAG remains the
+only authored schedule; a wave is a maximal set of nodes that may run
+concurrently (each in its own worktree) and do not conflict on any owned
+directory. A node is never placed earlier than ``max(wave(dep) + 1)``, so every
+dependency is integrated before its dependents start. The per-wave size is
+capped by ``concurrency`` (default 3).
 
-Ownership is by directory subtree (:mod:`intergent.scopes`): two nodes
-conflict when one owned directory is equal to, an ancestor of, or a descendant
-of the other's.  This is deliberately strict, and it is the *only* runtime
-serialization mechanism: there is no lease system.
+Canonical ownership form:
 
-Waves obey the DAG's ``depends_on`` edges: a node is never placed earlier than
-``max(wave(dep) + 1)``, so every dependency is integrated before its dependents
-start.  The per-wave size is capped by ``concurrency`` (default 3).
+* ``dir:src/api`` and ``src/api/`` both normalize to ``src/api``;
+* the repository root is ``"."``;
+* non-directory specs (``file:``, ``symbol:``, ...) are rejected, so a plan can
+  never silently rely on finer-grained enforcement that no longer exists.
 """
 
 from __future__ import annotations
 
+import posixpath
 from dataclasses import dataclass, field
 from typing import Any
 
-from .scopes import owns_conflict, parse_owns
 from .util import IntergentError
 
 DEFAULT_WAVE_SIZE = 3
 
+#: Scope kinds that are *not* ownable. Kept explicit so a stale plan fails
+#: loudly instead of being reinterpreted as a directory path.
+_NON_DIR_KINDS = frozenset(
+    {"file", "symbol", "api", "schema", "config", "migration", "infra", "test", "unknown"}
+)
 
+
+# ---------------------------------------------------------------------------
+# Directory ownership
+# ---------------------------------------------------------------------------
+def normalize_dir(path: str) -> str:
+    """Canonical repo-relative directory: ``dir:src/api/`` -> ``src/api``."""
+    text = str(path).strip()
+    if ":" in text:
+        prefix, rest = text.split(":", 1)
+        if prefix.strip().lower() == "dir":
+            text = rest
+    text = text.replace("\\", "/")
+    norm = posixpath.normpath(text)
+    while norm.startswith("./"):
+        norm = norm[2:]
+    norm = norm.strip("/")
+    return norm or "."
+
+
+def parse_owns(specs: list[str]) -> list[str]:
+    """Parse an ``owns`` list into normalized directories.
+
+    Accepts ``dir:path`` and bare paths. A recognized non-directory kind raises
+    :class:`IntergentError`.
+    """
+    owns: list[str] = []
+    seen: set[str] = set()
+    for spec in specs:
+        text = str(spec).strip()
+        if not text:
+            continue
+        if ":" in text:
+            prefix = text.split(":", 1)[0].strip().lower()
+            if prefix in _NON_DIR_KINDS:
+                raise IntergentError(
+                    f"owns must be directories, not {prefix}: '{text}' "
+                    "(declare the deepest directory that contains the paths)"
+                )
+        directory = normalize_dir(text)
+        if directory not in seen:
+            seen.add(directory)
+            owns.append(directory)
+    return owns
+
+
+def owns_conflict(a: list[str], b: list[str]) -> str | None:
+    """Return a human reason when two owned directory sets overlap.
+
+    Overlap is subtree overlap: equal directories, or one being an ancestor of
+    the other. ``None`` means the two sets may run in the same wave.
+    """
+    dirs_a = {normalize_dir(x) for x in a}
+    dirs_b = {normalize_dir(y) for y in b}
+    for x in sorted(dirs_a):
+        for y in sorted(dirs_b):
+            if x == y:
+                return f"directory conflict on {x}"
+            if x == "." or y == ".":
+                return f"directory conflict: root contains {y if x == '.' else x}"
+            if x.startswith(y + "/"):
+                return f"directory conflict: {y} contains {x}"
+            if y.startswith(x + "/"):
+                return f"directory conflict: {x} contains {y}"
+    return None
+
+
+def path_within_owns(path: str, owns: list[str]) -> bool:
+    """True when *path* (a changed file) lives in one of the owned directories."""
+    parent = posixpath.dirname(str(path).replace("\\", "/")).strip("/") or "."
+    for owned in owns:
+        directory = normalize_dir(owned)
+        if directory == "." or parent == directory or parent.startswith(directory + "/"):
+            return True
+    return False
+
+
+# ---------------------------------------------------------------------------
+# DAG wave projection
+# ---------------------------------------------------------------------------
 @dataclass
 class DagWave:
     index: int
@@ -182,4 +271,14 @@ def plan_dag_waves(
     return waves
 
 
-__all__ = ["DEFAULT_WAVE_SIZE", "DagWave", "node_owns", "plan_dag_waves", "validate_dag"]
+__all__ = [
+    "DEFAULT_WAVE_SIZE",
+    "DagWave",
+    "node_owns",
+    "normalize_dir",
+    "owns_conflict",
+    "parse_owns",
+    "path_within_owns",
+    "plan_dag_waves",
+    "validate_dag",
+]

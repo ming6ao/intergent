@@ -52,7 +52,13 @@ class SkillPackageTests(unittest.TestCase):
     def test_no_skills_sh_install_path(self):
         # pi is the only supported harness; the package installs the skill, so
         # there is no separate `npx skills add` path to document.
-        for path in (README, SKILL, REPO_ROOT / "docs" / "agents.md", PI_DIR / "README.md"):
+        docs = (
+            README,
+            SKILL,
+            REPO_ROOT / "docs" / "guide.md",
+            REPO_ROOT / "docs" / "reference.md",
+        )
+        for path in docs:
             self.assertNotIn("npx skills add", path.read_text(encoding="utf-8"))
 
     def test_no_dead_bootstrap_env_or_cli_alias(self):
@@ -62,12 +68,8 @@ class SkillPackageTests(unittest.TestCase):
         docs = (
             README,
             SKILL,
-            REPO_ROOT / "docs" / "README.md",
-            REPO_ROOT / "docs" / "overview.md",
-            REPO_ROOT / "docs" / "implementation.md",
-            REPO_ROOT / "docs" / "agents.md",
-            REPO_ROOT / "docs" / "orchestration.md",
-            PI_DIR / "README.md",
+            REPO_ROOT / "docs" / "guide.md",
+            REPO_ROOT / "docs" / "reference.md",
         )
         for path in docs:
             text = path.read_text(encoding="utf-8")
@@ -175,7 +177,7 @@ class SkillPackageTests(unittest.TestCase):
         campaign_text = PI_CAMPAIGN.read_text(encoding="utf-8")
         for needle in ("dag_waves", "currentWave", "readyWaveNodes", "advanceWaves"):
             self.assertIn(needle, campaign_text)
-        self.assertTrue((REPO_ROOT / "intergent" / "waves.py").is_file())
+        self.assertTrue((REPO_ROOT / "intergent" / "ownership.py").is_file())
         self.assertTrue((REPO_ROOT / "tests" / "test_waves.py").is_file())
 
 

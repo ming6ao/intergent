@@ -1,7 +1,7 @@
 """Campaign orchestration core: feature-branch integration, node verification,
 report, and the ``dag.json``/``state.json`` helpers.
 
-These pin the ``docs/orchestration.md`` S0 contract:
+These pin the campaign contract:
 * ``start --no-unit`` leaves no phantom unit and records the default branch;
 * ``integrate`` lands prepared candidates on the feature branch, is idempotent,
   aborts conflicts atomically, and refuses the plane's default branch;

@@ -54,9 +54,9 @@ pi                               # launch a session
 ```
 
 Under the hood the tools drive the bundled engine, whose five verbs are `start`,
-`status`, `commit`, `integrate`, `report`. See
-[docs/orchestration.md](./docs/orchestration.md) and
-[docs/implementation.md](./docs/implementation.md).
+`status`, `commit`, `integrate`, `report`. See [docs/guide.md](./docs/guide.md)
+for the model and [docs/reference.md](./docs/reference.md) for the action
+reference.
 
 ## Develop
 
@@ -68,22 +68,21 @@ python3 -m unittest discover -s tests -v
 ```
 
 ```
-intergent/          engine: service, store, git/worktrees, ownership, verifier
+intergent/          engine: service, store, git/worktrees, ownership, verifier,
+                    integrate (landing + wave ordering + simulation), campaign
 bin/intergent       CLI shim (runs without install)
-integrations/pi/    pi package: campaign.ts tool, common.ts, agents/
+integrations/pi/    pi package: campaign.ts tool, ig tool, common.ts, agents/
 tools/gpu.sh        GPU broker (verifier only)
 tests/              unittest suite
 ```
 
-When adding an engine action, update `intergent/surface.py` (source of truth)
-and the CLI follows; the pi `campaign` tool drives the CLI. See
-[docs/implementation.md](./docs/implementation.md).
+When adding an engine action, update `intergent/surface.py` (source of truth);
+the CLI follows, and the pi tools drive the CLI. See
+[docs/reference.md](./docs/reference.md).
 
 ## Documentation
 
-Start here: **[docs/README.md](./docs/README.md)**
-
-- [Overview](./docs/overview.md) · [Architecture](./docs/architecture.md) ·
-  [Conflict engine](./docs/conflict-engine.md) · [Local plane](./docs/local-plane.md) ·
-  [Local implementation](./docs/implementation.md) ·
-  [Agent integration](./docs/agents.md) · [Orchestration](./docs/orchestration.md)
+- [Guide](./docs/guide.md) — model, directory ownership, orchestration, and
+  agent integration.
+- [Reference](./docs/reference.md) — actions, modules, state layout,
+  verification, tests, and gaps.

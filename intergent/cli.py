@@ -2,7 +2,7 @@
 
 The CLI is a thin, *generated* adapter over :mod:`intergent.surface`.  Every
 action is built from :data:`intergent.surface.ACTIONS`, so the CLI can never
-drift from the pi tool surface.  See ``docs/architecture.md`` ("one engine,
+drift from the pi tool surface.  See ``docs/reference.md`` ("one engine,
 many adapters").
 """
 

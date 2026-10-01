@@ -5,7 +5,7 @@
  * spawning a planner, one-shot workers, and a read-only verifier, while
  * `intergent` remains the deterministic isolation/integration engine.  The DAG
  * in `.intergent/<branch-key>.dag.json` is the only schedule; there are no
- * phases in the scheduler (docs/orchestration.md).
+ * phases in the scheduler (docs/guide.md).
  *
  * One tool, `campaign`, wraps the CLI's orchestration verbs:
  *

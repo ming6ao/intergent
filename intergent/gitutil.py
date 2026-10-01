@@ -1,7 +1,7 @@
 """Git plumbing.
 
 Mutating operations shell out to the system ``git`` (worktree, merge, rebase,
-merge-tree, update-ref) exactly as prescribed by ``docs/operations.md``.  The
+merge-tree, update-ref) as prescribed by ``docs/reference.md``.  The
 module is deliberately small and side-effect free apart from the named verbs.
 """
 

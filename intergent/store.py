@@ -1,6 +1,6 @@
 """SQLite store for the local plane (WAL).
 
-Mirrors the sketch in ``docs/operations.md`` (local store: SQLite/WAL).  The
+The local store is SQLite/WAL (``docs/reference.md`` §3).  The
 service layer owns all business rules; this module owns persistence.
 """
 
@@ -19,19 +19,6 @@ PRAGMA journal_mode=WAL;
 PRAGMA foreign_keys=ON;
 PRAGMA busy_timeout=5000;
 
-CREATE TABLE IF NOT EXISTS meta (
-  key TEXT PRIMARY KEY,
-  value TEXT
-);
-
-CREATE TABLE IF NOT EXISTS agents (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  name TEXT UNIQUE NOT NULL,
-  model TEXT,
-  parent_id INTEGER REFERENCES agents(id),
-  created_at REAL NOT NULL
-);
-
 CREATE TABLE IF NOT EXISTS sessions (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT UNIQUE NOT NULL,
@@ -48,7 +35,6 @@ CREATE TABLE IF NOT EXISTS units (
   worktree TEXT NOT NULL,
   branch TEXT NOT NULL,
   base_commit TEXT,
-  agent_id INTEGER REFERENCES agents(id),
   state TEXT NOT NULL DEFAULT 'working',
   created_at REAL NOT NULL,
   updated_at REAL NOT NULL,
@@ -93,15 +79,6 @@ CREATE TABLE IF NOT EXISTS verifications (
   created_at REAL NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS events (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  kind TEXT NOT NULL,
-  unit_id INTEGER,
-  candidate_id INTEGER,
-  data TEXT,
-  created_at REAL NOT NULL
-);
-
 CREATE INDEX IF NOT EXISTS idx_candidates_status ON candidates(status);
 """
 
@@ -124,44 +101,7 @@ class Store:
         self.conn = sqlite3.connect(str(path), timeout=10.0)
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
-        self._migrate_states()
-        self._migrate_verification_source()
         self.conn.commit()
-
-    def _migrate_verification_source(self) -> None:
-        """Add the §6.4 source/commands/gpu columns to pre-existing planes.
-
-        The columns are additive and the fingerprint hash already includes the
-        source, so an old row simply reads back as ``plane``.
-        """
-        fingerprint_cols = {r[1] for r in self.conn.execute("PRAGMA table_info(fingerprints)")}
-        if "source" not in fingerprint_cols:
-            self.conn.execute(
-                "ALTER TABLE fingerprints ADD COLUMN source TEXT NOT NULL DEFAULT 'plane'"
-            )
-        verification_cols = {r[1] for r in self.conn.execute("PRAGMA table_info(verifications)")}
-        if "commands" not in verification_cols:
-            self.conn.execute("ALTER TABLE verifications ADD COLUMN commands TEXT")
-        if "gpu" not in verification_cols:
-            self.conn.execute("ALTER TABLE verifications ADD COLUMN gpu TEXT")
-
-    def _migrate_states(self) -> None:
-        """Collapse legacy unit/candidate states onto the current model.
-
-        Legacy databases used ``active``/``finished`` units and
-        ``ready``/``verified``/``approved`` candidates; the current model keeps
-        ``working`` units and ``prepared`` candidates.
-        """
-        self.conn.execute(
-            "UPDATE units SET state='working' WHERE state IN ('active','finished')"
-        )
-        self.conn.execute(
-            "UPDATE units SET state='closed' WHERE state IN ('released','abandoned')"
-        )
-        self.conn.execute(
-            "UPDATE candidates SET status='prepared' "
-            "WHERE status IN ('ready','verified','approved','blocked','failed')"
-        )
 
     def close(self) -> None:
         self.conn.close()
@@ -180,56 +120,6 @@ class Store:
         except Exception:
             self.conn.rollback()
             raise
-
-    # ---- meta ---------------------------------------------------------
-    def set_meta(self, key: str, value: Any) -> None:
-        with self.tx() as c:
-            c.execute(
-                "INSERT INTO meta(key, value) VALUES(?, ?) "
-                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                (key, json.dumps(value)),
-            )
-
-    def get_meta(self, key: str, default: Any = None) -> Any:
-        row = self.conn.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
-        if row is None:
-            return default
-        try:
-            return json.loads(row["value"])
-        except (TypeError, json.JSONDecodeError):
-            return row["value"]
-
-    # ---- events -------------------------------------------------------
-    def event(
-        self,
-        kind: str,
-        *,
-        unit_id: int | None = None,
-        candidate_id: int | None = None,
-        data: Any = None,
-    ) -> None:
-        self.conn.execute(
-            "INSERT INTO events(kind, unit_id, candidate_id, data, created_at)"
-            " VALUES(?,?,?,?,?)",
-            (kind, unit_id, candidate_id, json.dumps(data) if data else None, now()),
-        )
-
-    # ---- agents -------------------------------------------------------
-    def upsert_agent(self, name: str, model: str | None, parent_id: int | None) -> int:
-        with self.tx() as c:
-            c.execute(
-                "INSERT INTO agents(name, model, parent_id, created_at) VALUES(?,?,?,?)"
-                " ON CONFLICT(name) DO UPDATE SET model=excluded.model,"
-                " parent_id=excluded.parent_id",
-                (name, model, parent_id, now()),
-            )
-            row = c.execute("SELECT id FROM agents WHERE name=?", (name,)).fetchone()
-        return int(row["id"])
-
-    def get_agent(self, name: str) -> dict[str, Any] | None:
-        return _dict(
-            self.conn.execute("SELECT * FROM agents WHERE name=?", (name,)).fetchone()
-        )
 
     # ---- sessions -----------------------------------------------------
     def create_session(self, name: str, task: str | None, attachment: str) -> int:
@@ -262,14 +152,13 @@ class Store:
         worktree: str,
         branch: str,
         base_commit: str,
-        agent_id: int | None,
     ) -> int:
         ts = now()
         with self.tx() as c:
             c.execute(
                 "INSERT INTO units(session_id, name, kind, worktree, branch, base_commit,"
-                " agent_id, state, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
-                (session_id, name, kind, worktree, branch, base_commit, agent_id, "working", ts, ts),
+                " state, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                (session_id, name, kind, worktree, branch, base_commit, "working", ts, ts),
             )
             row = c.execute(
                 "SELECT id FROM units WHERE session_id=? AND name=?", (session_id, name)

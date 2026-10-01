@@ -1,15 +1,19 @@
-"""Campaign plane state paths and DAG/state readers.
+"""Campaign plane state, DAG/state readers, and the deterministic report.
 
 All campaign files live under ``.intergent/`` and are **prefixed by the
 feature-branch name** so one campaign's files form a single glob and no two
-campaigns collide (``docs/orchestration.md`` §4).  ``/`` in the branch name is
-replaced with ``--``::
+campaigns collide.  ``/`` in the branch name is replaced with ``--``::
 
     feat/nanochat-cpp  ->  feat--nanochat-cpp
 
 The orchestrator (the pi `campaign` extension) owns writing ``dag.json`` and
-``state.json``; Python only reads them for ``intergent report`` and resolves their
+``state.json``; Python reads them for ``intergent report`` and resolves their
 paths.  ``dag.json`` is plane state, never committed to the repository.
+
+This module also renders the deterministic report skeleton
+(``.intergent/<branch-key>.report.md``): design ref, feature branch, nodes,
+worker ids, commits, fingerprints/verifications, and artifact paths, with an
+optional narrative appended by the coordinator.
 """
 
 from __future__ import annotations
@@ -17,6 +21,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from .store import Store
 from .util import IntergentError, read_json, state_dir
 
 
@@ -72,13 +77,155 @@ def config_branch(config: dict[str, Any]) -> str:
 
 __all__ = [
     "branch_key",
+    "build_skeleton",
     "config_branch",
     "dag_path",
     "load_dag",
     "load_state",
     "node_by_id",
     "node_status",
+    "render",
     "report_path",
     "state_path",
     "worker_log_path",
+    "write_report",
 ]
+
+
+# ---------------------------------------------------------------------------
+# Deterministic campaign report
+# ---------------------------------------------------------------------------
+def _verification_line(verification: dict[str, Any]) -> str:
+    source = verification.get("source") or "plane"
+    status = verification.get("status")
+    gpu = verification.get("gpu") or "-"
+    fingerprint = (verification.get("fingerprint") or "")[:12]
+    return f"{source}: {status} (fp {fingerprint}, gpu {gpu})"
+
+
+def build_skeleton(
+    root: Path,
+    config: dict[str, Any],
+    store: Store,
+    *,
+    branch: str | None = None,
+    design: str | None = None,
+) -> dict[str, Any]:
+    branch = branch or config_branch(config)
+    dag = load_dag(root, branch)
+    state = load_state(root, branch)
+    nodes = node_by_id(dag) if dag else {}
+
+    units = sorted(store.list_units(), key=lambda u: int(u["id"]))
+    candidates = sorted(store.list_candidates(), key=lambda c: int(c["id"]))
+
+    per_node: list[dict[str, Any]] = []
+    for unit in units:
+        name = str(unit["name"])
+        node = nodes.get(name)
+        unit_candidates = [c for c in candidates if int(c["unit_id"]) == int(unit["id"])]
+        latest = unit_candidates[-1] if unit_candidates else None
+        verification = (
+            store.latest_verification(int(latest["id"])) if latest is not None else None
+        )
+        per_node.append(
+            {
+                "node": name,
+                "label": (node or {}).get("label"),
+                "phase": (node or {}).get("phase"),
+                "status": node_status(state, name) if dag else unit["state"],
+                "unit_state": unit["state"],
+                "branch": unit["branch"],
+                "log": str(worker_log_path(root, branch, name)),
+                "candidate": int(latest["id"]) if latest is not None else None,
+                "candidate_status": latest["status"] if latest is not None else None,
+                "commit": latest["head_commit"] if latest is not None else None,
+                "verification": verification,
+            }
+        )
+
+    return {
+        "campaign": (dag or {}).get("campaign") or config.get("campaign", {}).get("name"),
+        "design": design or (dag or {}).get("design") or config.get("campaign", {}).get("design"),
+        "feature_branch": branch,
+        "base": (dag or {}).get("base") or config.get("base"),
+        "concurrency": (dag or {}).get("concurrency"),
+        "artifact_paths": {
+            "dag": str(dag_path(root, branch)),
+            "state": str(state_path(root, branch)),
+            "report": str(report_path(root, branch)),
+        },
+        "nodes": per_node,
+    }
+
+
+def render(skeleton: dict[str, Any], narrative: str | None = None) -> str:
+    lines: list[str] = []
+    lines.append("# Campaign report: " + str(skeleton.get("campaign") or "(unnamed)"))
+    lines.append("")
+    lines.append(f"- Design: {skeleton.get('design') or '(unspecified)'}")
+    lines.append(f"- Feature branch: {skeleton.get('feature_branch')}")
+    lines.append(f"- Base: {skeleton.get('base') or '(unspecified)'}")
+    if skeleton.get("concurrency") is not None:
+        lines.append(f"- Concurrency: {skeleton['concurrency']}")
+    lines.append("")
+    lines.append("## Nodes")
+    lines.append("")
+    lines.append("| node | phase | status | unit | branch | candidate | commit | verification |")
+    lines.append("|---|---|---|---|---|---|---|---|")
+    for node in skeleton.get("nodes", []):
+        verification = node.get("verification") or {}
+        verification_text = (
+            f"{verification.get('source') or 'plane'}:{verification.get('status')}"
+            if verification
+            else "-"
+        )
+        commit = node.get("commit") or "-"
+        lines.append(
+            "| {node} | {phase} | {status} | {unit} | {branch} | {candidate} | {commit} | {verification} |".format(
+                node=node["node"],
+                phase=node.get("phase") or "-",
+                status=node.get("status"),
+                unit=node.get("unit_state"),
+                branch=node.get("branch"),
+                candidate=node.get("candidate") or "-",
+                commit=commit[:12],
+                verification=verification_text,
+            )
+        )
+    lines.append("")
+    lines.append("## Verifications")
+    lines.append("")
+    for node in skeleton.get("nodes", []):
+        verification = node.get("verification")
+        if verification:
+            lines.append(f"- {node['node']}: " + _verification_line(verification))
+    lines.append("")
+    lines.append("## Artifacts")
+    lines.append("")
+    for name, path in sorted((skeleton.get("artifact_paths") or {}).items()):
+        lines.append(f"- {name}: {path}")
+    lines.append("")
+    lines.append("## What changed / risks")
+    lines.append("")
+    lines.append(narrative.strip() if narrative and narrative.strip() else "(no narrative supplied)")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def write_report(
+    root: Path,
+    config: dict[str, Any],
+    store: Store,
+    *,
+    narrative: str | None = None,
+    branch: str | None = None,
+    design: str | None = None,
+) -> dict[str, Any]:
+    branch = branch or config_branch(config)
+    skeleton = build_skeleton(root, config, store, branch=branch, design=design)
+    content = render(skeleton, narrative)
+    path = report_path(root, branch)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    return {"path": str(path), "content": content, "skeleton": skeleton}

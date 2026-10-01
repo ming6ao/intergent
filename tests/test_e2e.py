@@ -175,18 +175,5 @@ class GcTests(RepoCase):
         self.assertFalse(self.branch_exists(alpha["branch"]))
 
 
-class StateMigrationTests(RepoCase):
-    def test_legacy_states_are_collapsed_on_open(self):
-        # Simulate a database written by the old lifecycle.
-        alpha = self.svc.create_workspace("alpha", base="feat/x")
-        self.svc.store.set_unit_state(int(alpha["id"]), "finished")
-        self.svc.store.conn.execute("UPDATE candidates SET status='approved'")
-        self.svc.store.conn.commit()
-        self.svc.close()
-
-        self.svc = Service(self.root)
-        self.assertEqual(self.svc.store.get_unit("alpha")["state"], "working")
-
-
 if __name__ == "__main__":
     unittest.main()

@@ -125,5 +125,5 @@ If `commit` rejects a path outside the owned directories, report it and stop.
 The coordinator widens the node's `owns` (or adds a `depends_on` edge) in
 `dag.json`; the next `status`/`ready`/`spawn` replans the waves.
 
-Full specification: [docs/orchestration.md](./docs/orchestration.md). Tool
-reference: [docs/implementation.md](./docs/implementation.md).
+Full specification: [docs/guide.md](./docs/guide.md). Tool
+reference: [docs/reference.md](./docs/reference.md).

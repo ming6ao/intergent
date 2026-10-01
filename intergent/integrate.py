@@ -19,26 +19,24 @@ default branch stays a human ``git`` step.
 
 When ``check_only`` is set (the orchestrator's ``verify`` step), the node's
 acceptance commands run at the candidate commit, the verdict is recorded with
-source ``node:<id>`` (§6.4), and nothing is merged.
+source ``node:<id>``, and nothing is merged.
+
+This module also owns candidate integration ordering and simulation: prepared
+candidates are grouped into the campaign DAG's wave order, and ``simulate``
+materializes each wave's combined tree so the plane's trusted checks can run
+once over the combined result.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from . import gitutil
-from .commitops import (
-    LandResult,
-    checks_output,
-    conflict_summary,
-    main_branch_of,
-    main_worktree,
-    mark_landed,
-    ordered_candidates,
-)
+from . import campaign, gitutil
+from .ownership import DEFAULT_WAVE_SIZE, plan_dag_waves
 from .store import Store
-from .util import IntergentError
+from .util import IntergentError, scratch_dir, worktrees_dir
 from .verifier import (
     CheckResult,
     VerificationResult,
@@ -48,7 +46,93 @@ from .verifier import (
     verify_node,
 )
 
-__all__ = ["integrate", "record_node_verification", "found_default_branch"]
+__all__ = [
+    "LandResult",
+    "Wave",
+    "found_default_branch",
+    "integrate",
+    "plan_waves",
+    "record_node_verification",
+    "simulate",
+]
+
+
+# ---------------------------------------------------------------------------
+# Integration primitives
+# ---------------------------------------------------------------------------
+@dataclass
+class LandResult:
+    candidate_id: int
+    unit_name: str
+    branch: str
+    status: str  # landed | failed | skipped
+    detail: str = ""
+    merge_commit: str | None = None
+    checks: list[CheckResult] = field(default_factory=list)
+    already_up_to_date: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "candidate": self.candidate_id,
+            "unit": self.unit_name,
+            "branch": self.branch,
+            "status": self.status,
+            "detail": self.detail,
+            "merge_commit": self.merge_commit,
+            "already_up_to_date": self.already_up_to_date,
+            "checks": [c.to_dict() for c in self.checks],
+        }
+
+
+def checks_output(checks: list[CheckResult]) -> str:
+    lines = []
+    for check in checks:
+        lines.append(f"[{check.status}] {check.name}: {check.command}")
+        if check.output:
+            lines.append(check.output[-2000:])
+    return "\n".join(lines) or "(no checks configured)"
+
+
+def main_branch_of(config: dict[str, Any]) -> str:
+    return config.get("main_branch") or "main"
+
+
+def main_worktree(root: Path, branch: str) -> tuple[Path, bool]:
+    """Return the worktree checked out at *branch*, creating ``_integration``.
+
+    The second element is ``True`` when the worktree was just created.
+    """
+    entry = gitutil.worktree_for_branch(root, branch)
+    if entry is not None:
+        return entry.path, False
+    path = worktrees_dir(root) / "_integration"
+    # Clear any leftover directory *and* stale metadata before (re)creating it,
+    # otherwise ``git worktree add`` fails with "already registered".
+    gitutil.cleanup_worktree(root, path)
+    gitutil.add_worktree(root, path, branch=branch, base=branch, new_branch=False)
+    return path, True
+
+
+def mark_landed(store: Store, candidate: dict[str, Any], merge_commit: str) -> None:
+    cid = int(candidate["id"])
+    store.update_candidate(cid, status="landed", head_commit=merge_commit)
+    unit = store.get_unit(int(candidate["unit_id"]))
+    if unit:
+        store.set_unit_state(int(unit["id"]), "landed")
+    store.conn.commit()
+
+
+def conflict_summary(result: gitutil.GitResult) -> str:
+    text = (result.stderr or "") + "\n" + (result.stdout or "")
+    for line in text.splitlines():
+        line = line.strip()
+        if (
+            line.startswith("CONFLICT")
+            or "Automatic merge failed" in line
+            or "would be overwritten" in line
+        ):
+            return line
+    return text.strip().splitlines()[-1] if text.strip() else "merge failed"
 
 
 def found_default_branch(root: Path, *, exclude: str | None = None) -> str:
@@ -185,15 +269,7 @@ def record_node_verification(
         gpu=gpu,
     )
     store.conn.commit()
-    store.event(
-        "verification.node",
-        candidate_id=int(candidate["id"]),
-        data={"node": node, "source": source, "status": result.status, "gpu": gpu},
-    )
     return result.status == "passed", result
-
-
-# Imported here to avoid a circular import at module load.
 
 
 def _candidate_for_node(
@@ -384,11 +460,6 @@ def integrate(
             )
             if not passed:
                 gitutil.reset_hard(wt_path, pre_merge)
-                store.event(
-                    "integrate.checks_failed",
-                    candidate_id=int(candidate["id"]),
-                    data={"merge_commit": merge_commit},
-                )
                 store.conn.commit()
                 results.append(
                     LandResult(
@@ -403,11 +474,6 @@ def integrate(
                 break
 
         mark_landed(store, candidate, merge_commit)
-        store.event(
-            "integrate.landed",
-            candidate_id=int(candidate["id"]),
-            data={"merge_commit": merge_commit, "main_branch": main_branch},
-        )
         store.conn.commit()
         results.append(
             LandResult(
@@ -421,3 +487,160 @@ def integrate(
             )
         )
     return results
+
+
+# ---------------------------------------------------------------------------
+# Candidate ordering and combined-tree simulation
+# ---------------------------------------------------------------------------
+@dataclass
+class Wave:
+    index: int
+    candidates: list[dict[str, Any]] = field(default_factory=list)
+    combined: str = ""
+    check_status: str | None = None
+    checks: list[CheckResult] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "wave": self.index,
+            "combined": self.combined,
+            "members": [
+                {"candidate": c["id"], "unit": c["unit_name"], "branch": c["branch"]}
+                for c in self.candidates
+            ],
+            "check_status": self.check_status,
+            "checks": [c.to_dict() for c in self.checks],
+        }
+
+
+def _wave_index_by_node(root: Path, config: dict[str, Any]) -> dict[str, int]:
+    """Map every DAG node id to its wave index (empty for a non-campaign plane)."""
+    branch = config.get("main_branch")
+    dag = campaign.load_dag(root, branch) if branch else None
+    if not dag or not dag.get("nodes"):
+        return {}
+    wave_size = int(dag.get("concurrency") or DEFAULT_WAVE_SIZE)
+    planned = plan_dag_waves(list(dag["nodes"]), wave_size=wave_size)
+    return {member: w.index for w in planned for member in w.members}
+
+
+def plan_waves(
+    store: Store,
+    root: Path,
+    config: dict[str, Any],
+    candidates: list[dict[str, Any]],
+) -> list[Wave]:
+    """Group candidates into DAG waves, each internally priority-ordered."""
+    if not candidates:
+        return []
+    wave_of = _wave_index_by_node(root, config)
+    fallback = (max(wave_of.values()) + 1) if wave_of else 0
+
+    def key(candidate: dict[str, Any]) -> tuple[Any, ...]:
+        node = str(candidate.get("unit_name") or "")
+        return (
+            wave_of.get(node, fallback),
+            -int(candidate.get("priority") or 0),
+            float(candidate.get("created_at") or 0.0),
+            int(candidate["id"]),
+        )
+
+    ordered = sorted(candidates, key=key)
+    waves: list[Wave] = []
+    by_index: dict[int, Wave] = {}
+    for candidate in ordered:
+        node = str(candidate.get("unit_name") or "")
+        index = wave_of.get(node, fallback)
+        wave = by_index.get(index)
+        if wave is None:
+            wave = Wave(index=index)
+            by_index[index] = wave
+            waves.append(wave)
+        wave.candidates.append(candidate)
+    waves.sort(key=lambda w: w.index)
+    return waves
+
+
+def ordered_candidates(
+    store: Store, root: Path, config: dict[str, Any], candidates: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Flatten the wave plan into a merge order, preserving every member."""
+    waves = plan_waves(store, root, config, candidates)
+    ordered: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    for wave in waves:
+        for candidate in wave.candidates:
+            cid = int(candidate["id"])
+            if cid not in seen:
+                seen.add(cid)
+                ordered.append(candidate)
+    for candidate in candidates:
+        cid = int(candidate["id"])
+        if cid not in seen:
+            ordered.append(candidate)
+    return ordered
+
+
+def _synthetic_commit(root: Path, tree: str, parents: list[str], message: str) -> str:
+    args = ["commit-tree", tree]
+    for parent in parents:
+        args += ["-p", parent]
+    args += ["-m", message]
+    return gitutil.git(root, *args, check=True).stdout.strip()
+
+
+def _merge_into_wave(root: Path, combined: str, branch: str) -> tuple[bool, str]:
+    outcome = gitutil.merge_tree(root, combined, branch)
+    if not outcome.clean or not outcome.tree:
+        return False, combined
+    new_ref = _synthetic_commit(
+        root, outcome.tree, [combined, gitutil.rev_parse(root, branch)], "intergent wave combine"
+    )
+    return True, new_ref
+
+
+def simulate(
+    store: Store,
+    root: Path,
+    config: dict[str, Any],
+    *,
+    statuses: list[str] | None = None,
+    run_checks_flag: bool = True,
+) -> dict[str, Any]:
+    candidates = store.list_candidates(statuses=statuses or ["prepared", "pending"])
+    waves = plan_waves(store, root, config, candidates)
+    base_ref = config.get("base") or config.get("main_branch") or "main"
+    scratch = scratch_dir(root)
+    for wave in waves:
+        combined = gitutil.rev_parse(root, base_ref)
+        for candidate in wave.candidates:
+            ok, combined = _merge_into_wave(root, combined, candidate["branch"])
+            if not ok:
+                combined = ""
+                break
+        wave.combined = combined
+        if not run_checks_flag or not wave.combined:
+            continue
+        path = scratch / f"wave-{wave.index}-{abs(hash(wave.combined)) % 10_000_000}"
+        try:
+            gitutil.add_detached_worktree(root, path, wave.combined)
+            status, results, _duration = run_checks(root, config, wave.combined, worktree=path)
+            wave.check_status = status
+            wave.checks = results
+        except IntergentError:
+            wave.check_status = "error"
+        finally:
+            gitutil.cleanup_worktree(root, path)
+    return {
+        "candidate_count": len(candidates),
+        "waves": [w.to_dict() for w in waves],
+        "overall": _overall_status(waves),
+    }
+
+
+def _overall_status(waves: list[Wave]) -> str:
+    for wave in waves:
+        if wave.check_status not in (None, "passed"):
+            return "failed"
+    return "pass"
+

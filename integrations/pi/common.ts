@@ -96,7 +96,7 @@ export async function runIg(
 }
 
 // ---------------------------------------------------------------------------
-// Campaign state paths (`docs/orchestration.md` §4)
+// Campaign state paths (`docs/reference.md` §3)
 // ---------------------------------------------------------------------------
 
 export function branchKey(branch: string): string {

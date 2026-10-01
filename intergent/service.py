@@ -2,7 +2,7 @@
 
 Every adapter (CLI, pi extension) calls these functions.  This mirrors the
 "one engine, many adapters / no adapter owns state" rule in
-``docs/architecture.md``.  Business rules live here; persistence lives in
+``docs/guide.md``.  Business rules live here; persistence lives in
 ``store``; git mutation lives in ``gitutil``.
 """
 
@@ -13,9 +13,14 @@ import re
 from pathlib import Path
 from typing import Any
 
-from . import campaign, gitutil, integrate, planner, report as report_mod
-from . import waves as waveplan
-from .scopes import parse_owns, path_within_owns
+from . import campaign, gitutil, integrate
+from .ownership import (
+    DEFAULT_WAVE_SIZE,
+    parse_owns,
+    path_within_owns,
+    plan_dag_waves,
+    validate_dag,
+)
 from .store import Store
 from .util import (
     IntergentError,
@@ -98,8 +103,6 @@ class Service:
         write_json(cfg_file, config)
         state.mkdir(parents=True, exist_ok=True)
         store = Store(root)
-        store.set_meta("version", 1)
-        store.set_meta("created_at", now())
         store.close()
         _ensure_gitignore(root)
         return config
@@ -134,7 +137,6 @@ class Service:
         path: str | os.PathLike[str] | None = None,
         *,
         name: str | None = None,
-        agent: str | None = None,
         session: str | None = None,
         base: str | None = None,
         kind: str = "worker",
@@ -212,7 +214,6 @@ class Service:
                 session=session,
                 kind=kind,
                 base=base,
-                agent=agent,
             )
             created = True
         finally:
@@ -238,7 +239,6 @@ class Service:
             return existing
         session_id = self.store.create_session(name, task, attachment)
         self.store.conn.commit()
-        self.store.event("session.created", data={"name": name, "task": task})
         return self.store.get_session(session_id)  # type: ignore[return-value]
 
     def create_workspace(
@@ -248,7 +248,6 @@ class Service:
         session: str | None = None,
         kind: str = "worker",
         base: str | None = None,
-        agent: str | None = None,
         task: str | None = None,
     ) -> dict[str, Any]:
         config = self.config
@@ -261,14 +260,6 @@ class Service:
         base_ref = base or config.get("base") or config.get("main_branch") or "main"
         base_commit = gitutil.rev_parse(self.root, base_ref)
 
-        agent_id = None
-        if agent:
-            record = self.store.get_agent(agent)
-            if record is None:
-                agent_id = self.store.upsert_agent(agent, None, None)
-            else:
-                agent_id = int(record["id"])
-
         branch = _unique_branch(self.root, session_name, name)
         worktree = _unique_worktree(worktrees_dir(self.root), session_name, name)
         gitutil.add_worktree(self.root, worktree, branch=branch, base=base_commit)
@@ -280,13 +271,11 @@ class Service:
                 worktree=str(worktree),
                 branch=branch,
                 base_commit=base_commit,
-                agent_id=agent_id,
             )
         except Exception:
             gitutil.cleanup_worktree(self.root, worktree)
             raise
         self.store.conn.commit()
-        self.store.event("unit.created", unit_id=unit_id, data={"branch": branch, "kind": kind})
         return self.store.get_unit(unit_id)  # type: ignore[return-value]
 
     def list_units(self) -> list[dict[str, Any]]:
@@ -377,7 +366,6 @@ class Service:
                 summary=summary,
             )
         self.store.conn.commit()
-        self.store.event("candidate.prepared", unit_id=int(unit["id"]), candidate_id=cid)
         return self.store.get_candidate(cid)  # type: ignore[return-value]
 
     # ------------------------------------------------------------------
@@ -413,7 +401,7 @@ class Service:
         return [path for path in changed if not path_within_owns(path, owns)]
 
     def simulation(self, *, run_checks_flag: bool = True) -> dict[str, Any]:
-        return planner.simulate(
+        return integrate.simulate(
             self.store, self.root, self.config, run_checks_flag=run_checks_flag
         )
 
@@ -421,7 +409,7 @@ class Service:
         branch = self.config.get("main_branch")
         units = [self._project_unit(u, branch) for u in self.list_units()]
         candidates = self.store.list_candidates()
-        waves = planner.plan_waves(
+        waves = integrate.plan_waves(
             self.store,
             self.root,
             self.config,
@@ -452,10 +440,10 @@ class Service:
         dag = campaign.load_dag(self.root, branch)
         if not dag or not dag.get("nodes"):
             return [], None
-        wave_size = int(dag.get("concurrency") or waveplan.DEFAULT_WAVE_SIZE)
+        wave_size = int(dag.get("concurrency") or DEFAULT_WAVE_SIZE)
         try:
-            waveplan.validate_dag(list(dag["nodes"]))
-            planned = waveplan.plan_dag_waves(list(dag["nodes"]), wave_size=wave_size)
+            validate_dag(list(dag["nodes"]))
+            planned = plan_dag_waves(list(dag["nodes"]), wave_size=wave_size)
         except IntergentError as exc:
             return [], str(exc)
         return [w.to_dict() for w in planned], None
@@ -526,7 +514,7 @@ class Service:
         self, *, narrative: str | None = None, design: str | None = None
     ) -> dict[str, Any]:
         """Write the deterministic campaign report plus an optional narrative."""
-        return report_mod.write_report(
+        return campaign.write_report(
             self.root, self.config, self.store, narrative=narrative, design=design
         )
 

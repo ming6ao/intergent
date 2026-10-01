@@ -1,4 +1,4 @@
-"""DAG wave planner (``intergent/waves.py``).
+"""DAG wave planner (``intergent/ownership.py``).
 
 Pins the strict scheduling contract:
 * waves are a deterministic projection of the DAG;
@@ -11,7 +11,7 @@ Pins the strict scheduling contract:
 import unittest
 
 from intergent.util import IntergentError
-from intergent.waves import DEFAULT_WAVE_SIZE, plan_dag_waves, validate_dag
+from intergent.ownership import DEFAULT_WAVE_SIZE, plan_dag_waves, validate_dag
 
 
 def node(nid, owns=None, depends_on=None):

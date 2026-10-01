@@ -2,8 +2,8 @@
 
 Runner executes configured trusted checks in a clean scratch worktree checked
 out at the candidate commit.  The result is pinned to a fingerprint over
-``(tree, command vector, toolchain, policy)`` so any change invalidates it
-(``docs/local-plane.md`` section 4).
+``(tree, command vector, toolchain, policy, source)`` so any change invalidates
+it (``docs/reference.md`` §4).
 """
 
 from __future__ import annotations
