@@ -32,10 +32,10 @@ pi                               # launch a coordinator session
 ```
 
 `pi install` registers both tools (`sliceme` for the coordinator, `sliceme-unit`
-for workers); they are active in every session. Start a campaign with
-`/sliceme [DESIGN.md]` (defaults to `DESIGN.md`) or by asking the model to run
-one. Nothing else is needed: the tools invoke the bundled engine, so there is no
-`pip install` and no `sliceme` on `PATH`.
+for workers) **inactive**. `/sliceme [DESIGN.md]` (defaults to `DESIGN.md`)
+activates them for the session and starts a campaign. Nothing else is needed:
+the tools invoke the bundled engine, so there is no `pip install` and no
+`sliceme` on `PATH`.
 
 ## Quick start
 

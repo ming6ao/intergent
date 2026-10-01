@@ -26,9 +26,9 @@
  * `pending`.  Only the single executor runs checks (and the GPU broker);
  * verifiers judge the executor's recorded evidence.
  *
- * The tools register active, and the extension also provides `/sliceme
- * [DESIGN.md]`, which nudges the model to start a campaign (defaulting to
- * ``DESIGN.md``).  There is no separate skill.
+ * The tools register inactive; `/sliceme [DESIGN.md]` activates them and nudges
+ * the model to start a campaign (defaulting to ``DESIGN.md``).  There is no
+ * separate skill.
  *
  * Install as part of the `sliceme` pi package (`pi install ./` or
  * `pi install npm:sliceme`); shared helpers live in `./common.ts`.
@@ -266,10 +266,10 @@ function summarise(dag: Dag, state: CampaignState): string {
 }
 
 export default function coordinatorExtension(pi: ExtensionAPI) {
-	// Extension-only entry point. The tools register active, so a plain session can
-	// use them; `/sliceme [DESIGN.md]` is a discoverable shortcut that asks the
-	// model to start a campaign. No design document is required up front: `start`
-	// fails loudly if the path is wrong.
+	// Extension-only entry point. The tools register inactive; `/sliceme
+	// [DESIGN.md]` activates them and asks the model to start a campaign. No
+	// design document is required up front: `start` fails loudly if the path is
+	// wrong.
 	pi.registerCommand("sliceme", {
 		description: "Start a Sliceme campaign from a design document (default DESIGN.md)",
 		handler: async (args, ctx) => {
@@ -278,6 +278,10 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
 				ctx.ui.notify("sliceme: the agent is busy; finish the current turn first.", "warning");
 				return;
 			}
+			const active = new Set(pi.getActiveTools());
+			active.add("sliceme");
+			active.add("sliceme-unit");
+			pi.setActiveTools([...active]);
 			ctx.ui.notify(`sliceme: starting a campaign from ${design}`, "info");
 			pi.sendUserMessage(
 				`Start a Sliceme campaign for the design document "${design}". ` +
@@ -883,9 +887,9 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
 				"(--open/--record --wave N), and the check queue (--submit/--run/--wait).",
 			"Integrate each node after its verifier passes; cleanup is offered once per wave.",
 		],
-		// Active by default: the extension is the only entry point, so the model
-		// can drive a campaign whenever the user asks.
-		defaultActive: true,
+		// Inactive until `/sliceme` activates it, so a plain session never
+		// advertises the campaign workflow or injects its guidelines.
+		defaultActive: false,
 		parameters: Type.Object({
 			action: StringEnum(CAMPAIGN_ACTIONS),
 			design: Type.Optional(Type.String({ description: "start: design document path" })),

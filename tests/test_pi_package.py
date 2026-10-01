@@ -77,18 +77,21 @@ class PiPackageTests(unittest.TestCase):
         coordinator = PI_COORDINATOR.read_text(encoding="utf-8")
         self.assertIn('pi.registerCommand("sliceme"', coordinator)
         self.assertIn("sendUserMessage", coordinator)
+        # The command activates both tools for the session.
+        self.assertIn("setActiveTools", coordinator)
         # The old skill-trigger glue is gone.
         self.assertNotIn("pi.on(\"input\"", coordinator)
         self.assertNotIn("/skill:sliceme", coordinator)
         self.assertNotIn("SKILL_INVOCATION", coordinator)
         self.assertNotIn("hasDesignDocument", coordinator)
 
-    def test_tools_register_active(self):
-        # Relaxed opt-in: both tools are available without an activation step.
+    def test_tools_register_inactive_and_are_activated_by_the_command(self):
+        # Re-gated: a plain session does not advertise Sliceme; `/sliceme` turns
+        # both tools on via `pi.setActiveTools`.
         for path in (PI_UNIT, PI_COORDINATOR):
             text = path.read_text(encoding="utf-8")
-            self.assertIn("defaultActive: true", text, path)
-            self.assertNotIn("defaultActive: false", text, path)
+            self.assertIn("defaultActive: false", text, path)
+            self.assertNotIn("defaultActive: true", text, path)
 
     def test_pi_extension_is_a_thin_forwarder(self):
         # There is no single-agent bootstrap: the extension only registers the

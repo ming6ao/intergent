@@ -17,9 +17,9 @@
  * `spawn`, or a human running `sliceme start`).  The tool resolves the unit from
  * `ctx.cwd`, so a worker launched inside its unit worktree needs no `--unit`.
  *
- * The tool registers active.  Workers are scoped to it by their `tools:`
- * allowlist (`pi --tools sliceme-unit`); the coordinator session normally uses
- * the `sliceme` tool instead.
+ * The tool registers inactive; `/sliceme` activates it for the session.  Workers
+ * are scoped to it by their `tools:` allowlist (`pi --tools sliceme-unit`); the
+ * coordinator session normally uses the `sliceme` tool instead.
  */
 
 import { StringEnum } from "@earendil-works/pi-ai";
@@ -70,9 +70,9 @@ export default function unitExtension(pi: ExtensionAPI) {
 			"Use `sliceme-unit` action `status` with `short: true` to confirm you are inside your unit worktree.",
 			"Finish with `sliceme-unit` action `commit`. Never run `integrate` or `git merge` yourself.",
 		],
-		// Active by default; workers are scoped to it through their `tools:`
-		// allowlist (`pi --tools sliceme-unit`).
-		defaultActive: true,
+		// Inactive until `/sliceme` activates it; workers are scoped to it through
+		// their `tools:` allowlist (`pi --tools sliceme-unit`).
+		defaultActive: false,
 		parameters: Type.Object({
 			action: StringEnum(SLICEME_TOOL_ACTIONS),
 			unit: Type.Optional(Type.String({ description: "unit (defaults to this worktree)" })),

@@ -393,12 +393,13 @@ pi install ./                                       # local checkout
 pi                                                  # launch the coordinator
 ```
 
-Both tools register **active**, so a plain session can use them; the workflow is
-condensed into their prompt guidelines and documented in
-[docs/workflow.md](./workflow.md). `/sliceme [DESIGN.md]` (default `DESIGN.md`)
-is the discoverable entry point and asks the model to start a campaign. There is
-no single-agent bootstrap — a session is only bound to a unit when the `spawn`
-action (or the user) creates one.
+Both tools register **inactive**, so a plain session never advertises them.
+`/sliceme [DESIGN.md]` (default `DESIGN.md`) is the single entry point: it
+activates `sliceme` and `sliceme-unit` for the session and asks the model to
+start a campaign. The workflow is condensed into their prompt guidelines and
+documented in [docs/workflow.md](./workflow.md). There is no single-agent
+bootstrap — a session is only bound to a unit when the `spawn` action (or the
+user) creates one.
 
 | Role | Bound to a unit? | Contract |
 |---|---|---|

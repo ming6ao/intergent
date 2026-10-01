@@ -56,7 +56,8 @@ COORDINATOR (this session)
 
 The pi package is a single extension that registers two tools: `sliceme` for the
 coordinator and `sliceme-unit` for workers, plus the `/sliceme [DESIGN.md]`
-command. There is no separate skill: the workflow lives here and in the tools'
+command. Both tools register **inactive**; `/sliceme` activates them for the
+session. There is no separate skill: the workflow lives here and in the tools'
 prompt guidelines. `runSubagent` applies each subagent's `tools:` allowlist, so
 a worker gets `sliceme-unit` but never `sliceme`, and the verifier gets neither.
 

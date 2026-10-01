@@ -73,7 +73,7 @@ pi                                # launch pi
 Then, inside the session:
 
 ```text
-/sliceme DESIGN.md                # start a campaign (tools are always active)
+/sliceme DESIGN.md                # activate the tools and start a campaign
 sliceme start DESIGN.md           # adopt the current branch + run the planner
 sliceme ready                     # current-wave nodes whose deps are integrated
 sliceme spawn <node>              # one-shot worker
