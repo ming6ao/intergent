@@ -110,6 +110,10 @@ ACTIONS: tuple[Action, ...] = (
             Param("validate", "boolean", "resolve and validate the project sandbox gate"),
             Param("gpu_required", "boolean", "with --validate: require a GPU runner"),
             Param("run", "boolean", "drain the queue with the single executor"),
+            Param("open", "boolean", "create the single worktree for --wave"),
+            Param("record", "boolean", "record a wave worktree: conformance + per-node commits"),
+            Param("message", "string", "record: commit message suffix"),
+            Param("summary", "string", "record: candidate summary"),
             Param("wait", "boolean", "wait for a job to finish (requires --job)"),
             Param("cancel", "boolean", "cancel a queued job (requires --job)"),
             Param("job", "string", "job id for --wait/--cancel"),
@@ -255,6 +259,18 @@ def _dispatch_exec(service: "Service", p: dict[str, Any]) -> Any:
         if not info.get("ok"):
             raise SlicemeError(str(info.get("error") or "sandbox gate failed"))
         return info
+    if p.get("open"):
+        if p.get("wave") is None:
+            raise SlicemeError("exec --open requires --wave")
+        return {"unit": service.create_wave_workspace(int(p["wave"]))}
+    if p.get("record"):
+        if p.get("wave") is None:
+            raise SlicemeError("exec --record requires --wave")
+        # Serialize git mutation with the single executor's check runs.
+        with executor.lock():
+            return service.record_wave(
+                int(p["wave"]), message=p.get("message"), summary=p.get("summary")
+            )
     if p.get("cancel"):
         if not p.get("job"):
             raise SlicemeError("exec --cancel requires --job")

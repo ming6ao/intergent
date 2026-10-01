@@ -50,6 +50,7 @@ CREATE TABLE IF NOT EXISTS candidates (
   priority INTEGER NOT NULL DEFAULT 0,
   status TEXT NOT NULL DEFAULT 'prepared',
   summary TEXT,
+  node TEXT,
   created_at REAL NOT NULL,
   updated_at REAL NOT NULL
 );
@@ -136,6 +137,7 @@ class Store:
     def _migrate(self) -> None:
         """Additive column migrations for planes created by older versions."""
         self._ensure_columns("jobs", {"timeout": "INTEGER NOT NULL DEFAULT 3600"})
+        self._ensure_columns("candidates", {"node": "TEXT"})
 
     def _ensure_columns(self, table: str, columns: dict[str, str]) -> None:
         existing = {
@@ -241,14 +243,15 @@ class Store:
         base_commit: str,
         priority: int,
         summary: str | None,
+        node: str | None = None,
     ) -> int:
         ts = now()
         with self.tx() as c:
             c.execute(
                 "INSERT INTO candidates(unit_id, branch, head_commit, base_commit,"
-                " priority, status, summary, created_at, updated_at)"
-                " VALUES(?,?,?,?,?,?,?,?,?)",
-                (unit_id, branch, head_commit, base_commit, priority, "prepared", summary, ts, ts),
+                " priority, status, summary, node, created_at, updated_at)"
+                " VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (unit_id, branch, head_commit, base_commit, priority, "prepared", summary, node, ts, ts),
             )
             return int(c.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
 
@@ -283,8 +286,8 @@ class Store:
         else:
             row = self.conn.execute(
                 "SELECT c.* FROM candidates c JOIN units u ON u.id=c.unit_id"
-                " WHERE u.name=? ORDER BY c.id DESC LIMIT 1",
-                (text,),
+                " WHERE u.name=? OR c.node=? ORDER BY c.id DESC LIMIT 1",
+                (text, text),
             ).fetchone()
         return _dict(row)
 

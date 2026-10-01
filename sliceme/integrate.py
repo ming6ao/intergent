@@ -283,7 +283,9 @@ def _candidate_for_node(
     candidates = [
         c
         for c in store.list_candidates()
-        if c["unit_name"] == node or str(c["unit_id"]) == str(node)
+        if c["unit_name"] == node
+        or c.get("node") == node
+        or str(c["unit_id"]) == str(node)
     ]
     if not candidates:
         return None, False
@@ -537,7 +539,7 @@ def plan_waves(
     fallback = (max(wave_of.values()) + 1) if wave_of else 0
 
     def key(candidate: dict[str, Any]) -> tuple[Any, ...]:
-        node = str(candidate.get("unit_name") or "")
+        node = str(candidate.get("node") or candidate.get("unit_name") or "")
         return (
             wave_of.get(node, fallback),
             -int(candidate.get("priority") or 0),
@@ -549,7 +551,7 @@ def plan_waves(
     waves: list[Wave] = []
     by_index: dict[int, Wave] = {}
     for candidate in ordered:
-        node = str(candidate.get("unit_name") or "")
+        node = str(candidate.get("node") or candidate.get("unit_name") or "")
         index = wave_of.get(node, fallback)
         wave = by_index.get(index)
         if wave is None:

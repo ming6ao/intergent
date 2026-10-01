@@ -351,27 +351,34 @@ executor → sliceme gpu broker (host lock) → project sandbox → acceptance
 
 A project may override the GPU invocation through `gpu.command` in its manifest.
 
-### 6.4 Target design: one worktree per wave
+### 6.4 One worktree per wave (Phase 3)
 
 Because same-wave nodes own **disjoint directory subtrees**, they cannot author
 a file collision, so the per-node worktree is isolation the conflict rule
-already guarantees. The target design makes the wave the isolation and
-integration unit:
+already guarantees.  The wave is therefore the isolation and integration unit:
 
 ```text
-wave open N   -> ONE branch sliceme/wave-<N> + worktree off the feature tip
-spawn         -> all ready workers of wave N into that worktree (pure editors)
-exec record   -> conformance-by-ownership -> per-node commits (serialized)
-exec verify   -> verifiers submit command vectors; the single executor runs them
-integrate     -> merge sliceme/wave-<N> --no-ff; mark nodes done; open N+1
+exec --open --wave N    -> ONE branch sliceme/wave-<N> + worktree off the feature tip
+spawn                   -> all ready workers of wave N into that worktree (pure editors)
+exec --record --wave N  -> conformance-by-ownership -> per-node commits (serialized)
+exec --run / --wait     -> the single executor runs the wave's check vectors
+integrate               -> merges the wave branch; nodes marked done; open N+1
 ```
 
-Workers become pure editors: they never run `git add/commit` (the shared index
-is not multi-process safe) and never run the suite in the shared tree. The
-executor snapshots the wave tree into a detached scratch worktree and runs the
-combined acceptance vector there, so concurrent edits cannot invalidate a run.
-Multiple read-only verifiers judge the executor's recorded evidence. Per-node
-commits preserve retry and provenance, and a failed node blocks the wave merge.
+The recorder (`Service.record_wave`) stages the shared tree, attributes every
+changed path to exactly one same-wave node by `owns`, rejects an unowned,
+ambiguous, or **cross-node rename** change, then creates one commit and one
+prepared candidate per node on the shared branch.  It holds the executor lock,
+so recording is serialized with check runs.  Because all candidates share the
+wave branch, `integrate` lands the wave with one merge and marks the rest
+"already contained".
+
+Workers become pure editors under wave scope: they never run `git add/commit`
+(the shared index is not multi-process safe) and never run the suite in the
+shared tree; the executor snapshots the tree and runs the combined acceptance
+vector.  Multiple read-only verifiers judge the executor's recorded evidence.
+The per-node worktree path (node scope) remains the default until Phase 5 flips
+it; both are exercised by the test suite.
 
 ## 7. Agent integration (pi)
 

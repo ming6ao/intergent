@@ -16,6 +16,7 @@ from typing import Any
 from . import campaign, gitutil, integrate, sandbox
 from .ownership import (
     DEFAULT_WAVE_SIZE,
+    node_owns,
     parse_owns,
     path_within_owns,
     plan_dag_waves,
@@ -369,6 +370,156 @@ class Service:
         return self.store.get_candidate(cid)  # type: ignore[return-value]
 
     # ------------------------------------------------------------------
+    # Wave scope: one worktree per wave, recorded by the single executor
+    # ------------------------------------------------------------------
+    def create_wave_workspace(
+        self, wave_index: int, *, base: str | None = None, session: str | None = None
+    ) -> dict[str, Any]:
+        """Create (or reuse) the single branch + worktree for a wave.
+
+        Same-wave nodes own disjoint directory subtrees, so one shared checkout
+        is safe; the recorder maps each changed path back to its node.
+        """
+        name = f"wave-{int(wave_index)}"
+        existing = self.store.get_unit(name)
+        if existing is not None and Path(existing["worktree"]).exists():
+            return existing
+        config = self.config
+        base_ref = base or config.get("base") or config.get("main_branch") or "main"
+        base_commit = gitutil.rev_parse(self.root, base_ref)
+        session_name = session or name
+        sess = self.store.get_session(session_name)
+        if sess is None:
+            sess = self.create_session(session_name)
+        session_id = int(sess["id"])
+        branch = _unique_branch(self.root, session_name, name)
+        worktree = _unique_worktree(worktrees_dir(self.root), session_name, name)
+        gitutil.add_worktree(self.root, worktree, branch=branch, base=base_commit)
+        try:
+            unit_id = self.store.create_unit(
+                session_id=session_id,
+                name=name,
+                kind="wave",
+                worktree=str(worktree),
+                branch=branch,
+                base_commit=base_commit,
+            )
+        except Exception:
+            gitutil.cleanup_worktree(self.root, worktree)
+            raise
+        self.store.conn.commit()
+        return self.store.get_unit(unit_id)  # type: ignore[return-value]
+
+    def wave_unit(self, wave_index: int) -> dict[str, Any] | None:
+        return self.store.get_unit(f"wave-{int(wave_index)}")
+
+    def record_wave(
+        self,
+        wave_index: int,
+        *,
+        message: str | None = None,
+        summary: str | None = None,
+    ) -> dict[str, Any]:
+        """Record a shared wave worktree: conformance, then per-node commits.
+
+        Every changed path is attributed to exactly one same-wave node by its
+        owned directories; each node gets one commit and a prepared candidate
+        on the shared wave branch.
+        """
+        branch = self.config.get("main_branch")
+        dag = campaign.load_dag(self.root, branch) if branch else None
+        if not dag or not dag.get("nodes"):
+            raise SlicemeError("record_wave needs a campaign DAG")
+        validate_dag(list(dag["nodes"]))
+        wave_size = int(dag.get("concurrency") or DEFAULT_WAVE_SIZE)
+        waves = plan_dag_waves(list(dag["nodes"]), wave_size=wave_size)
+        wave = next((w for w in waves if w.index == int(wave_index)), None)
+        if wave is None:
+            raise SlicemeError(f"unknown wave: {wave_index}")
+        unit = self.wave_unit(wave_index)
+        if unit is None:
+            raise SlicemeError(
+                f"wave {wave_index} has no workspace; run `exec --open --wave {wave_index}` first"
+            )
+        by_id = {str(node["id"]): node for node in dag["nodes"]}
+        members = [by_id[node_id] for node_id in wave.members if node_id in by_id]
+        return self._record_wave_commits(
+            unit, int(wave_index), members, message=message, summary=summary
+        )
+
+    def _record_wave_commits(
+        self,
+        unit: dict[str, Any],
+        wave_index: int,
+        members: list[dict[str, Any]],
+        *,
+        message: str | None,
+        summary: str | None,
+    ) -> dict[str, Any]:
+        worktree = Path(unit["worktree"])
+        if not worktree.exists():
+            raise SlicemeError(f"wave worktree missing: {worktree}")
+        base = unit.get("base_commit") or gitutil.rev_parse(self.root, unit["branch"])
+        gitutil.git(worktree, "add", "-A", check=False)
+        entries = _changed_entries(worktree, base)
+        owners = {str(node["id"]): node_owns(node) for node in members}
+        assignment: dict[str, list[str]] = {node_id: [] for node_id in owners}
+        violations: list[str] = []
+        for status, path, old in entries:
+            new_owners = _owners_of(path, owners)
+            old_owners = _owners_of(old, owners) if old else new_owners
+            if (
+                len(new_owners) != 1
+                or len(old_owners) != 1
+                or new_owners[0] != old_owners[0]
+            ):
+                violations.append(_describe_violation(status, path, old, new_owners, old_owners))
+                continue
+            node_id = new_owners[0]
+            assignment[node_id].append(path)
+            if old:
+                assignment[node_id].append(old)
+        if violations:
+            raise SlicemeError(
+                "wave conformance failed; every changed path must map to exactly one "
+                "wave node's owned directories: " + "; ".join(violations[:10])
+            )
+        created: list[dict[str, Any]] = []
+        for node in members:
+            node_id = str(node["id"])
+            paths = sorted(set(assignment.get(node_id) or []))
+            if not paths:
+                continue
+            note = f"{node_id}: {message}" if message else f"{node_id}: wave {wave_index}"
+            result = gitutil.git(worktree, "commit", "-m", note, "--", *paths, check=False)
+            if not result.ok:
+                raise SlicemeError(
+                    result.stderr.strip()
+                    or result.stdout.strip()
+                    or f"commit failed for {node_id}"
+                )
+            head = gitutil.head_commit(worktree)
+            cid = self.store.create_candidate(
+                unit_id=int(unit["id"]),
+                branch=unit["branch"],
+                head_commit=head,
+                base_commit=base,
+                priority=0,
+                summary=summary,
+                node=node_id,
+            )
+            created.append(self.store.get_candidate(cid))
+        self.store.conn.commit()
+        return {
+            "wave": int(wave_index),
+            "unit": unit["name"],
+            "branch": unit["branch"],
+            "worktree": str(worktree),
+            "candidates": created,
+            "changed": [path for _, path, _ in entries],
+        }
+
+    # ------------------------------------------------------------------
     # Plan conformance
     # ------------------------------------------------------------------
     def owned_dirs(self, unit_name: str) -> list[str] | None:
@@ -609,6 +760,44 @@ class Service:
 # ----------------------------------------------------------------------
 # helpers
 # ----------------------------------------------------------------------
+def _owners_of(path: str, owners: dict[str, list[str]]) -> list[str]:
+    return [node_id for node_id, owns in owners.items() if path_within_owns(path, owns)]
+
+
+def _describe_violation(
+    status: str,
+    path: str,
+    old: str | None,
+    new_owners: list[str],
+    old_owners: list[str],
+) -> str:
+    if old:
+        return f"{status} {old} -> {path} spans nodes {old_owners}/{new_owners}"
+    if not new_owners:
+        return f"{status} {path} is outside every wave node"
+    return f"{status} {path} is claimed by {new_owners}"
+
+
+def _changed_entries(worktree: Path, base: str) -> list[tuple[str, str, str | None]]:
+    """Staged changes as ``(status, path, old_path)``, rename-aware."""
+    result = gitutil.git(
+        worktree, "diff", "--cached", "--name-status", "-M", base, check=False
+    )
+    if not result.ok:
+        return []
+    entries: list[tuple[str, str, str | None]] = []
+    for line in result.stdout.splitlines():
+        parts = line.split("\t")
+        if len(parts) < 2:
+            continue
+        status = parts[0]
+        if status[:1] in {"R", "C"} and len(parts) >= 3:
+            entries.append((status, parts[2], parts[1]))
+        else:
+            entries.append((status, parts[1], None))
+    return entries
+
+
 def _session_unit_slugs(session: str, name: str) -> tuple[str, str]:
     """Slug the session and unit, collapsing the default ``session == name``.
 

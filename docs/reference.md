@@ -112,10 +112,10 @@ artifact paths) with the coordinator's narrative appended under
 
 ```bash
 sliceme exec [--submit] [--validate] [--gpu-required] [--run] [--wait] [--cancel]
-               [--job ID] [--source SRC] [--commit REF] [--command CMD]...
-               [--sandbox none|bwrap|unshare] [--gpu none|T1|T2]
+               [--open | --record] [--job ID] [--source SRC] [--commit REF]
+               [--command CMD]... [--sandbox none|bwrap|unshare] [--gpu none|T1|T2]
                [--priority N] [--timeout SECONDS] [--wave N]
-               [--requester ID] [--limit N]
+               [--requester ID] [--limit N] [--message S] [--summary S]
 ```
 
 The single serialized executor (``sliceme/executor.py``).  Multiple verifiers
@@ -123,6 +123,12 @@ delegate to it instead of each running the acceptance suite.
 
 - `--validate`: resolve and validate the project sandbox gate (manifest and,
   with `--gpu-required`, a GPU runner); exits non-zero when the gate fails.
+- `--open --wave N`: create the single branch + worktree for wave `N`
+  (`sliceme/wave-<N>`), idempotently.
+- `--record --wave N`: stage the shared wave worktree, enforce
+  conformance-by-ownership, and create one commit + prepared candidate per
+  node.  Rejects unowned, ambiguous, or cross-node-rename changes.  Holds the
+  executor lock, so it is serialized with check runs.
 - `--submit`: enqueue a check job for `--source` (e.g. `node:w1`, `wave:0`),
   `--commit`, and one or more `--command`.  A job whose
   `(tree, commands, toolchain, policy, sandbox, source)` fingerprint already
@@ -161,14 +167,14 @@ rejected.
 |---|---|
 | `sliceme/surface.py` | **single source of truth**: action registry, validation, dispatch |
 | `sliceme/cli.py` | generated `argparse` CLI (`sliceme`), human + `--json` output |
-| `sliceme/service.py` | **single owner of state**: sessions, units, candidates, conformance, integration |
+| `sliceme/service.py` | **single owner of state**: sessions, units, candidates, conformance, integration, and the shared wave workspace/recorder |
 | `sliceme/store.py` | SQLite persistence (WAL) |
 | `sliceme/gitutil.py` | Git plumbing (`worktree`, `merge`, `merge-tree`, `commit`, `branch`, `changed_files`) |
 | `sliceme/ownership.py` | Directory ownership (normalization, `owns`, subtree conflicts) and the DAG wave projection |
 | `sliceme/verifier.py` | Fingerprints (plane and node sources) and the sandboxed trusted-check runner |
 | `sliceme/sandbox.py` | Isolation profiles + project manifests (`none`/`bwrap`/`unshare`/`command`), the gate, and command wrapping |
 | `sliceme/executor.py` | The single sandboxed executor queue (submit/run/wait/cancel, dedupe, leases) |
-| `sliceme/integrate.py` | Feature-branch landing, node verification recording, candidate wave ordering, combined-tree simulation |
+| `sliceme/integrate.py` | Feature-branch landing, node-aware candidate wave ordering, combined-tree simulation |
 | `sliceme/campaign.py` | `dag.json` / `state.json` layout and readers; deterministic report |
 
 The engine is dependency-free Python 3.11+. `Service` is the only state owner;
@@ -190,7 +196,7 @@ Let `branch-key` replace `/` with `--` (`feat/x` → `feat--x`):
   feat--x.state.json               # executor progress (node -> status)
   feat--x.report.md                # final report (kept on cleanup)
   feat--x.worker_<id>.log          # one log per worker id
-  worktrees/                       # one git worktree per unit
+  worktrees/                       # one git worktree per unit (or one shared worktree per wave)
   scratch/                         # detached simulation worktrees (transient)
 ```
 
@@ -232,9 +238,9 @@ python3 -m unittest discover -s tests -v
 
 The suite covers directory normalization and subtree conflicts, DAG wave
 projection, commit-time plan conformance, the executor queue and sandbox
-profiles, and end-to-end flows (campaign integration and idempotency, conflict
-atomicity, node verification caching, failing checks, simulation, cleanup,
-reporting) plus CLI and packaging smoke tests.
+profiles, shared wave recording, and end-to-end flows (campaign integration and
+idempotency, conflict atomicity, node verification caching, failing checks,
+simulation, cleanup, reporting) plus CLI and packaging smoke tests.
 
 | File | Covers |
 |---|---|
@@ -243,6 +249,7 @@ reporting) plus CLI and packaging smoke tests.
 | `tests/test_campaign.py` | feature-branch integration, node verification, report, DAG/state layout |
 | `tests/test_executor.py` | executor queue, sandbox profiles/wrapping, fingerprint invalidation |
 | `tests/test_sandbox_gate.py` | manifest discovery/validation, fail-closed gate, GPU runner, setup |
+| `tests/test_wave_scope.py` | shared wave worktree, conformance-by-ownership, per-node commits, wave integration |
 | `tests/test_e2e.py` | end-to-end conformance and integration flows |
 | `tests/test_cli.py` | CLI surface and lifecycle |
 | `tests/test_skill_package.py` | pi package contract, tool/action lockstep, docs |
@@ -257,7 +264,8 @@ reporting) plus CLI and packaging smoke tests.
 - One campaign per plane; RPC-steerable workers and multiple concurrent
   campaigns are out of scope.
 - `jj` workspaces and shared dependency caches are not implemented.  The
-  sandbox abstraction, project manifest, and coordinator gate are implemented
-  (Phase 1–2, see `docs/guide.md` §6); the one-worktree-per-wave recorder and
-  the `campaign exec` orchestration are still to come (Phase 3–4).
+  sandbox abstraction/manifest/gate (Phase 1–2), the single executor queue
+  (Phase 1), and the shared wave recorder (Phase 3) are implemented; the
+  remaining rollout is flipping the default to wave scope and retiring the
+  per-node worktree path (Phase 5).
 - Promotion from the feature branch to the default branch is a human `git` step.

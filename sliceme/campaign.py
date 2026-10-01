@@ -120,29 +120,56 @@ def build_skeleton(
     candidates = sorted(store.list_candidates(), key=lambda c: int(c["id"]))
 
     per_node: list[dict[str, Any]] = []
-    for unit in units:
-        name = str(unit["name"])
-        node = nodes.get(name)
-        unit_candidates = [c for c in candidates if int(c["unit_id"]) == int(unit["id"])]
-        latest = unit_candidates[-1] if unit_candidates else None
-        verification = (
-            store.latest_verification(int(latest["id"])) if latest is not None else None
-        )
-        per_node.append(
-            {
-                "node": name,
-                "label": (node or {}).get("label"),
-                "phase": (node or {}).get("phase"),
-                "status": node_status(state, name) if dag else unit["state"],
-                "unit_state": unit["state"],
-                "branch": unit["branch"],
-                "log": str(worker_log_path(root, branch, name)),
-                "candidate": int(latest["id"]) if latest is not None else None,
-                "candidate_status": latest["status"] if latest is not None else None,
-                "commit": latest["head_commit"] if latest is not None else None,
-                "verification": verification,
-            }
-        )
+    node_candidates = [c for c in candidates if c.get("node")]
+    if node_candidates and nodes:
+        # Wave scope: candidates carry their node id and share a wave unit.
+        units_by_id = {int(unit["id"]): unit for unit in units}
+        for node_id, node in nodes.items():
+            rows = [c for c in node_candidates if c.get("node") == node_id]
+            latest = rows[-1] if rows else None
+            unit = units_by_id.get(int(latest["unit_id"])) if latest is not None else None
+            verification = (
+                store.latest_verification(int(latest["id"])) if latest is not None else None
+            )
+            per_node.append(
+                {
+                    "node": node_id,
+                    "label": node.get("label"),
+                    "phase": node.get("phase"),
+                    "status": node_status(state, node_id) if dag else None,
+                    "unit_state": unit["state"] if unit else None,
+                    "branch": (unit or {}).get("branch"),
+                    "log": str(worker_log_path(root, branch, node_id)),
+                    "candidate": int(latest["id"]) if latest is not None else None,
+                    "candidate_status": latest["status"] if latest is not None else None,
+                    "commit": latest["head_commit"] if latest is not None else None,
+                    "verification": verification,
+                }
+            )
+    else:
+        for unit in units:
+            name = str(unit["name"])
+            node = nodes.get(name)
+            unit_candidates = [c for c in candidates if int(c["unit_id"]) == int(unit["id"])]
+            latest = unit_candidates[-1] if unit_candidates else None
+            verification = (
+                store.latest_verification(int(latest["id"])) if latest is not None else None
+            )
+            per_node.append(
+                {
+                    "node": name,
+                    "label": (node or {}).get("label"),
+                    "phase": (node or {}).get("phase"),
+                    "status": node_status(state, name) if dag else unit["state"],
+                    "unit_state": unit["state"],
+                    "branch": unit["branch"],
+                    "log": str(worker_log_path(root, branch, name)),
+                    "candidate": int(latest["id"]) if latest is not None else None,
+                    "candidate_status": latest["status"] if latest is not None else None,
+                    "commit": latest["head_commit"] if latest is not None else None,
+                    "verification": verification,
+                }
+            )
 
     return {
         "campaign": (dag or {}).get("campaign") or config.get("campaign", {}).get("name"),

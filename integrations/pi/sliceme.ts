@@ -123,6 +123,12 @@ export default function slicemeExtension(pi: ExtensionAPI) {
 				Type.Boolean({ description: "exec: with validate, require a GPU runner" }),
 			),
 			run: Type.Optional(Type.Boolean({ description: "exec: drain the queue" })),
+			open: Type.Optional(
+				Type.Boolean({ description: "exec: create the single worktree for --wave" }),
+			),
+			record: Type.Optional(
+				Type.Boolean({ description: "exec: record a wave (conformance + per-node commits)" }),
+			),
 			wait: Type.Optional(Type.Boolean({ description: "exec: wait for a job" })),
 			cancel: Type.Optional(Type.Boolean({ description: "exec: cancel a queued job" })),
 			job: Type.Optional(Type.String({ description: "exec: job id" })),
