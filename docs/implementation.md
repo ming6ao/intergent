@@ -1,18 +1,15 @@
 # Local plane reference implementation
 
 > Status: **implemented** as a dependency-free Python reference implementation
-> of the local plane. The production stack in
-> [Operations](./operations.md#2-tech-stack) remains Rust (primary) / Go
-> (alternative); this tree exists so Phase 0 behaviour can be exercised,
-> reviewed, and tested end to end before the systems implementation lands.
+> of the local plane and campaign orchestration.
 
 The implementation lives in [`intergent/`](../intergent) with a test suite in
 [`tests/`](../tests). Every adapter calls one service layer, matching the
 "one engine, many adapters / no adapter owns state" rule in
-[Architecture](./architecture.md#one-engine-many-adapters).
+[Architecture](./architecture.md).
 
 ```
-CLI:     ./bin/intergent   (or: python -m intergent, or console script after pip install -e .)
+CLI:     ./bin/intergent   (or: python -m intergent)
 Alias:   ig
 MCP:     intergent mcp     (stdio, newline-delimited JSON-RPC)
 State:   .intergent/state.db  (SQLite, WAL)
@@ -26,46 +23,48 @@ Config:  .intergent/config.json
 | `intergent/cli.py` | generated `argparse` CLI (`intergent` / `ig`), human + `--json` output |
 | `intergent/surface.py` | **single source of truth**: action registry, validation, dispatch |
 | `intergent/mcp.py` | MCP stdio server exposing one `ig` action tool |
-| `intergent/service.py` | **Single owner of state**: sessions, units, intents, leases, candidates, landing |
-| `intergent/store.py` | SQLite persistence (schema mirrors `docs/operations.md`) |
-| `intergent/gitutil.py` | Git plumbing (`worktree`, `merge-tree`, `merge`, `rebase`, `commit-tree`) |
+| `intergent/service.py` | **single owner of state**: sessions, units, intents, leases, candidates, integration |
+| `intergent/store.py` | SQLite persistence (WAL) |
+| `intergent/gitutil.py` | Git plumbing (`worktree`, `merge-tree`, `merge`, `commit`, `branch`) |
 | `intergent/scopes.py` | Scope parsing, canonicalization, and the scope tree |
 | `intergent/locks.py` | IS/IX/S/SIX/X compatibility matrix and requirement closure |
 | `intergent/conflict.py` | Deterministic conflict rules `FM-C001..C003` and matching tiers |
-| `intergent/verifier.py` | Fingerprint computation (plane and node sources, §6.4) and trusted-check runner |
+| `intergent/verifier.py` | Fingerprints (plane and node sources) and trusted-check runner |
 | `intergent/planner.py` | Greedy wave packing + combined-tree simulation |
-| `intergent/landing.py` | Transactional, approval-gated merge into the local main branch |
-| `intergent/integrate.py` | Agent-callable feature-branch landing (`integrate`) + node verification recording |
-| `intergent/campaign.py` | `dag.json`/`state.json` layout, `ready` computation, plan validation |
+| `intergent/integrate.py` | Agent-callable feature-branch landing and node verification recording |
+| `intergent/commitops.py` | Shared integration primitives (worktree, merge order, landed marking) |
+| `intergent/campaign.py` | `dag.json` / `state.json` layout and readers |
 | `intergent/report.py` | Deterministic campaign report skeleton |
 
-## 2. What one user gets
+## 2. What one campaign gets
 
-A single user runs several coding-agent sessions. Each session (or worker) gets
-its own `git worktree` + branch over one object store, so working trees never
-collide. Declared intent is reconciled through hierarchical scope leases, so
-agents that would contradict each other are serialized or asked to decide.
-Every candidate is verified at its exact commit, the combined result is
-simulated before handoff, and the handoff stages one uncommitted draft on the
-local main branch in dependency/wave order for a human to approve.
+A coordinator turns a design into a DAG, then for each ready node creates a unit
+(its own `git worktree` + branch), launches a one-shot worker, and verifies and
+integrates the candidate before any dependent node spawns.
 
 ```text
-Session ──► Unit (worktree + branch) ──► Intent (scopes + operation)
-                                             │
-                            ┌────────────────┴────────────────┐
-                     granted │                          queued │ needs_decision
-                    (leases) │                                 │
-                             ▼                                 ▼
-                 commit ──► prepared candidate ──► simulate waves
-                                                              │
-                                          handoff ──► draft ──► review ──► main
+Node ──► Unit (worktree + branch) ──► Intent (scopes + operation)
+                                          │
+                         ┌────────────────┴────────────────┐
+                  granted │                          queued │ needs_decision
+                 (leases) │                                 │
+                          ▼                                 ▼
+                commit ──► prepared candidate        worker exits; coordinator
+                                    │                 re-plans / serializes
+                                    ▼
+                    integrate (--no-ff onto feature branch)
+                              │            ▲
+                     fingerprint-cached    │ node verdict (source node:<id>)
+                       combined checks ────┘
 ```
+
+`done` means verified **and** integrated, so a dependent's base already contains
+its dependencies' code.
 
 ## 3. Action reference
 
-There are eight actions. The CLI renders them as subcommands, MCP as one `ig`
-tool with an `action` enum, and the pi extension as one `ig` tool — all from
-`surface.py`.
+Six actions. The CLI renders them as subcommands, MCP as one `ig` tool with an
+`action` enum, and the pi extension as one `ig` tool — all from `surface.py`.
 
 ### Bootstrap
 
@@ -86,15 +85,14 @@ recorded `default_branch` is captured once at init (origin `HEAD`, else the
 checked-out branch, else `init.defaultBranch`, else `main`). The programmatic
 plane-only helper is `Service.init_plane(root, ...)`.
 
-### Authoring (agents)
+### Authoring (workers)
 
 ```bash
 intergent declare --unit U --operation OP --scope "KIND:KEY[=OP]" [--scope ...]
 intergent declare --unit U --dry-run --operation OP --scope "KIND:KEY"   # check only
 intergent declare --unit U --renew                                       # heartbeat
 intergent declare --unit U --release                                     # release leases
-intergent declare --unit U --decide wait|override|redesign [--reason R]  # resolve conflict
-intergent commit --unit U -m "message" [--summary S] [--sync] [--onto REF]
+intergent commit --unit U -m "message" [--summary S]
 ```
 
 Agents and sessions are created implicitly: `start` registers the agent/session
@@ -106,50 +104,40 @@ intent-level `--operation` is the default per scope.
 
 `declare` returns one of:
 
-- `granted` — leases acquired; the agent may edit;
-- `queued` — `{position, blocker, blocker_node, eta_seconds}`; the agent may
-  wait, switch to non-conflicting work, or proceed optimistically and rebase;
-- `needs_decision` — destructive-vs-additive on an exact scope; choose `wait`,
-  `redesign`, or `override` (audited) with `declare --decide`.
+- `granted` — leases acquired; the worker may edit;
+- `queued` — `{position, blocker, blocker_node, eta_seconds}`; the worker
+  **exits immediately** and reports the blocker (the coordinator serializes the
+  node or re-plans); never block and never force a conflict;
+- `needs_decision` — destructive-vs-additive on an exact scope; the worker stops
+  and the coordinator re-plans.
 
-### Candidate lifecycle
-
-```bash
-intergent commit -m "message" [--summary S] [--sync]   # commit + register candidate
-intergent handoff [--no-checks]                        # verify + stage a draft on main
-intergent status --simulate [--no-checks]              # wave plan + combined-tree checks
-intergent review                                       # show the pending handoff (human)
-intergent review --approve [--keep]                    # commit + remove worktree/branch (human)
-intergent review --reject                              # restore main (human)
-intergent status [--health] [--gc] [--short] [--unit U]
-```
-
-`handoff` is transactional: the combined result is materialized and verified in
-a scratch worktree first, then written into the real main worktree as staged
-changes. If a merge conflicts or checks fail, main is left untouched and the
-candidate stays `prepared`.
-
-### Campaign integration (`integrate`, `report`)
+### Candidates and integration
 
 ```bash
+intergent commit -m "message" [--summary S]       # commit + register candidate
+intergent status --simulate [--no-checks]          # wave plan + combined-tree checks
 intergent integrate [--node ID] [--acceptance CMD ...] [--gpu none|T1|T2]
                     [--check-only] [--cleanup none|worktrees|all] [--no-checks]
 intergent report [--narrative TEXT] [--design REF]
+intergent status [--health] [--gc] [--short] [--unit U]
 ```
 
-`integrate` is the campaign's agent-callable landing: it orders the prepared
-candidates with the wave planner, merges each unit branch onto the plane's
-`main_branch` (the feature branch) with `git merge --no-ff` (branches kept for
-provenance), runs the plane's trusted checks on the combined tree
-(fingerprint-cached), then marks candidates and units `landed` and releases
-their leases. It is idempotent; a merge conflict aborts the merge and returns
-structured findings without leaving the feature branch half-merged; combined
-tree checks that fail reset the branch to its pre-merge tip. A safety rail
-**refuses** to integrate onto the plane's recorded **default branch**, so
-promoting a feature branch to `master` stays a human `git` step. `--check-only`
-records a node's acceptance verdict (fingerprint source `node:<id>`, §6.4)
-without merging, which the orchestrator's `verify` step uses. `report` writes
-the deterministic `<branch-key>.report.md` skeleton plus an optional narrative.
+`integrate` is the campaign's agent-callable landing:
+
+- orders the prepared candidates with the wave planner;
+- merges each unit branch onto the plane's `main_branch` (the feature branch)
+  with `git merge --no-ff` (branches kept for provenance);
+- runs the plane's trusted checks on the combined tree (fingerprint-cached);
+- marks candidates and units `landed` and releases their leases.
+
+It is idempotent; a merge conflict aborts the merge and returns structured
+findings without leaving the feature branch half-merged; combined checks that
+fail reset the branch to its pre-merge tip. A safety rail **refuses** to
+integrate onto the plane's recorded **default branch**, so promoting a feature
+branch to the default branch stays a human `git` step. `--check-only` records a
+node's acceptance verdict (fingerprint source `node:<id>`) without merging,
+which the orchestrator's verifier uses. `report` writes the deterministic
+`<branch-key>.report.md` skeleton plus an optional narrative.
 
 ## 4. Semantics implemented
 
@@ -186,23 +174,26 @@ acquisition order-independent, so there is no deadlock.
 | `FM-C002 divergent_rewrite` | both destructive, overlapping | HIGH if exact/asserted, else MEDIUM |
 | `FM-C003 shared_contract` | both additive, overlapping | MEDIUM if exact, else LOW |
 
-Only asserted `FM-C001` requires an explicit decision (`requires_decision`).
-LLM-derived findings are represented as `source="inferred"` and are capped
-below HIGH; no model is in the verdict path.
+Only asserted `FM-C001` requires a decision (`requires_decision`) and returns
+`needs_decision`. `FM-C001`/`FM-C002` also stop two candidates from sharing a
+wave. No model is in the verdict path.
 
 ### Verification (`verifier.py`)
 
-`fingerprint = sha256(tree, cmd_digest, toolchain_digest, policy_digest)`:
+`fingerprint = sha256(tree, cmd_digest, toolchain_digest, policy_digest, source)`:
 
-- `tree`: candidate commit tree;
-- `cmd_digest`: configured check vector;
+- `tree`: candidate or combined commit tree;
+- `cmd_digest`: the command vector — the plane's configured checks, or a node's
+  acceptance commands;
 - `toolchain_digest`: `git --version`, Python version, and hashed lockfiles
   (`package-lock.json`, `Cargo.lock`, `go.sum`, `poetry.lock`, …);
-- `policy_digest`: policy block of the config.
+- `policy_digest`: policy block of the config;
+- `source`: `plane` or `node:<id>`, so a plane-check fingerprint and a node
+  acceptance fingerprint cannot collide.
 
-Checks run in a clean detached scratch worktree at the candidate commit. A
-passing verification for an unchanged fingerprint is reused from cache. A pass
-releases the unit's leases and promotes queued waiters; a failure keeps them.
+Checks run in a clean detached scratch worktree at the commit. A passing
+verification for an unchanged fingerprint is reused from cache. A pass releases
+the unit's leases and promotes queued waiters; a failure keeps them.
 
 ### Waves and simulation (`planner.py`)
 
@@ -212,41 +203,21 @@ lease-ordering dependencies force the waiter into a later wave. Each wave is
 materialized as a synthetic combined commit and the configured checks run once
 over the combined tree.
 
-### Handoff (`landing.py`)
+### Integration (`integrate.py`, `commitops.py`)
 
-The handoff is the single boundary between agent work and human approval:
-
-1. **Stage** — prepared candidates are ordered by wave, verified at their exact
-   commits, trial-squashed into a detached scratch worktree at the current main
-   tip, and the configured checks run once on the combined tree. That tree is
-   then written into the real main worktree with `git read-tree --reset -u`, so
-   `main` shows the changes as **staged but uncommitted**. The draft
-   (candidates, files, commit message, `open_command`) is persisted and
-   returned; main's HEAD does not move.
-2. **Approve** — `review --approve` records one squashed commit and marks the
-   candidates landed, then removes the unit worktrees and deletes their
-   `ig/<unit>` branches (the approved squash supersedes them; pass `--keep` to
-   retain both for inspection). `status --gc` does the same for landed units
-   left over from earlier runs, while keeping the branches of closed units that
-   may still hold unmerged work.
-3. **Reject** — `review --reject` runs `git reset --hard` back to the draft base
-   and returns the units to `working`.
-
-While a handoff is pending, a further `handoff` refuses until it is approved or
-rejected. There is no direct-commit mode; every wave becomes a single squashed
-commit on main.
+`integrate` flattens the wave plan into a merge order and advances the feature
+branch one `--no-ff` merge at a time, verifying the combined tree after each
+merge. `commitops.py` holds the shared primitives (worktree lookup, merge order,
+`landed` marking, conflict summary).
 
 ## 5. MCP tool surface
 
 The server exposes exactly one tool, `ig`, with an `action` enum
-(`start`, `status`, `declare`, `commit`, `handoff`, `integrate`, `report`). The
-tool schema — enum, properties, types, choices — is generated from
-`surface.py`, and the same module implements dispatch, so the MCP and CLI
-surfaces cannot drift.
-`unit` is optional when the server runs inside a unit worktree. Human-only
-actions and flags (`review --approve/--reject`) are absent from the schema and
-rejected if invoked by name. For pi and generic agents see
-[Agent integration](./agents.md).
+(`start`, `status`, `declare`, `commit`, `integrate`, `report`). The tool schema
+— enum, properties, types, choices — is generated from `surface.py`, and the
+same module implements dispatch, so the MCP and CLI surfaces cannot drift.
+`unit` is optional when the server runs inside a unit worktree. Every action is
+agent-callable. For pi and generic agents see [Agent integration](./agents.md).
 
 ## 6. Tests
 
@@ -255,21 +226,18 @@ python3 -m unittest discover -s tests -v
 ```
 
 The suite covers scope canonicalization/hierarchy, the lock matrix and closure,
-conflict rules, and end-to-end local-plane flows (happy-path landing, queueing
-and promotion, needs-decision/override, expired leases, failing checks,
-fingerprint caching, simulation, textual-conflict blocking, cleanup) plus CLI
-and MCP smoke tests.
+conflict rules, and end-to-end flows (campaign integration and idempotency,
+conflict atomicity, node verification caching, queueing and promotion, expired
+leases, failing checks, simulation, cleanup, reporting) plus CLI, MCP, and
+packaging smoke tests.
 
-## 7. Deliberate gaps (next phases)
+## 7. Deliberate gaps
 
 - Symbol/AST extraction is not yet wired to `tree-sitter`; declared scopes and
   `git merge-tree` are the detectors. Dependency edges beyond declared intent
   are not inferred.
 - No long-lived daemon or unix socket yet: the CLI/MCP call the SQLite service
   directly (WAL). Lease expiry is reaped lazily on the next call.
-- No remote plane, wave scheduler service, host adapters, or dashboard.
-- Background sessions are represented (`attachment`) but there is no process
-  supervisor yet.
 - `jj` workspaces, sandboxing, and shared dependency caches are not implemented.
 
-Prev: [Local plane](./local-plane.md) · Next: [Remote plane](./remote-plane.md)
+Prev: [Local plane](./local-plane.md) · Next: [Agent integration](./agents.md)

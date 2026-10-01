@@ -11,7 +11,6 @@ from dataclasses import dataclass, field
 
 from .scopes import (
     ADDITIVE,
-    DESTRUCTIVE,
     Scope,
     is_destructive,
     jaccard,
@@ -172,20 +171,8 @@ def _rule_for(
 
 
 def requires_decision(findings: list[Finding]) -> bool:
-    """Only asserted destructive-vs-additive needs an explicit human decision."""
+    """Only asserted destructive-vs-additive needs an explicit decision."""
     return any(
         f.rule == "FM-C001 destructive_vs_additive" and f.asserted and f.severity == HIGH
         for f in findings
     )
-
-
-def has_blocking(findings: list[Finding]) -> bool:
-    return any(f.severity == HIGH for f in findings)
-
-
-def summarize(findings: list[Finding]) -> str:
-    if not findings:
-        return "no conflicts"
-    top = findings[0]
-    count = len(findings)
-    return f"{count} finding(s), highest {top.severity} ({top.rule})"

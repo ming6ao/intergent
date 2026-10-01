@@ -50,10 +50,6 @@ class Fingerprint:
     source: str = "plane"
     commands: list[str] = field(default_factory=list)
 
-    @property
-    def is_node(self) -> bool:
-        return self.source.startswith("node:")
-
 
 @dataclass
 class CheckResult:

@@ -1,51 +1,57 @@
 # Architecture
 
-## Diagram
+Intergent is **one engine, many adapters**: isolation, leases, verification, and
+integration live in a single service layer; the CLI, MCP server, and pi
+extensions only parse arguments and render results. No adapter owns state.
 
-- **[Interactive architecture diagram (HTML)](./diagrams/architecture.html)**
-- Source spec: [`diagrams/architecture.json`](./diagrams/architecture.json)
+## Campaign topology
 
 ```text
-        LOCAL PLANE (per user / machine)                        REMOTE PLANE (shared)
-  agents ──MCP/CLI──► local coordinator (intergentd)      ┌─► coordinator service
-                       ├ session/worker manager           │    ├ candidate ingest (webhook/API)
-                       ├ intent + claim registry (SQLite) │    ├ conflict graph
-                       ├ scope lock manager + queue  ◄────┼──► ├ wave scheduler
-                       ├ local verifier (fingerprints)    │    ├ merged-result CI orchestrator
-                       └ local integration simulator      │    └ integration branch + enforcement
-                       │                                  │
-              ┌────────┴─────────┐                        │
-              │ shared analysis  │◄───────────────────────┘
-              │ core (library)   │
-              └──────────────────┘
-                       │
-              git host (GitHub/GitLab) + CI
+COORDINATOR (top-level session)
+ ├── PLANNER   reads the design, writes dag.json
+ ├── WORKER_*  one-shot per ready DAG node
+ │               unit worktree + scope leases
+ │               declare -> edit -> acceptance (CPU) -> commit
+ └── VERIFIER  read-only per candidate: T0 CPU then tools/gpu.sh
+                    │
+                    ▼
+        integrate: --no-ff merge onto the feature branch
+                   (fingerprint-cached combined checks)
 ```
 
-## One engine, many adapters
+The coordinator's own checkout is not a unit (`ig start --no-unit`). Workers get
+a `git worktree` + branch each. `ready(n) := every d in n.depends_on is done`,
+where `done` means verified **and** integrated, so a dependent's base already
+contains its dependencies' code. See [Orchestration](./orchestration.md).
 
-MCP, CLI, CI, the host bot, and the dashboard all call the **same service API**
-over the **same core**. No adapter owns state.
+## Modules
 
-| Adapter | Audience | Scope |
-|---|---|---|
-| **MCP** (stdio) | agents | hot loop only, small tool set to limit context bloat |
-| **CLI** | humans, CI, recovery | bootstrap, diagnostics, long tail, admin |
-| **Session supervisor** | background workers | spawn/monitor/resume headless clients; also attaches to tmux/systemd |
-| **Host bot** | git host | PRs, required check, integration branch |
-| **Dashboard** | team | optional status board over the remote plane |
+| Module | Responsibility |
+|---|---|
+| `intergent/surface.py` | **single source of truth**: action registry, validation, dispatch |
+| `intergent/cli.py` | generated `argparse` CLI (`intergent` / `ig`), human + `--json` output |
+| `intergent/mcp.py` | MCP stdio server exposing one `ig` action tool |
+| `intergent/service.py` | **single owner of state**: sessions, units, intents, leases, candidates, integration |
+| `intergent/store.py` | SQLite persistence (WAL) |
+| `intergent/gitutil.py` | Git plumbing (worktree, merge, merge-tree, commit, branch) |
+| `intergent/scopes.py` | Scope parsing, canonicalization, and the scope tree |
+| `intergent/locks.py` | IS/IX/S/SIX/X compatibility matrix and requirement closure |
+| `intergent/conflict.py` | Deterministic conflict rules `FM-C001..C003` and matching tiers |
+| `intergent/verifier.py` | Fingerprints (plane and node sources) and trusted-check runner |
+| `intergent/planner.py` | Greedy wave packing + combined-tree simulation |
+| `intergent/integrate.py` | Agent-callable feature-branch landing and node verification recording |
+| `intergent/commitops.py` | Shared integration primitives (worktree, merge order, landed marking) |
+| `intergent/campaign.py` | `dag.json` / `state.json` layout and readers |
+| `intergent/report.py` | Deterministic campaign report skeleton |
 
-The MCP server is a **thin client of the daemon**, never the state owner. State
-lives in the long-lived `intergentd` (local) and the coordinator service
-(remote), so it survives terminal sessions.
+The MCP server is a thin adapter over `surface.dispatch`, never the state owner.
+State lives in the service + SQLite so it survives terminal sessions.
 
 ### Why the CLI still exists
 
-Skills + MCP alone are insufficient: bootstrap (`start`) happens
-before MCP exists; the daemon must be started and inspected; CI cannot speak
-MCP; humans need status/override/audit without opening an agent; recovery from
-broken MCP config needs a CLI; not every client supports MCP. Skills route and
-fall back to the CLI; MCP exposes only the hot loop.
+Bootstrap (`start`) happens before MCP exists; CI cannot speak MCP; humans need
+status/recovery; not every client supports MCP. The CLI renders the same action
+registry as MCP, so the two cannot drift.
 
 ## Interfaces
 
@@ -54,31 +60,23 @@ fall back to the CLI; MCP exposes only the hot loop.
 One tool, `ig`, parameterized by an `action` enum:
 
 ```
-start   status   declare   commit   handoff
+start   status   declare   commit   integrate   report
 ```
 
 A single tool keeps the agent's context small; the enum (and every flag) is
-generated from `intergent/surface.py`, so it can never drift from the CLI.
-Human-only actions (`review --approve/--reject`) are never in the schema and are
-rejected if called by name.
+generated from `intergent/surface.py`. Every action is agent-callable.
 
 ### CLI
 
 ```bash
-intergent start | declare | commit | handoff | review | status | mcp
+intergent start | status | declare | commit | integrate | report | mcp
 ```
 
-The local-plane reference implementation renders those six actions from
-`intergent/surface.py`. Flags carry the long tail: `declare --dry-run`
-(conflict check), `--renew`/`--release` (lease maintenance), `--decide`
-(audited override); `commit --sync` (rebase); `status --health` (doctor),
-`--simulate` (wave plan + combined-tree checks), `--gc` (worktree/branch cleanup),
-`--short`, `--unit U`; `handoff`; `review --approve/--reject`. See
-[Local implementation](./implementation.md).
-
-### CI / host
-
-Required check, webhooks, integration-branch bot, `merge_group`-style trigger.
+Flags carry the long tail: `start --no-unit --main <feature> --base <base>`;
+`declare --dry-run` (conflict check), `--renew`/`--release` (lease maintenance);
+`integrate --node`, `--acceptance`, `--gpu`, `--check-only`, `--cleanup`;
+`status --health`, `--simulate`, `--gc`, `--short`, `--unit U`; `report
+--narrative`. See [Local implementation](./implementation.md).
 
 ---
 

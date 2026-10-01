@@ -1,7 +1,7 @@
 # Conflict engine
 
-The shared, deterministic core used by both planes. This is the part that must
-be reproducible and explainable; an LLM must never sit in the verdict path.
+The deterministic core. This is the part that must be reproducible and
+explainable; an LLM must never sit in the verdict path.
 
 ## 1. Conflict taxonomy
 
@@ -58,8 +58,8 @@ migration order; otherwise → extract a stable abstraction.
 
 > **Destructive vs additive is not silently queued.** If one intent replaces
 > what another extends, "waiting" then extending the old API is pointless. The
-> engine surfaces a HIGH finding and requires an explicit decision — wait,
-> redesign, or audited override.
+> engine surfaces a HIGH finding and returns `needs_decision`; the worker exits
+> and the coordinator re-plans the node.
 
 ## 5. Declaration vs diff reconciliation
 

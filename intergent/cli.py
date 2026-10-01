@@ -62,14 +62,6 @@ def _add_action(sub: Any, action: surface.Action) -> None:
         aliases=list(action.aliases),
     )
     for param in action.params:
-        if param.positional:
-            parser.add_argument(
-                param.name,
-                nargs="?" if not param.required else None,
-                help=param.help,
-                choices=param.choices or None,
-            )
-            continue
         kwargs: dict[str, Any] = {"dest": param.name, "help": param.help, "default": None}
         if param.type == "boolean":
             kwargs["action"] = "store_true"
@@ -166,9 +158,7 @@ def _dispatch(args: argparse.Namespace, as_json: bool) -> int:
 
     service = Service(_root(args))
     try:
-        result = surface.dispatch(
-            service, action, {**vars(args), "_human": True}
-        )
+        result = surface.dispatch(service, action, vars(args))
     finally:
         service.close()
 

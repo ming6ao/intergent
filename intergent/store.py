@@ -156,18 +156,6 @@ CREATE TABLE IF NOT EXISTS verifications (
   created_at REAL NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS decisions (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  intent_id INTEGER NOT NULL REFERENCES intents(id),
-  related_intent_id INTEGER,
-  verdict TEXT NOT NULL,
-  severity TEXT,
-  rationale TEXT,
-  action TEXT,
-  reason TEXT,
-  created_at REAL NOT NULL
-);
-
 CREATE TABLE IF NOT EXISTS events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   kind TEXT NOT NULL,
@@ -225,10 +213,10 @@ class Store:
             self.conn.execute("ALTER TABLE verifications ADD COLUMN gpu TEXT")
 
     def _migrate_states(self) -> None:
-        """Collapse pre-handoff/post-handoff states onto the merged model.
+        """Collapse legacy unit/candidate states onto the current model.
 
         Legacy databases used ``active``/``finished`` units and
-        ``ready``/``verified``/``approved`` candidates; the handoff model keeps
+        ``ready``/``verified``/``approved`` candidates; the current model keeps
         ``working`` units and ``prepared`` candidates.
         """
         self.conn.execute(
@@ -294,12 +282,6 @@ class Store:
             (kind, unit_id, intent_id, candidate_id, json.dumps(data) if data else None, now()),
         )
 
-    def recent_events(self, limit: int = 50) -> list[dict[str, Any]]:
-        rows = self.conn.execute(
-            "SELECT * FROM events ORDER BY id DESC LIMIT ?", (limit,)
-        ).fetchall()
-        return _dicts(rows)
-
     # ---- agents -------------------------------------------------------
     def upsert_agent(self, name: str, model: str | None, parent_id: int | None) -> int:
         with self.tx() as c:
@@ -316,9 +298,6 @@ class Store:
         return _dict(
             self.conn.execute("SELECT * FROM agents WHERE name=?", (name,)).fetchone()
         )
-
-    def list_agents(self) -> list[dict[str, Any]]:
-        return _dicts(self.conn.execute("SELECT * FROM agents ORDER BY id").fetchall())
 
     # ---- sessions -----------------------------------------------------
     def create_session(self, name: str, task: str | None, attachment: str) -> int:
@@ -340,9 +319,6 @@ class Store:
         return _dict(
             self.conn.execute("SELECT * FROM sessions WHERE name=?", (name_or_id,)).fetchone()
         )
-
-    def list_sessions(self) -> list[dict[str, Any]]:
-        return _dicts(self.conn.execute("SELECT * FROM sessions ORDER BY id").fetchall())
 
     # ---- units --------------------------------------------------------
     def create_unit(
@@ -404,9 +380,6 @@ class Store:
             )
             row = c.execute("SELECT id FROM scopes WHERE node=?", (node,)).fetchone()
         return int(row["id"])
-
-    def scope_by_node(self, node: str) -> dict[str, Any] | None:
-        return _dict(self.conn.execute("SELECT * FROM scopes WHERE node=?", (node,)).fetchone())
 
     # ---- intents ------------------------------------------------------
     def create_intent(
@@ -717,11 +690,6 @@ class Store:
             )
             return int(c.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
 
-    def get_fingerprint(self, fingerprint_id: int) -> dict[str, Any] | None:
-        return _dict(
-            self.conn.execute("SELECT * FROM fingerprints WHERE id=?", (fingerprint_id,)).fetchone()
-        )
-
     def add_verification(
         self,
         candidate_id: int,
@@ -768,65 +736,6 @@ class Store:
                 (candidate_id,),
             ).fetchone()
         )
-
-    def latest_verification_for_source(
-        self, candidate_id: int, source: str
-    ) -> dict[str, Any] | None:
-        """Newest verdict for a candidate restricted to a fingerprint source.
-
-        ``source`` is ``plane`` for the configured check vector or
-        ``node:<id>`` for a campaign node's acceptance commands (§6.4).
-        """
-        return _dict(
-            self.conn.execute(
-                "SELECT v.*, f.source AS source, f.fingerprint AS fingerprint"
-                " FROM verifications v"
-                " JOIN fingerprints f ON f.id = v.fingerprint_id"
-                " WHERE v.candidate_id=? AND f.source=? ORDER BY v.id DESC LIMIT 1",
-                (candidate_id, source),
-            ).fetchone()
-        )
-
-    def list_verifications(self, *, candidate_id: int | None = None) -> list[dict[str, Any]]:
-        sql = (
-            "SELECT v.*, f.source AS source FROM verifications v"
-            " JOIN fingerprints f ON f.id = v.fingerprint_id"
-        )
-        params: list[Any] = []
-        if candidate_id is not None:
-            sql += " WHERE v.candidate_id=?"
-            params.append(candidate_id)
-        sql += " ORDER BY v.id"
-        return _dicts(self.conn.execute(sql, params).fetchall())
-
-    # ---- decisions ----------------------------------------------------
-    def add_decision(
-        self,
-        *,
-        intent_id: int,
-        related_intent_id: int | None,
-        verdict: str,
-        severity: str | None,
-        rationale: str | None,
-        action: str | None,
-        reason: str | None,
-    ) -> int:
-        with self.tx() as c:
-            c.execute(
-                "INSERT INTO decisions(intent_id, related_intent_id, verdict, severity,"
-                " rationale, action, reason, created_at) VALUES(?,?,?,?,?,?,?,?)",
-                (intent_id, related_intent_id, verdict, severity, rationale, action, reason, now()),
-            )
-            return int(c.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
-
-    def list_decisions(self, intent_id: int | None = None) -> list[dict[str, Any]]:
-        if intent_id is None:
-            rows = self.conn.execute("SELECT * FROM decisions ORDER BY id DESC").fetchall()
-        else:
-            rows = self.conn.execute(
-                "SELECT * FROM decisions WHERE intent_id=? ORDER BY id DESC", (intent_id,)
-            ).fetchall()
-        return _dicts(rows)
 
     def require_unit(self, name_or_id: str | int) -> dict[str, Any]:
         unit = self.get_unit(name_or_id)

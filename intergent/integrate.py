@@ -1,7 +1,7 @@
 """Agent-callable integration onto a campaign's feature branch.
 
-``handoff``/``finalize`` fuse into one no-approval action that lands prepared
-candidates on the plane's ``main_branch`` (the campaign feature branch):
+``integrate`` lands prepared candidates on the plane's ``main_branch`` (the
+campaign feature branch):
 
 * candidates are ordered by the existing wave planner, then merged with
   ``git merge --no-ff`` (one merge commit per unit, branches kept);
@@ -27,13 +27,14 @@ from pathlib import Path
 from typing import Any
 
 from . import gitutil
-from .landing import (
+from .commitops import (
     LandResult,
-    _conflict_summary,
-    _mark_landed,
-    _ordered_candidates,
+    checks_output,
+    conflict_summary,
     main_branch_of,
     main_worktree,
+    mark_landed,
+    ordered_candidates,
 )
 from .store import Store
 from .util import IntergentError
@@ -75,15 +76,6 @@ def _recorded_default(config: dict[str, Any], root: Path) -> str:
     return found_default_branch(root)
 
 
-def _checks_output(checks: list[CheckResult]) -> str:
-    lines = []
-    for check in checks:
-        lines.append(f"[{check.status}] {check.name}: {check.command}")
-        if check.output:
-            lines.append(check.output[-2000:])
-    return "\n".join(lines) or "(no checks configured)"
-
-
 def _verify_and_record_plane(
     store: Store,
     root: Path,
@@ -123,7 +115,7 @@ def _verify_and_record_plane(
         cid,
         fp_id,
         status,
-        _checks_output(checks),
+        checks_output(checks),
         duration,
         commands=fingerprint.commands,
     )
@@ -179,7 +171,7 @@ def record_node_verification(
         int(candidate["id"]),
         fp_id,
         result.status,
-        _checks_output(result.checks),
+        checks_output(result.checks),
         result.duration,
         commands=fingerprint.commands,
         gpu=gpu,
@@ -264,7 +256,7 @@ def integrate(
     wave_config = {**config, "base": main_branch}
 
     if check_only:
-        for candidate in _ordered_candidates(store, root, wave_config, candidates):
+        for candidate in ordered_candidates(store, root, wave_config, candidates):
             if acceptance:
                 passed, result = record_node_verification(
                     store,
@@ -302,7 +294,7 @@ def integrate(
                 )
         return results
 
-    ordered = _ordered_candidates(store, root, wave_config, candidates)
+    ordered = ordered_candidates(store, root, wave_config, candidates)
     if not ordered:
         return results
 
@@ -316,7 +308,7 @@ def integrate(
         head = gitutil.rev_parse(root, candidate["branch"])
         feature_head = gitutil.head_commit(wt_path)
         if gitutil.merge_base(root, feature_head, head) == head:
-            _mark_landed(store, candidate, feature_head)
+            mark_landed(store, candidate, feature_head)
             results.append(
                 LandResult(
                     candidate_id=int(candidate["id"]),
@@ -371,7 +363,7 @@ def integrate(
                     unit_name=candidate["unit_name"],
                     branch=candidate["branch"],
                     status="failed",
-                    detail="merge conflict: " + _conflict_summary(merge),
+                    detail="merge conflict: " + conflict_summary(merge),
                 )
             )
             break
@@ -402,7 +394,7 @@ def integrate(
                 )
                 break
 
-        _mark_landed(store, candidate, merge_commit)
+        mark_landed(store, candidate, merge_commit)
         store.event(
             "integrate.landed",
             candidate_id=int(candidate["id"]),

@@ -55,17 +55,6 @@ def git(
     return result
 
 
-def require_git() -> None:
-    try:
-        proc = subprocess.run(
-            ["git", "--version"], capture_output=True, text=True, check=False
-        )
-    except FileNotFoundError as exc:  # pragma: no cover
-        raise IntergentError("git is required but was not found on PATH") from exc
-    if proc.returncode != 0:
-        raise IntergentError("git is required but does not run")
-
-
 def is_git_repo(path: str | os.PathLike[str]) -> bool:
     return git(path, "rev-parse", "--is-inside-work-tree").stdout.strip() == "true"
 
@@ -283,38 +272,12 @@ def merge_into(
     return git(worktree, *args, check=False)
 
 
-def merge_squash_into(
-    worktree: str | os.PathLike[str], branch: str, *, message: str
-) -> GitResult:
-    """Squash-merge *branch* into *worktree* as one commit with a single parent.
-
-    ``git merge --squash`` stages the merged tree without creating a commit or
-    recording ``MERGE_HEAD``; we commit it here so the result is a real,
-    single-parent commit with no history from the source branch.
-    """
-    res = git(worktree, "merge", "--squash", branch, check=False)
-    if not res.ok:
-        return res
-    if "Already up to date" in (res.stdout or "") + (res.stderr or ""):
-        return res
-    return commit_all(worktree, message)
-
-
 def merge_abort(worktree: str | os.PathLike[str]) -> None:
-    # A conflicted ``merge --squash`` has no MERGE_HEAD, so ``merge --abort``
-    # fails; fall back to a hard reset (the worktree was clean before the merge).
+    # A conflicted merge can leave ``merge --abort`` unable to proceed; fall
+    # back to a hard reset (the worktree was clean before the merge).
     res = git(worktree, "merge", "--abort", check=False)
     if not res.ok:
         git(worktree, "reset", "--hard", check=False)
-
-
-def read_tree_reset(worktree: str | os.PathLike[str], commit: str) -> GitResult:
-    """Set the index and working tree to *commit* while leaving HEAD untouched.
-
-    Used to stage a landing draft: ``git status`` then shows the combined
-    changes as staged, and a plain ``git commit`` records them.
-    """
-    return git(worktree, "read-tree", "--reset", "-u", commit, check=False)
 
 
 def reset_hard(worktree: str | os.PathLike[str], commit: str = "HEAD") -> GitResult:
@@ -329,41 +292,6 @@ def commit_all(
     if allow_empty:
         args.append("--allow-empty")
     return git(worktree, *args, check=False)
-
-
-def rebase_onto(
-    worktree: str | os.PathLike[str], upstream: str
-) -> GitResult:
-    return git(worktree, "rebase", upstream, check=False)
-
-
-def log_subjects(repo: str | os.PathLike[str], base: str, head: str) -> list[str]:
-    res = git(repo, "log", "--format=%h %s", f"{base}..{head}", check=False)
-    return res.stdout.splitlines()
-
-
-def diff_names(repo: str | os.PathLike[str], base: str, head: str) -> list[str]:
-    res = git(repo, "diff", "--name-only", f"{base}...{head}", check=False)
-    return [line for line in res.stdout.splitlines() if line.strip()]
-
-
-def diff_changed(repo: str | os.PathLike[str], base: str, head: str) -> list[str]:
-    """Files that differ between two commits (two-dot, i.e. the full delta)."""
-    res = git(repo, "diff", "--name-only", base, head, check=False)
-    return [line for line in res.stdout.splitlines() if line.strip()]
-
-
-def diff_stat(repo: str | os.PathLike[str], base: str, head: str) -> str:
-    res = git(repo, "diff", "--stat", base, head, check=False)
-    return res.stdout.strip()
-
-
-def ahead_behind(repo: str | os.PathLike[str], base: str, head: str) -> tuple[int, int]:
-    res = git(repo, "rev-list", "--left-right", "--count", f"{base}...{head}", check=False)
-    if not res.ok or not res.stdout.strip():
-        return (0, 0)
-    left, right = res.stdout.split()
-    return int(left), int(right)
 
 
 def detect_toolchain_files(repo: str | os.PathLike[str], commit: str) -> dict[str, str]:
@@ -389,34 +317,5 @@ def detect_toolchain_files(repo: str | os.PathLike[str], commit: str) -> dict[st
     return digests
 
 
-def update_ref(
-    repo: str | os.PathLike[str],
-    ref: str,
-    new: str,
-    *,
-    old: str | None = None,
-    message: str | None = None,
-) -> None:
-    args = ["update-ref"]
-    if message:
-        args += ["-m", message]
-    args.append(ref)
-    args.append(new)
-    if old:
-        args.append(old)
-    git(repo, *args, check=True)
-
-
 def create_branch(repo: str | os.PathLike[str], branch: str, commit: str) -> None:
     git(repo, "branch", "-f", branch, commit, check=True)
-
-
-def stash_or_fail(worktree: str | os.PathLike[str]) -> None:
-    if not is_clean(worktree):
-        raise IntergentError(
-            f"worktree {worktree} has uncommitted changes; commit or discard them first"
-        )
-
-
-def short(repo: str | os.PathLike[str], ref: str) -> str:
-    return git(repo, "rev-parse", "--short", ref, check=False).stdout.strip()

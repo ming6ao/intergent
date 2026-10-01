@@ -98,8 +98,3 @@ def find_blocker(
     # represented, because requirements include every ancestor.  A held lock on
     # a descendant likewise contributes an intention lock on the requested node.
     return None
-
-
-def describe(requirements: dict[str, Requirement]) -> str:
-    leaves = [f"{r.node}={r.mode}" for r in requirements.values() if r.declared]
-    return ", ".join(sorted(leaves))

@@ -12,7 +12,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from . import campaign, conflict, gitutil, integrate, landing, locks, planner, report as report_mod
+from . import campaign, conflict, gitutil, integrate, locks, planner, report as report_mod
 from .conflict import Finding, IntentRef
 from .locks import HeldLock, Requirement
 from .scopes import (
@@ -22,7 +22,6 @@ from .scopes import (
 )
 from .store import Store
 from .util import (
-    DEFAULT_EDITOR,
     IntergentError,
     config_path,
     now,
@@ -97,7 +96,6 @@ class Service:
             "default_branch": default_branch,
             "lease_ttl_seconds": lease_ttl_seconds,
             "checks": checks or [],
-            "editor": DEFAULT_EDITOR,
             "policy": {"require_verification": True, "allow_auto_approve": []},
             "created_at": now(),
         }
@@ -390,18 +388,9 @@ class Service:
                 status="needs_decision",
                 requirements=req_map,
                 blocker_unit_id=blocker,
-                reason="destructive vs additive requires an explicit decision",
+                reason="destructive vs additive overlap; the coordinator must re-plan",
             )
             self.store.set_intent_status(intent_id, "needs_decision")
-            self.store.add_decision(
-                intent_id=intent_id,
-                related_intent_id=_finding_intent(findings),
-                verdict="FM-C001 destructive_vs_additive",
-                severity="HIGH",
-                rationale="destructive and additive declarations overlap on an exact scope",
-                action=None,
-                reason=None,
-            )
             self.store.conn.commit()
             self._log("declare", unit, intent_id, {"status": "needs_decision"})
             return {
@@ -411,7 +400,7 @@ class Service:
                 "findings": [f.to_dict() for f in findings],
                 "request_id": request_id,
                 "blocker": blocker,
-                "options": ["wait", "redesign", "override"],
+                "options": ["replan"],
             }
 
         held = [
@@ -475,90 +464,6 @@ class Service:
             "blocker": blocker_lock.unit_name,
             "blocker_node": blocker_lock.node,
             "eta_seconds": ttl,
-        }
-
-    def decide(
-        self, intent_id: int, action: str, *, reason: str | None = None
-    ) -> dict[str, Any]:
-        self._reap_expired()
-        intent = self.store.get_intent(int(intent_id))
-        if intent is None:
-            raise IntergentError(f"unknown intent {intent_id}")
-        request = self.store.get_lock_request_for_unit(int(intent["unit_id"]))
-        if request is None or int(request["intent_id"]) != int(intent_id):
-            raise IntergentError(f"intent {intent_id} has no pending lock request")
-        if request["status"] != "needs_decision":
-            raise IntergentError(
-                f"intent {intent_id} is {request['status']}, not awaiting a decision"
-            )
-        requirements = {k: str(v) for k, v in _loads(request["requirements"]).items()}
-        unit_id = int(intent["unit_id"])
-        ttl = int(self.config.get("lease_ttl_seconds", 1800))
-        action = action.strip().lower()
-        if action not in {"wait", "override", "redesign"}:
-            raise IntergentError("action must be one of: wait, override, redesign")
-
-        if action == "redesign":
-            self.store.set_lock_request_status(request["id"], "cancelled", reason=reason)
-            self.store.set_intent_status(int(intent_id), "superseded")
-            self.store.add_decision(
-                intent_id=int(intent_id),
-                related_intent_id=None,
-                verdict="FM-C001 destructive_vs_additive",
-                severity="HIGH",
-                rationale="user chose to redesign",
-                action="redesign",
-                reason=reason,
-            )
-            self.store.conn.commit()
-            return {"intent_id": intent_id, "status": "redesign"}
-
-        if action == "override":
-            self.store.set_lock_request_status(
-                request["id"], "granted", reason=f"override: {reason or 'audited'}"
-            )
-            self.store.grant_claims(
-                request_id=int(request["id"]),
-                intent_id=int(intent_id),
-                unit_id=unit_id,
-                requirements=requirements,
-                ttl_seconds=ttl,
-            )
-            self.store.set_intent_status(int(intent_id), "granted")
-            self.store.add_decision(
-                intent_id=int(intent_id),
-                related_intent_id=None,
-                verdict="FM-C001 destructive_vs_additive",
-                severity="HIGH",
-                rationale="user overrode a HIGH conflict",
-                action="override",
-                reason=reason,
-            )
-            self.store.conn.commit()
-            return {"intent_id": intent_id, "status": "granted", "overridden": True}
-
-        # wait: queue behind the recorded blocker, then try promotion.
-        blocker_unit_id = request["blocker_unit_id"]
-        self.store.set_lock_request_status(
-            request["id"], "queued", blocker_unit_id=blocker_unit_id, reason="user chose to wait"
-        )
-        self.store.set_intent_status(int(intent_id), "queued")
-        self.store.add_decision(
-            intent_id=int(intent_id),
-            related_intent_id=None,
-            verdict="FM-C001 destructive_vs_additive",
-            severity="HIGH",
-            rationale="user chose to wait",
-            action="wait",
-            reason=reason,
-        )
-        self.store.conn.commit()
-        promoted = self._promote_queue()
-        request = self.store.get_lock_request_for_unit(unit_id)
-        return {
-            "intent_id": intent_id,
-            "status": request["status"] if request else "queued",
-            "promoted": [p["unit_name"] for p in promoted],
         }
 
     def heartbeat(self, unit_ref: str | int) -> dict[str, Any]:
@@ -631,69 +536,6 @@ class Service:
             self.store, self.root, self.config, run_checks_flag=run_checks_flag
         )
 
-    def pending_handoff(self) -> dict[str, Any]:
-        """The uncommitted draft staged on main, if any."""
-        self._reap_expired()
-        draft = landing.pending_draft(self.store)
-        return {"pending": draft is not None, "draft": draft}
-
-    def handoff(
-        self,
-        candidate_refs: list[str | int] | None = None,
-        *,
-        run_checks_flag: bool = True,
-    ) -> list[dict[str, Any]]:
-        """Verify + trial-merge the prepared candidates into a draft on main."""
-        if candidate_refs:
-            ids: list[int] = []
-            for ref in candidate_refs:
-                candidate = self.store.get_candidate(ref)
-                if candidate is None:
-                    raise IntergentError(f"unknown candidate: {ref}")
-                ids.append(int(candidate["id"]))
-        else:
-            ids = [int(c["id"]) for c in self.store.list_candidates(statuses=["prepared"])]
-        results = landing.handoff(
-            self.store, self.root, self.config, ids, run_checks_flag=run_checks_flag
-        )
-        # Candidates already contained in main are marked landed during staging,
-        # which frees their leases.
-        self._promote_queue()
-        return [r.to_dict() for r in results]
-
-    def finalize(
-        self,
-        *,
-        approve: bool,
-        cleanup: bool = True,
-    ) -> list[dict[str, Any]]:
-        """Approve (commit + clean up) or reject (restore main) the pending handoff."""
-        results = landing.finalize(
-            self.store, self.root, self.config, approve=approve, cleanup=cleanup
-        )
-        if approve:
-            self._promote_queue()
-        return [r.to_dict() for r in results]
-
-    def rebase(self, unit_ref: str | int, *, onto: str | None = None) -> dict[str, Any]:
-        unit = self.store.require_unit(unit_ref)
-        worktree = Path(unit["worktree"])
-        if not gitutil.is_clean(worktree):
-            raise IntergentError(
-                "worktree has uncommitted changes; commit or discard before rebasing"
-            )
-        target = onto or self.config.get("base") or self.config.get("main_branch") or "main"
-        result = gitutil.rebase_onto(worktree, target)
-        if not result.ok:
-            gitutil.git(worktree, "rebase", "--abort")
-            raise IntergentError(f"rebase onto {target} failed: {result.stderr.strip()}")
-        head = gitutil.head_commit(worktree)
-        candidate = self.store.get_candidate(unit["name"])
-        if candidate is not None:
-            self.store.update_candidate(int(candidate["id"]), head_commit=head, status="prepared")
-        self.store.conn.commit()
-        return {"unit": unit["name"], "onto": target, "head": head}
-
     def status(self) -> dict[str, Any]:
         self._reap_expired()
         branch = self.config.get("main_branch")
@@ -714,8 +556,6 @@ class Service:
             "candidates": candidates,
             "queue": self.store.queued_requests(),
             "waves": [w.to_dict() for w in waves],
-            "handoff": landing.pending_draft(self.store),
-            "decisions": self.store.list_decisions()[:20],
         }
 
     def _project_unit(self, unit: dict[str, Any], branch: str | None) -> dict[str, Any]:
@@ -941,13 +781,6 @@ def _loads(text: str) -> dict[str, Any]:
         return json.loads(text)
     except (TypeError, ValueError):
         return {}
-
-
-def _finding_intent(findings: list[Finding]) -> int | None:
-    for finding in findings:
-        if finding.rule == "FM-C001 destructive_vs_additive" and finding.asserted:
-            return finding.other_intent_id
-    return None
 
 
 def _session_unit_slugs(session: str, name: str) -> tuple[str, str]:

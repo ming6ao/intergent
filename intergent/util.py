@@ -2,23 +2,19 @@
 
 from __future__ import annotations
 
-import errno
 import hashlib
 import json
 import os
 import re
-import shlex
 import time
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 STATE_DIR = ".intergent"
-DEFAULT_EDITOR = "code"  # VS Code CLI
 CONFIG_NAME = "config.json"
 DB_NAME = "state.db"
 WORKTREES_DIR = "worktrees"
 SCRATCH_DIR = "scratch"
-LOG_NAME = "intergentd.log"
 
 
 class IntergentError(Exception):
@@ -29,43 +25,12 @@ def now() -> float:
     return time.time()
 
 
-def iso(ts: float | None) -> str:
-    if ts is None:
-        return "-"
-    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts))
-
-
 def sha256_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def sha256_bytes(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
-
-
 def sha256_json(obj: Any) -> str:
     return sha256_text(json.dumps(obj, sort_keys=True, separators=(",", ":")))
-
-
-def editor_command(
-    path: str | os.PathLike[str], config: dict[str, Any] | None = None
-) -> str:
-    """Shell command that opens *path* in the configured editor.
-
-    Precedence: ``INTERGENT_EDITOR`` env var, then ``config["editor"]``, then
-    ``code`` (VS Code).  VS Code gets ``-n`` so the worktree opens in its own
-    window instead of replacing the human's current one.
-    """
-    editor = (
-        os.environ.get("INTERGENT_EDITOR")
-        or (config or {}).get("editor")
-        or DEFAULT_EDITOR
-    )
-    target = shlex.quote(str(path))
-    executable = os.path.basename(str(editor).split()[0]) if str(editor).split() else str(editor)
-    if executable in {"code", "code-insiders", "codium", "codium-insiders"}:
-        return f"{editor} -n {target}"
-    return f"{editor} {target}"
 
 
 def slugify(text: str, max_len: int = 40) -> str:
@@ -120,13 +85,6 @@ def write_json(path: Path, obj: Any) -> None:
     os.replace(tmp, path)
 
 
-def load_config(root: Path) -> dict[str, Any]:
-    cfg = read_json(config_path(root))
-    if cfg is None:
-        raise IntergentError("missing .intergent/config.json; run `intergent init`")
-    return cfg
-
-
 def ensure_parent(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -136,24 +94,3 @@ def rmtree(path: Path) -> None:
 
     if path.exists():
         shutil.rmtree(path, ignore_errors=True)
-
-
-def chunks(items: Iterable[Any], size: int) -> Iterable[list[Any]]:
-    batch: list[Any] = []
-    for item in items:
-        batch.append(item)
-        if len(batch) == size:
-            yield batch
-            batch = []
-    if batch:
-        yield batch
-
-
-def is_process_alive(pid: int) -> bool:
-    if pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-    except OSError as exc:  # pragma: no cover - platform dependent
-        return exc.errno == errno.EPERM
-    return True

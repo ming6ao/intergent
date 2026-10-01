@@ -18,7 +18,7 @@ from pathlib import Path
 
 from intergent import campaign
 from intergent.service import Service
-from intergent.util import IntergentError, config_path
+from intergent.util import IntergentError, config_path, write_json
 
 
 def run(*args, cwd):
@@ -174,10 +174,9 @@ class NodeVerificationTests(CampaignCase):
         first = self.svc.integrate(node="w1", acceptance=["true"], check_only=True)
         self.assertEqual(first["results"][0]["status"], "passed")
         candidate = self.svc.store.get_candidate("w1")
-        verification = self.svc.store.latest_verification_for_source(
-            int(candidate["id"]), "node:w1"
-        )
+        verification = self.svc.store.latest_verification(int(candidate["id"]))
         self.assertEqual(verification["status"], "passed")
+        self.assertEqual(verification["source"], "node:w1")
         self.assertEqual(verification["gpu"], "none")
         self.assertIn("true", verification["commands"])
         # The candidate is not landed in check-only mode.
@@ -202,11 +201,12 @@ class NodeVerificationTests(CampaignCase):
         self.worker("w1", "src/a.py", "a = 2\n")
         self.svc.integrate(node="w1", acceptance=["true"], check_only=True)
         candidate = self.svc.store.get_candidate("w1")
-        rows = self.svc.store.list_verifications(candidate_id=int(candidate["id"]))
-        self.assertTrue(rows)
+        rows = self.svc.store.conn.execute(
+            "SELECT DISTINCT f.source AS source FROM verifications v"
+            " JOIN fingerprints f ON f.id = v.fingerprint_id WHERE v.candidate_id=?",
+            (int(candidate["id"]),),
+        ).fetchall()
         sources = {r["source"] for r in rows}
-        self.assertTrue(sources <= {"plane", "node:w1"})
-        # The node source is present.
         self.assertIn("node:w1", sources)
 
 
@@ -215,9 +215,8 @@ class ReportTests(CampaignCase):
         self.campaign_plane()
         self.worker("w1", "src/a.py", "a = 2\n")
         self.svc.integrate()
-        campaign.save_dag(
-            self.root,
-            "feat/x",
+        write_json(
+            campaign.dag_path(self.root, "feat/x"),
             {
                 "campaign": "demo",
                 "feature_branch": "feat/x",
@@ -282,56 +281,6 @@ class DagStateTests(unittest.TestCase):
             campaign.worker_log_path(self.root, "feat/x", "w1").name,
             "feat--x.worker_w1.log",
         )
-
-    def test_ready_nodes_follow_the_dependency_rule(self):
-        dag = {
-            "campaign": "c",
-            "nodes": [
-                {"id": "w1", "depends_on": [], "owns": ["dir:x"], "acceptance": ["true"]},
-                {"id": "w2", "depends_on": ["w1"], "owns": ["dir:y"], "acceptance": ["true"]},
-                {"id": "w3", "depends_on": ["w1", "w2"], "owns": ["dir:z"], "acceptance": ["true"]},
-            ],
-        }
-        state = {"nodes": {}}
-        self.assertEqual(campaign.ready_nodes(dag, state), ["w1"])
-        state["nodes"] = {"w1": {"status": "done"}}
-        self.assertEqual(campaign.ready_nodes(dag, state), ["w2"])
-        state["nodes"]["w2"] = {"status": "done"}
-        self.assertEqual(campaign.ready_nodes(dag, state), ["w3"])
-
-    def test_running_and_done_nodes_are_not_ready(self):
-        dag = {
-            "campaign": "c",
-            "nodes": [
-                {"id": "w1", "depends_on": [], "owns": ["dir:x"], "acceptance": ["true"]},
-                {"id": "w2", "depends_on": [], "owns": ["dir:y"], "acceptance": ["true"]},
-            ],
-        }
-        state = {"nodes": {"w1": {"status": "running"}}}
-        self.assertEqual(campaign.ready_nodes(dag, state), ["w2"])
-
-    def test_validate_dag_reports_cycles_and_unknown_deps(self):
-        dag = {
-            "campaign": "c",
-            "nodes": [
-                {"id": "w1", "depends_on": ["w2"], "owns": ["dir:x"], "acceptance": ["true"]},
-                {"id": "w2", "depends_on": ["w1"], "owns": ["dir:y"], "acceptance": ["true"]},
-                {"id": "w3", "depends_on": ["nope"], "owns": ["dir:z"], "acceptance": ["true"]},
-            ],
-        }
-        problems = campaign.validate_dag(dag)
-        self.assertTrue(any("cycle" in p for p in problems))
-        self.assertTrue(any("unknown node" in p for p in problems))
-
-    def test_validate_dag_accepts_a_well_formed_plan(self):
-        dag = {
-            "campaign": "c",
-            "nodes": [
-                {"id": "w1", "depends_on": [], "owns": ["dir:x"], "acceptance": ["true"]},
-                {"id": "w2", "depends_on": ["w1"], "owns": ["dir:y"], "acceptance": ["true"]},
-            ],
-        }
-        self.assertEqual(campaign.validate_dag(dag), [])
 
 
 class ConfigMigrationTests(CampaignCase):

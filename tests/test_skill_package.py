@@ -97,22 +97,20 @@ class SkillPackageTests(unittest.TestCase):
         self.assertIn("SKILL.md", files)
 
     def test_retired_actions_are_gone(self):
-        # `submit` and `verify` were folded into `handoff` + `review`.
+        # The single-agent path (`handoff`, human `review`) and the old
+        # `submit`/`verify` verbs are retired; `integrate` is the landing action.
         names = {a.name for a in surface.ACTIONS}
-        self.assertNotIn("submit", names)
-        self.assertNotIn("verify", names)
-        self.assertIn("handoff", names)
+        for gone in ("submit", "verify", "handoff", "review"):
+            self.assertNotIn(gone, names)
+        self.assertIn("integrate", names)
         text = PI_EXTENSION.read_text(encoding="utf-8")
-        self.assertNotIn('"submit"', text)
-        self.assertNotIn('"verify"', text)
-        self.assertIn('"handoff"', text)
+        for gone in ("submit", "verify", "handoff", "review"):
+            self.assertNotIn(f'"{gone}"', text)
 
     def test_campaign_actions_are_in_lockstep(self):
-        # `integrate` and `report` are agent actions (orchestration §6.3).
-        names = [a.name for a in surface.agent_actions()]
+        names = [a.name for a in surface.ACTIONS]
         self.assertIn("integrate", names)
         self.assertIn("report", names)
-        self.assertNotIn("review", names)
         text = PI_EXTENSION.read_text(encoding="utf-8")
         match = re.search(r"IG_ACTIONS\s*=\s*\[(.*?)\]\s*as const", text, re.DOTALL)
         self.assertIsNotNone(match)

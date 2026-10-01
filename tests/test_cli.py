@@ -105,7 +105,7 @@ class CliTests(unittest.TestCase):
             self.assertEqual(out.returncode, 0, out.stderr)
             self.assertEqual(json.loads(out.stdout)["unit"], first["unit"])
 
-    def test_status_health_simulate_and_folded_override(self):
+    def test_status_health_and_simulate(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             subprocess.run(["git", "init", "-q", "-b", "main"], cwd=tmp, check=True)
@@ -129,15 +129,6 @@ class CliTests(unittest.TestCase):
                 root,
             )
             self.assertEqual(json.loads(out.stdout)["status"], "needs_decision")
-
-            # `override` is folded into `declare --decide` (no intent id needed).
-            out = run_cli(
-                ["--json", "declare", "--unit", "beta", "--decide", "override",
-                 "--reason", "approved"],
-                root,
-            )
-            self.assertEqual(out.returncode, 0, out.stderr)
-            self.assertEqual(json.loads(out.stdout)["status"], "granted")
 
             out = run_cli(["--json", "status", "--health"], root)
             self.assertEqual(out.returncode, 0, out.stderr)
@@ -196,8 +187,8 @@ class CliTests(unittest.TestCase):
             (root / "a.txt").write_text("hi\n")
             subprocess.run(["git", "add", "-A"], cwd=tmp, check=True)
             subprocess.run(["git", "commit", "-qm", "init"], cwd=tmp, check=True)
-            run_cli(["--json", "start"], root)
-            out = run_cli(["--json", "start", "--name", "alpha"], root)
+            run_cli(["--json", "start", "--no-unit", "--main", "feat/x", "--base", "main"], root)
+            out = run_cli(["--json", "start", "--name", "alpha", "--base", "feat/x"], root)
             worktree = Path(json.loads(out.stdout)["worktree"])
 
             out = run_cli(["status", "--short"], worktree)
@@ -217,79 +208,16 @@ class CliTests(unittest.TestCase):
             self.assertEqual(out.returncode, 0, out.stderr)
             self.assertEqual(json.loads(out.stdout)["candidate"]["status"], "prepared")
 
-            # `handoff` stages an uncommitted draft on main.
-            out = run_cli(["--json", "handoff"], worktree)
+            # The coordinator lands the verified candidate on the feature branch.
+            out = run_cli(["--json", "integrate", "--node", "alpha"], root)
             self.assertEqual(out.returncode, 0, out.stderr)
-            draft = json.loads(out.stdout)["handoff"][0]["draft"]
-            self.assertEqual(draft["files"], ["a.txt"])
-            self.assertIn("-n", draft["open_command"])
-
-            # `review` (human) shows the pending handoff.
-            out = run_cli(["--json", "review"], root)
-            self.assertEqual(out.returncode, 0, out.stderr)
-            packet = json.loads(out.stdout)
-            self.assertTrue(packet["pending"])
-            self.assertEqual(packet["draft"]["files"], ["a.txt"])
-
-            # `review --approve` commits the draft and cleans up the worktree.
-            out = run_cli(["--json", "review", "--approve"], root)
-            self.assertEqual(out.returncode, 0, out.stderr)
-            self.assertEqual(json.loads(out.stdout)["handoff"][0]["status"], "landed")
-            self.assertFalse(worktree.exists())
-
-    def test_approve_cleans_worktree_and_branch_and_keep_preserves_them(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            subprocess.run(["git", "init", "-q", "-b", "main"], cwd=tmp, check=True)
-            subprocess.run(["git", "config", "user.email", "t@e.com"], cwd=tmp, check=True)
-            subprocess.run(["git", "config", "user.name", "T"], cwd=tmp, check=True)
-            (root / "a.txt").write_text("hi\n")
-            subprocess.run(["git", "add", "-A"], cwd=tmp, check=True)
-            subprocess.run(["git", "commit", "-qm", "init"], cwd=tmp, check=True)
-            run_cli(["--json", "start"], root)
-
-            def branch_exists(branch):
-                return (
-                    subprocess.run(
-                        ["git", "rev-parse", "--verify", branch],
-                        cwd=root,
-                        capture_output=True,
-                    ).returncode
-                    == 0
-                )
-
-            def approve(*, keep):
-                out = run_cli(["--json", "start", "--name", "alpha"], root)
-                worktree = Path(json.loads(out.stdout)["worktree"])
-                branch = subprocess.run(
-                    ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-                    cwd=worktree,
-                    capture_output=True,
-                    text=True,
-                    check=True,
-                ).stdout.strip()
-                run_cli(
-                    ["--json", "declare", "--operation", "modify", "--scope", "file:a.txt"],
-                    worktree,
-                )
-                (worktree / "a.txt").write_text(f"changed keep={keep}\n")
-                out = run_cli(["--json", "commit", "-m", "change"], worktree)
-                self.assertEqual(out.returncode, 0, out.stderr)
-                out = run_cli(["--json", "handoff"], worktree)
-                self.assertEqual(out.returncode, 0, out.stderr)
-                args = ["--json", "review", "--approve"]
-                if keep:
-                    args.append("--keep")
-                out = run_cli(args, root)
-                self.assertEqual(out.returncode, 0, out.stderr)
-                return worktree, branch
-
-            worktree, branch = approve(keep=False)
-            self.assertFalse(worktree.exists())
-            self.assertFalse(branch_exists(branch), branch)
-            worktree, branch = approve(keep=True)
-            self.assertTrue(worktree.exists())
-            self.assertTrue(branch_exists(branch), branch)
+            self.assertEqual(json.loads(out.stdout)["results"][0]["status"], "landed")
+            self.assertEqual(
+                subprocess.run(
+                    ["git", "show", "feat/x:a.txt"], cwd=tmp, capture_output=True, text=True
+                ).stdout,
+                "changed\n",
+            )
 
     def test_mcp_exposes_one_action_tool(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -317,13 +245,14 @@ class CliTests(unittest.TestCase):
             schema = tools[0]["inputSchema"]
             self.assertEqual(
                 schema["properties"]["action"]["enum"],
-                [a.name for a in surface.agent_actions()],
+                [a.name for a in surface.ACTIONS],
             )
-            # Human-only actions and params never reach the agent.
+            # Retired single-agent actions never reach the agent.
             self.assertNotIn("review", schema["properties"]["action"]["enum"])
+            self.assertNotIn("handoff", schema["properties"]["action"]["enum"])
             self.assertNotIn("approve", schema["properties"])
 
-    def test_mcp_call_and_human_action_rejected(self):
+    def test_mcp_call_and_unknown_action_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             subprocess.run(["git", "init", "-q", "-b", "main"], cwd=tmp, check=True)
@@ -368,9 +297,9 @@ class CliTests(unittest.TestCase):
             self.assertIn("candidate", payload[1])
             self.assertTrue(payload[2]["candidates"])
             self.assertIn("waves", payload[3])
-            # review is a human action and is refused for agents.
+            # `review` is retired and is refused as an unknown action.
             self.assertTrue(lines[5]["result"]["isError"])
-            self.assertIn("human action", lines[5]["result"]["content"][0]["text"])
+            self.assertIn("unknown action", lines[5]["result"]["content"][0]["text"])
 
     def test_campaign_no_unit_integrate_and_report(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -449,13 +378,13 @@ class CliTests(unittest.TestCase):
         self.assertEqual(set(sub.choices), expected)
 
     def test_cli_and_agent_surfaces_share_actions(self):
-        """The pi extension's action list must match surface.agent_actions()."""
+        """The pi extension's action list must match surface.ACTIONS."""
         ext = REPO_ROOT / "integrations" / "pi" / "intergent.ts"
         text = ext.read_text(encoding="utf-8")
         match = re.search(r"IG_ACTIONS\s*=\s*\[(.*?)\]\s*as const", text, re.DOTALL)
         self.assertIsNotNone(match, "IG_ACTIONS not found in pi extension")
         names = re.findall(r'"([a-z_]+)"', match.group(1))
-        self.assertEqual(names, [a.name for a in surface.agent_actions()])
+        self.assertEqual(names, [a.name for a in surface.ACTIONS])
 
 
 if __name__ == "__main__":

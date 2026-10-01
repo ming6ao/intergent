@@ -1,19 +1,23 @@
 # Intergent
 
-> *interlock + agent* — coordination for parallel coding agents: no conflicts,
-> local verification, mergeability-based landing.
+> *interlock + agent* — coordination for parallel coding agents: one campaign
+> DAG, a git worktree per worker, scope leases, and fingerprint-pinned
+> integration onto a feature branch.
 
-**Status:** design; local plane implemented as a reference implementation
-(see [docs/implementation.md](./docs/implementation.md))
+**Status:** implemented as a dependency-free Python reference
+(see [docs/implementation.md](./docs/implementation.md)).
 
-Intergent lets many coding agents work the same repository in parallel without
-authoring conflicting changes, verifies their commits locally, and sequences
-their landing on the shared branch by real mergeability while batching CI and
-respecting git-host rate limits.
+Intergent lets several coding agents work the same repository in parallel
+without authoring conflicting changes, verifies each candidate against a
+content fingerprint, and lands verified candidates one DAG node at a time on a
+campaign feature branch.
 
-- **Local plane:** worktrees, declared intent, scope leases, fingerprint-pinned
-  verification, combined-tree simulation.
-- **Remote plane:** conflict graph, wave scheduler, merged-result CI, enforcement.
+- **Isolation:** one `git worktree` + branch per worker unit.
+- **Leases:** declared scopes are granted, queued, or escalated deterministically.
+- **Verification:** the plane's checks and each node's acceptance commands are
+  pinned to a fingerprint and reused across re-integration.
+- **Integration:** `--no-ff` merges onto the feature branch, ordered by wave
+  mergeability; a safety rail refuses the default branch.
 
 ## Documentation
 
@@ -23,57 +27,42 @@ Start here: **[docs/README.md](./docs/README.md)**
   [Conflict engine](./docs/conflict-engine.md) · [Local plane](./docs/local-plane.md) ·
   [**Local implementation**](./docs/implementation.md) ·
   [**Agent integration**](./docs/agents.md) ·
-  [Orchestration](./docs/orchestration.md) ·
-  [Remote plane](./docs/remote-plane.md) · [Review & submission](./docs/review-workflow.md) ·
-  [Operations](./docs/operations.md) · [Roadmap & risks](./docs/roadmap.md) ·
-  [Prior art & open questions](./docs/prior-art.md)
-- **Architecture diagram:** [interactive HTML](./docs/diagrams/architecture.html)
-  · [source spec](./docs/diagrams/architecture.json)
+  [Orchestration](./docs/orchestration.md)
 
-## Local plane quick start
+## Campaign quick start
 
-The local plane is implemented in [`intergent/`](./intergent) (dependency-free
-Python 3.11+). It gives every coding-agent session its own git worktree, leases
-declared scopes so conflicting work is queued or escalated, verifies each
-commit against a content fingerprint, simulates the combined tree, and hands the
-combined result to a human as one uncommitted draft on the local main branch.
+`intergent` is implemented in [`intergent/`](./intergent) (dependency-free
+Python 3.11+). A **coordinator** session drives the campaign; workers run in
+their own worktrees.
 
 ```bash
-# from a git repository: one idempotent bootstrap = plane + first unit
-./bin/intergent start --check "tests=pytest -q"
-# optional additional unit for another task
-./bin/intergent start --name docs-agent --task "update API docs"
-./bin/intergent declare --unit docs-agent --operation add --scope file:docs/api.md
+# 1. campaign bootstrap: feature branch, no coordinator unit
+./bin/intergent start --no-unit --main feat/example --base main
 
-# ... agent edits and commits in the printed worktree ...
-./bin/intergent commit  --unit docs-agent -m "expand API docs"   # registers the candidate
-./bin/intergent handoff                                          # verify + stage a draft on main
+# 2. a worker node (its own worktree on the feature branch)
+./bin/intergent start --name w1 --base feat/example
+#    ... worker declares, edits, runs acceptance, commits ...
 
-# ... human reviews the draft on main, then either:
-./bin/intergent review --approve   # commit on main + clean up the worktree
-./bin/intergent review --reject    # discard the draft and restore main
+# 3. verify + land the verified candidate, then report
+./bin/intergent integrate --node w1
+./bin/intergent report --narrative "what changed / risks"
 ```
 
-Eight actions cover the whole lifecycle: `start`, `declare`, `commit`, `handoff`,
-`integrate`, `report`, `review`, `status` (plus `mcp`). `declare` also does
-`--dry-run` checks, `--renew`/`--release` leases, and `--decide` conflict
-resolution; `commit --sync` rebases; `status --health/--simulate/--gc` covers
-the old `debug` group. Campaign coordinators add `start --no-unit`, `integrate`
-(land a verified candidate on a feature branch), and `report`; see
-[docs/orchestration.md](./docs/orchestration.md). Agents get exactly **one**
-tool (MCP and pi) whose `action` is one of these verbs. See
-[docs/implementation.md](./docs/implementation.md).
+In pi the coordinator drives the same steps with the `campaign` tool
+(`start → status/ready → spawn → verify → integrate → report`). See
+[docs/orchestration.md](./docs/orchestration.md).
+
+Six actions cover the whole lifecycle: `start`, `status`, `declare`, `commit`,
+`integrate`, `report` (plus `mcp`). `start --no-unit --main <feature> --base
+<base>` bootstraps a campaign; `declare` also does `--dry-run` checks and
+`--renew`/`--release`; `integrate` takes `--node`, `--acceptance`, `--gpu`,
+`--check-only`, and `--cleanup`; `status --health/--simulate/--gc` diagnoses.
+Agents get exactly **one** tool (MCP and pi) whose `action` is one of these
+verbs. See [docs/implementation.md](./docs/implementation.md).
 
 Agents may instead drive the same service over MCP: `./bin/intergent mcp`.
-See [docs/implementation.md](./docs/implementation.md) for the full CLI/MCP
-reference and the mapping from design concepts to code.
 
-### Orchestrate a campaign inside pi or Claude Code
-
-A **coordinator** session turns a design into landed work: it writes a DAG
-(`dag.json`), spawns one-shot workers (each in its own worktree + lease), and
-integrates each verified candidate onto the feature branch. See
-[docs/orchestration.md](./docs/orchestration.md).
+### Run a campaign inside pi or Claude Code
 
 - **pi** — the repository is a pi package shipping the `ig` and `campaign`
   tools plus the skill:
@@ -108,5 +97,4 @@ that installs the tools and the skill together with `pi install`. See
 
 ```
 CLI:     intergent  (alias: ig)
-Daemon:  intergentd
 ```

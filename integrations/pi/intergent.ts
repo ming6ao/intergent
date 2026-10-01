@@ -17,13 +17,12 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { runIg } from "./common.ts";
 
-/** Mirrors `intergent.surface.agent_actions()`; kept in sync by a test. */
+/** Mirrors `intergent.surface.ACTIONS`; kept in sync by a test. */
 export const IG_ACTIONS = [
 	"start",
 	"status",
 	"declare",
 	"commit",
-	"handoff",
 	"integrate",
 	"report",
 ] as const;
@@ -60,7 +59,7 @@ export default function intergentExtension(pi: ExtensionAPI) {
 		promptGuidelines: [
 			"Use `ig` action `declare` before editing any file; scope every file or symbol you touch.",
 			"If `declare` returns `queued`, do not edit: report the blocker and stop.",
-			"Finish with `ig` action `commit`. Never run `handoff`, `integrate`, `review`, or `git merge` yourself.",
+			"Finish with `ig` action `commit`. Never run `integrate` or `git merge` yourself.",
 		],
 		parameters: Type.Object({
 			action: StringEnum(IG_TOOL_ACTIONS),
@@ -74,12 +73,9 @@ export default function intergentExtension(pi: ExtensionAPI) {
 			task: Type.Optional(Type.String()),
 			summary: Type.Optional(Type.String()),
 			message: Type.Optional(Type.String({ description: "commit message (action=commit)" })),
-			reason: Type.Optional(Type.String()),
 			dry_run: Type.Optional(Type.Boolean({ description: "declare: conflict check only" })),
 			renew: Type.Optional(Type.Boolean({ description: "declare: renew leases" })),
 			release: Type.Optional(Type.Boolean({ description: "declare: release leases" })),
-			decide: Type.Optional(StringEnum(["wait", "override", "redesign"])),
-			sync: Type.Optional(Type.Boolean({ description: "commit: rebase onto base first" })),
 			no_unit: Type.Optional(
 				Type.Boolean({ description: "start: initialise the plane without a unit for cwd" }),
 			),

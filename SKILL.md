@@ -52,12 +52,11 @@ parseable output.
    succeed; otherwise stop. Never edit the main working tree.
 2. **Declare before editing.** No edits before `intergent declare` returns
    `granted`.
-3. **A worker's last step is `commit`.** Workers never run `handoff`,
-   `integrate`, `review`, or `git merge`. The coordinator owns verification and
-   integration.
-4. **Never `override` a conflict.** If a declaration returns `queued`, exit and
-   report the blocker; if it returns `needs_decision`, stop and surface the
-   options to the human.
+3. **A worker's last step is `commit`.** Workers never run `integrate` or
+   `git merge`. The coordinator owns verification and integration.
+4. **Never force a conflict.** If `declare` returns `queued`, exit and report the
+   blocker; if it returns `needs_decision`, stop — the coordinator re-plans the
+   node.
 5. **The GPU is the verifier's.** T0 CPU is the inner loop; GPU acceptance goes
    through `tools/gpu.sh --tier <T1|T2> -- <command>`.
 
@@ -95,13 +94,10 @@ human `git` step — `integrate` refuses the plane's recorded default branch.
 |---|---|
 | `start` | bootstrap the plane; `--no-unit` for the coordinator's checkout; `--name N --base <feature>` creates a worker unit |
 | `status` | units, candidates, leases, waves; `--short`, `--unit U`, `--simulate`, `--health` |
-| `declare` | declare scopes and acquire leases; `--dry-run`, `--renew`, `--release`, `--decide` |
-| `commit` | commit the worktree and register the candidate; `--sync` rebases first |
+| `declare` | declare scopes and acquire leases; `--dry-run`, `--renew`, `--release` |
+| `commit` | commit the worktree and register the candidate |
 | `integrate` | merge a verified candidate onto the feature branch; `--node`, `--acceptance`, `--gpu`, `--check-only`, `--cleanup` |
 | `report` | write the deterministic campaign report; `--narrative` appends the coordinator's summary |
-
-`review` (human) and `handoff` (single-unit draft on main) belong to the
-non-campaign path and are **not** part of a campaign.
 
 ## Worker workflow
 
@@ -118,7 +114,7 @@ intergent commit -m "add scope check to Login" --summary "scope check"
 |---|---|---|
 | `granted` | Leases acquired | Proceed with edits |
 | `queued` | Another unit holds an overlapping scope | Exit and report the blocker; the coordinator serializes or re-plans |
-| `needs_decision` | Destructive vs additive on an exact scope | Stop; the human decides |
+| `needs_decision` | Destructive vs additive on an exact scope | Stop; the coordinator re-plans the node |
 
 Scope syntax is `kind:key[=operation]`, e.g. `file:src/api/routes.py`,
 `symbol:src/api/routes.py#UserRouter.create`, `dir:src/api`, `config:deploy.timeout`,

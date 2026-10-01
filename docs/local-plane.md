@@ -1,38 +1,32 @@
 # Local plane
 
-Runs per user, on the developer's machine. Advisory but fast; holds the
-awareness, isolation, and local verification.
+Runs per user, on the developer's machine. Advisory but fast; holds isolation,
+leases, and local verification.
 
 ## 1. Workspace isolation
 
-- Default: one `git worktree` + branch per unit, sharing one object store.
-- Optional engine: `jj` workspaces (auto-rebase of descendants, conflicts stored
-  in commits) behind the same interface.
-- Gitignored deps (`node_modules`, `.venv`, `target/`) are handled with a shared
-  dependency cache or per-worktree install.
+- One `git worktree` + branch per unit, sharing one object store.
+- The coordinator's checkout is **not** a unit (`ig start --no-unit`).
+- Gitignored deps (`node_modules`, `.venv`, `target/`) are the user's
+  responsibility; a shared dependency cache is out of scope.
 
-## 2. Hierarchical session / worker model
+## 2. Units and scopes
 
 ```text
-Session (tmux pane / task)        coarse intent + lease   e.g. feature:payments
- ├─ Worker (own worktree)         narrow intent + lease   symbol:PaymentService
- ├─ Worker (own worktree)         narrow intent + lease   file:docs/api.md
- └─ research/review subagents     not coordinated; verification pinned to a commit
+Campaign (feature branch + dag.json)
+ ├─ Coordinator (no unit)
+ ├─ Worker (own worktree)   narrow intent + lease   e.g. file:src/tensor.cc
+ └─ Verifier (no lease)     read-only; pinned to a commit fingerprint
 ```
 
 - Coordinate **write units**, not every LLM call: if it can commit, it must
   declare; if it only reads, it is out of the graph.
-- A parent declares a **coarse reservation**; children declare **narrow scopes**.
-  Conflict detection runs at both levels.
-- A worker that forks a worktree registers as a child; the daemon also
-  auto-detects new worktrees/branches as a fallback.
-- Verification subagents hold no lease; they are pinned to a commit fingerprint.
-- Foreground and background sessions are the same object with different
-  attachment (terminal, tmux, systemd, or built-in supervisor).
+- A worker declares **narrow scopes** before editing; the coordinator serializes
+  or re-plans when two nodes would overlap.
 
 ## 3. Scope lock manager and authoring queue
 
-**Conflict prevention**, distinct from the landing queue.
+**Conflict prevention**, distinct from integration order.
 
 ### Modes (multi-granularity locking over the scope tree)
 
@@ -49,8 +43,7 @@ Compatibility (granted \ requested):
 
 Rules: to take `S`/`IS` on a node, hold `IS`+ on its parent; to take
 `X`/`IX`/`SIX`, hold `IX`+ on its parent. Acquire **root-to-leaf in canonical
-scope order** → deadlock-free. Multi-scope requests are all-or-nothing with
-timeout + backoff.
+scope order** → deadlock-free. Multi-scope requests are all-or-nothing.
 
 ### Policy by operation class
 
@@ -59,46 +52,44 @@ timeout + backoff.
 | additive, disjoint symbols in same file | S | both proceed; co-test |
 | additive, same symbol | S | both proceed; advisory; co-test |
 | destructive (`replace`/`remove`/…) | X | **queue**: second waits |
-| destructive vs additive | — | **do not silently queue**: require a decision (wait / redesign / override) |
+| destructive vs additive | — | **do not silently queue**: return `needs_decision`; the coordinator re-plans |
 
 ### Lease lifecycle
 
 ```text
-declare → conflict? ──no──► GRANTED ──heartbeat──► prepared ──► handoff ──► RELEASE
-                    │           └──── heartbeat lost (TTL) ─────────────────────────┘
+declare → conflict? ──no──► GRANTED ──heartbeat──► commit ──► integrate ──► RELEASE
+                    │           └──── heartbeat lost (TTL) ───────────────────────┘
                    yes
                     ▼
-                 QUEUED(position, blocker, eta) ──on release/expiry──► GRANTED
+                 QUEUED(position, blocker) ──on release/expiry──► GRANTED
 ```
 
 - TTL + heartbeat so a crashed/idle unit cannot stall the queue.
-- Fairness: priority + FIFO + **aging** (no starvation).
-- Waiting semantics: return `queued{position, blocker, eta}`; the agent may poll,
-  wait, **switch to non-conflicting work**, or proceed optimistically and rebase.
-- **Lease holds until the candidate is handed off and approved**, then the
-  waiter is released and rebases onto the holder's branch — keeps authoring
-  throughput up without coupling to review latency.
+- Waiting semantics: a worker that receives `queued` **exits immediately** and
+  reports the blocker; the coordinator serializes the node (adds a
+  `depends_on` edge) or re-plans. A worker never blocks or overrides.
 
-## 4. Local verification
+## 4. Verification
 
-- Configured trusted checks (build, typecheck, tests, lint) run in a clean
-  worktree at the candidate commit.
-- Result pinned to a **fingerprint**; any change invalidates it.
+- Trusted checks (build, typecheck, tests, lint) run in a clean worktree at the
+  candidate commit.
+- Result pinned to a **fingerprint** `(tree, cmd vector, toolchain, policy,
+  source)`; any change invalidates it. `source` distinguishes the plane's check
+  vector from a node's acceptance commands (`node:<id>`), so the two cannot
+  collide.
 - Agent-reported tests are provenance only, never acceptance.
-- Commands run with the user's OS permissions; optional sandboxing is a later
-  feature.
+- Only the verifier may use the GPU (`tools/gpu.sh`); workers stay on CPU.
 
-## 5. Local integration simulation
+## 5. Wave planning and simulation
 
-Before submission, merge **all of the user's ready candidates** into a scratch
-branch and verify the combined tree. This is the only way to catch cross-agent
-semantic breakage locally. Output includes the local wave plan and blockers.
+`status --simulate` merges the prepared candidates into scratch trees and runs
+the combined checks. The same planner orders `integrate`.
 
 ```text
 intergent status --simulate
   wave 1: docs-agent, auth-agent
   wave 2: payments-agent        (conflicts with wave 1 on symbol:PaymentService)
-  wave 3: pay-agent             (depends on payments-agent; will rebase)
+  wave 3: pay-agent             (depends on payments-agent)
   combined checks: PASS
 ```
 
@@ -113,17 +104,17 @@ adapters, and SQLite (WAL) is the local store. Key mappings:
 
 | Design concept | Implementation |
 |---|---|
-| worktree + branch per unit | `start --name` → `ig/<session>/<unit>` branch (or `ig/<unit>` when the session defaults to the unit name) and `.intergent/worktrees/...` |
+| worktree + branch per unit | `start --name` → `ig/<unit>` branch and `.intergent/worktrees/...` |
 | declared intent | `declare --operation ... --scope ...` (`intergent/scopes.py`) |
 | scope lock manager + queue | `intergent/locks.py` (IS/IX/S/SIX/X) and `lock_requests`/`claims` |
 | fingerprint-pinned verification | `intergent/verifier.py` (`tree, cmd, toolchain, policy, source`) |
-| local integration simulation | `intergent/planner.py` (`simulate`) |
-| approval-gated handoff | `intergent/landing.py` (`handoff` stages; `review --approve/--reject` decides) |
-| campaign integration | `intergent/integrate.py` (`integrate` onto the feature branch) and `intergent/campaign.py` (`dag.json`) |
+| wave planning + simulation | `intergent/planner.py` |
+| campaign integration | `intergent/integrate.py` + `intergent/commitops.py` |
+| `dag.json` / `state.json` | `intergent/campaign.py`; report in `intergent/report.py` |
 
 See [Local implementation](./implementation.md) for the full command reference,
-semantics, data model, tests, and the deliberate gaps (no daemon/AST yet).
+semantics, data model, tests, and deliberate gaps (no daemon/AST yet).
 
 ---
 
-Prev: [Conflict engine](./conflict-engine.md) · Next: [Remote plane](./remote-plane.md)
+Prev: [Conflict engine](./conflict-engine.md) · Next: [Local implementation](./implementation.md)

@@ -228,7 +228,7 @@ these.
 
 ### 6.1 `integrate` (agent-callable)
 
-`handoff` and `finalize` fused, **without human approval**, restricted to the
+`integrate` (agent-callable, **without human approval**), restricted to the
 plane's `main_branch` (the feature branch):
 
 - select prepared candidates (all, or a node subset);
@@ -347,7 +347,7 @@ plane-check fingerprints only.
 |---|---|
 | Worker produces no candidate / fails acceptance | Node `failed`; coordinator retries (bounded), splits the node, or stops. |
 | Verifier `fail` | Same as above, with the verifier's findings attached to the retry prompt. |
-| `declare` returns `queued` | The DAG let two parallel nodes own the same file. The one-shot worker **exits immediately** (it must not block on a lease); the node returns to `ready`; the coordinator adds a `depends_on` edge to serialize (or re-plans), then re-spawns. Never `override`. |
+| `declare` returns `queued` | The DAG let two parallel nodes own the same file. The one-shot worker **exits immediately** (it must not block on a lease); the node returns to `ready`; the coordinator adds a `depends_on` edge to serialize (or re-plans), then re-spawns. Never force a conflict. |
 | Merge conflict at `integrate` | Merge aborted; findings surfaced. The node stays `failed`; coordinator spawns a resolver or adds an edge. The feature branch is never left half-merged. |
 | Orchestrator crash | Workers are **child processes of the coordinator and are not detached**, so a crash kills them mid-flight. On resume, any node left `running` is reset to `pending` and its worktree reset (partial commits discarded), then re-spawned fresh. `campaign start` reloads `dag.json` + `state.json` + `ig status`; git and `state.db` win over `state.json`. |
 | `dag.json` hand-edited | Coordinator changes (added edges, split nodes) are appended to the event log, so the plan's evolution is auditable alongside commits and fingerprints. |
@@ -382,7 +382,7 @@ any human-authored prose plan.
 | Piece | Location |
 |---|---|
 | `integrate`, `report`, `start --no-unit`, status projection | `intergent/integrate.py`, `intergent/report.py`, `intergent/service.py`, `intergent/surface.py` |
-| `dag.json`/`state.json` layout, `ready`, validation | `intergent/campaign.py` |
+| `dag.json`/`state.json` layout and readers | `intergent/campaign.py` |
 | per-node verification fingerprints (§6.4) | `intergent/verifier.py`, `intergent/store.py` |
 | `campaign` coordinator tool + widget + log tee | `integrations/pi/campaign.ts` |
 | shared pi-extension helpers (CLI resolution, state paths, subagent runner) | `integrations/pi/common.ts` |
@@ -404,5 +404,5 @@ any human-authored prose plan.
   become the main path, the planner must route shared-file edits to an explicit
   **aggregation node** — a node all touched components `depends_on` — which owns
   the shared file. Every other node still declares ownership of its own files.
-- Where does feature→`master` promotion happen: a human `git merge`, or a
-  campaign action that reuses `review`? Current design keeps it human.
+- Where does feature→`master` promotion happen: a campaign action, or a human
+  `git merge`? Current design keeps it a human `git` step.

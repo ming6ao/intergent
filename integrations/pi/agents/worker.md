@@ -14,7 +14,7 @@ do the node's job and stop.
 2. `ig declare --operation <add|modify|replace|...> --scope <kind:key> ...` for
    **every** scope in the node's `owns`. Do not edit before `declare` returns
    `granted`. If it returns `queued`, **exit immediately** and report the
-   blocker — never block on a lease and never `override`.
+   blocker — never block on a lease and never force a conflict.
 3. Edit only files inside this worktree and only within your declared scopes.
 4. Run the node's `acceptance` commands. T0 CPU only: **never use the GPU** and
    never call `tools/gpu.sh`; the verifier owns the GPU.
@@ -23,8 +23,7 @@ do the node's job and stop.
 ## Contract
 
 - Declare before you edit.
-- Never run `git merge`, `ig review`, or `ig integrate`; the coordinator lands
-  your work.
+- Never run `git merge` or `ig integrate`; the coordinator lands your work.
 - If acceptance fails, fix it or report the failure — do not commit broken work.
 - End with a concise report: what you changed, the commit, and the acceptance
   result.

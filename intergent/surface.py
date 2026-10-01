@@ -6,9 +6,8 @@ The CLI, the MCP server, and the pi extension all derive their verbs/tools from
 parse arguments and render results.
 
 Names are deliberately few and overloaded by flags: ``declare --renew`` is a
-heartbeat, ``declare --dry-run`` is a conflict check, ``commit --sync`` rebases
-first, ``status --simulate`` plans waves.  See ``docs/agents.md`` for the map
-from the old surface.
+heartbeat, ``declare --dry-run`` is a conflict check.  Every action is
+agent-callable; there are no human-only actions.
 """
 
 from __future__ import annotations
@@ -26,15 +25,13 @@ if TYPE_CHECKING:  # pragma: no cover
 
 @dataclass(frozen=True)
 class Param:
-    """One argument, rendered as a CLI flag/positional and a tool property."""
+    """One argument, rendered as a CLI flag and a tool property."""
 
     name: str
     type: str  # string | boolean | int | list
     help: str
     required: bool = False
     choices: tuple[str, ...] = ()
-    positional: bool = False
-    human_only: bool = False
     flag: str | None = None  # CLI flag/stem; defaults to name with dashes
 
 
@@ -43,7 +40,6 @@ class Action:
     name: str
     summary: str
     params: tuple[Param, ...] = ()
-    visibility: str = "both"  # both | human | agent
     aliases: tuple[str, ...] = ()
 
 
@@ -81,7 +77,7 @@ ACTIONS: tuple[Action, ...] = (
     ),
     Action(
         name="declare",
-        summary="declare scopes and acquire leases (also checks, renews, releases, decides)",
+        summary="declare scopes and acquire leases (also checks, renews, releases)",
         params=(
             Param("unit", "string", "unit (defaults to the worktree containing cwd)"),
             Param("operation", "string", "scope operation", choices=(
@@ -93,11 +89,6 @@ ACTIONS: tuple[Action, ...] = (
             Param("dry_run", "boolean", "conflict check only; take no lease"),
             Param("renew", "boolean", "renew this unit's leases"),
             Param("release", "boolean", "release this unit's leases and promote waiters"),
-            Param("decide", "string", "resolve a needs_decision conflict", choices=(
-                "wait", "override", "redesign"
-            )),
-            Param("intent_id", "int", "intent to resolve (default: the unit's pending conflict)"),
-            Param("reason", "string", "reason recorded with --decide"),
         ),
     ),
     Action(
@@ -107,20 +98,11 @@ ACTIONS: tuple[Action, ...] = (
             Param("unit", "string", "unit (defaults to the worktree containing cwd)"),
             Param("message", "string", "commit message", required=True),
             Param("summary", "string", "candidate summary for review"),
-            Param("sync", "boolean", "rebase onto base before committing"),
-            Param("onto", "string", "with --sync: target branch/ref"),
-        ),
-    ),
-    Action(
-        name="handoff",
-        summary="verify + trial-merge prepared candidates into an uncommitted draft on main",
-        params=(
-            Param("no_checks", "boolean", "skip verification and combined-tree checks"),
         ),
     ),
     Action(
         name="integrate",
-        summary="merge prepared candidates onto the campaign feature branch (agent-callable landing)",
+        summary="merge verified candidates onto the campaign feature branch",
         params=(
             Param("node", "string", "only the candidate for this node/unit id"),
             Param("cleanup", "string", "cleanup after integrating", choices=("none", "worktrees", "all")),
@@ -138,17 +120,6 @@ ACTIONS: tuple[Action, ...] = (
             Param("design", "string", "design document reference (default: dag.json)"),
         ),
     ),
-    Action(
-        name="review",
-        summary="show the pending handoff; approve (commit + clean up) or reject (restore main)",
-        visibility="human",
-        params=(
-            Param("approve", "boolean", "commit the pending handoff and clean up worktrees"),
-            Param("reject", "boolean", "discard the pending handoff and restore main"),
-            Param("keep", "boolean", "with --approve: keep the landed unit worktrees"),
-            Param("reason", "string", "reason recorded with the decision"),
-        ),
-    ),
 )
 
 ACTION_BY_NAME: dict[str, Action] = {a.name: a for a in ACTIONS}
@@ -163,17 +134,11 @@ def resolve_action(name: str) -> Action:
     return action
 
 
-def agent_actions() -> tuple[Action, ...]:
-    return tuple(a for a in ACTIONS if a.visibility in {"both", "agent"})
-
-
-def agent_params() -> tuple[Param, ...]:
-    """Union of non-human parameters across agent-visible actions."""
+def all_params() -> tuple[Param, ...]:
+    """Union of parameters across actions, de-duplicated by name."""
     seen: dict[str, Param] = {}
-    for action in agent_actions():
+    for action in ACTIONS:
         for param in action.params:
-            if param.human_only:
-                continue
             seen.setdefault(param.name, param)
     return tuple(seen.values())
 
@@ -184,8 +149,6 @@ def agent_params() -> tuple[Param, ...]:
 def dispatch(service: "Service", action: str, params: dict[str, Any]) -> Any:
     """Run *action* against *service* with adapter-neutral *params*."""
     spec = resolve_action(action)
-    if spec.visibility == "human" and not params.get("_human"):
-        raise IntergentError(f"action '{spec.name}' is a human action; it is not agent-callable")
     _validate(spec, params)
     if spec.name == "start":
         return start(params, cwd=service.root)
@@ -266,18 +229,9 @@ def _dispatch_declare(service: "Service", p: dict[str, Any]) -> Any:
         return service.heartbeat(unit)
     if p.get("release"):
         return service.release(unit)
-    if p.get("decide"):
-        intent_id = p.get("intent_id")
-        if intent_id is None:
-            row = service.store.require_unit(unit)
-            request = service.store.get_lock_request_for_unit(int(row["id"]))
-            if request is None:
-                raise IntergentError(f"unit {row['name']} has no pending conflict")
-            intent_id = int(request["intent_id"])
-        return service.decide(int(intent_id), p["decide"], reason=p.get("reason"))
     operation = p.get("operation")
     if not operation:
-        raise IntergentError("declare requires --operation (or --dry-run/--renew/--release/--decide)")
+        raise IntergentError("declare requires --operation (or --dry-run/--renew/--release)")
     scopes = list(p.get("scopes") or [])
     if p.get("dry_run"):
         findings = service.check_conflicts(unit, operation, scopes)
@@ -293,17 +247,9 @@ def _dispatch_declare(service: "Service", p: dict[str, Any]) -> Any:
 
 def _dispatch_commit(service: "Service", p: dict[str, Any]) -> Any:
     unit = _resolve_unit(service, p)
-    if p.get("sync"):
-        service.rebase(unit, onto=p.get("onto"))
     commit = service.commit(unit, p["message"])
     candidate = service.finish(unit, summary=p.get("summary"))
     return {"commit": commit, "candidate": candidate}
-
-
-def _dispatch_handoff(service: "Service", p: dict[str, Any]) -> Any:
-    return {
-        "handoff": service.handoff(run_checks_flag=not p.get("no_checks"))
-    }
 
 
 def _dispatch_integrate(service: "Service", p: dict[str, Any]) -> Any:
@@ -321,26 +267,12 @@ def _dispatch_report(service: "Service", p: dict[str, Any]) -> Any:
     return service.report(narrative=p.get("narrative"), design=p.get("design"))
 
 
-def _dispatch_review(service: "Service", p: dict[str, Any]) -> Any:
-    if p.get("approve") and p.get("reject"):
-        raise IntergentError("review --approve and --reject are mutually exclusive")
-    if p.get("approve") or p.get("reject"):
-        return {
-            "handoff": service.finalize(
-                approve=bool(p.get("approve")), cleanup=not bool(p.get("keep"))
-            )
-        }
-    return service.pending_handoff()
-
-
 _HANDLERS = {
     "status": _dispatch_status,
     "declare": _dispatch_declare,
     "commit": _dispatch_commit,
-    "handoff": _dispatch_handoff,
     "integrate": _dispatch_integrate,
     "report": _dispatch_report,
-    "review": _dispatch_review,
 }
 
 

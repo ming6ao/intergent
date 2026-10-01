@@ -2,12 +2,9 @@
 
 Thin JSON-RPC adapter over :mod:`intergent.service`, generated from
 :mod:`intergent.surface`.  The server exposes exactly **one** tool, ``ig``,
-parameterized by an ``action`` enum, instead of one tool per verb.  This keeps
-the agent's context small and makes it impossible for the MCP surface to drift
-from the CLI (both are renders of the same action registry).
-
-Human-only actions (``review`` and its approval flags) are never in the tool
-schema and are rejected if called by name.
+parameterized by an ``action`` enum.  This keeps the agent's context small and
+makes it impossible for the MCP surface to drift from the CLI (both are renders
+of the same action registry).
 """
 
 from __future__ import annotations
@@ -42,7 +39,7 @@ def _param_schema(param: Param) -> dict[str, Any]:
 
 
 def build_tool() -> dict[str, Any]:
-    actions = surface.agent_actions()
+    actions = surface.ACTIONS
     actions_line = "; ".join(f"{a.name}: {a.summary}" for a in actions)
     properties: dict[str, Any] = {
         "action": {
@@ -51,16 +48,15 @@ def build_tool() -> dict[str, Any]:
             "description": "Lifecycle action. " + actions_line,
         }
     }
-    for param in surface.agent_params():
+    for param in surface.all_params():
         properties[param.name] = _param_schema(param)
     return {
         "name": TOOL_NAME,
         "description": (
-            "Intergent unit lifecycle. One tool, many actions: "
+            "Intergent lifecycle. One tool, many actions: "
             + actions_line
-            + ". Call it before editing (declare), then commit, then hand off "
-            "(handoff) to stage an uncommitted draft on main. Approval is a "
-            "human action, never exposed here."
+            + ". Declare before editing, commit when done, then let the "
+            "coordinator verify and integrate."
         ),
         "inputSchema": {
             "type": "object",
@@ -163,4 +159,4 @@ def call(service: Service, name: str | None, args: dict[str, Any]) -> Any:
         params = dict(args)
     else:
         raise IntergentError("missing tool name")
-    return surface.dispatch(service, action, {**params, "_human": False})
+    return surface.dispatch(service, action, params)

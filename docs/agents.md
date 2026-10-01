@@ -79,11 +79,10 @@ runs the bundled CLI with `python3 <skill-dir>/bin/intergent`, so no separate
 2. `declare` before editing, scoping every file/symbol.
    - `granted` → edit.
    - `queued` → **exit immediately** and report the blocker; the coordinator
-     serializes the node or re-plans. Never `override`.
-   - `needs_decision` → stop; the human decides.
+     serializes the node or re-plans. Never force a conflict.
+   - `needs_decision` → stop; the coordinator re-plans.
 3. Run the node's acceptance commands (CPU only; never the GPU).
-4. `commit` and stop. Workers never run `handoff`, `integrate`, `review`, or
-   `git merge`.
+4. `commit` and stop. Workers never run `integrate` or `git merge`.
 
 ### Coordinator
 
@@ -96,10 +95,9 @@ idempotent `integrate` sweep, and `report`. See
 
 `intergent mcp` speaks newline-delimited JSON-RPC over stdio and exposes a
 **single** tool, `ig`, with an `action` enum (`start`, `status`, `declare`,
-`commit`, `handoff`, `integrate`, `report`). It is generated from
-`intergent/surface.py`, the same module the CLI renders, so the two surfaces
-cannot drift. `unit` is optional on hot-loop calls; the server resolves it from
-its cwd. Approval (`review`) is human-only and never exposed.
+`commit`, `integrate`, `report`). It is generated from `intergent/surface.py`,
+the same module the CLI renders, so the two surfaces cannot drift. `unit` is
+optional on hot-loop calls; the server resolves it from its cwd.
 
 ## Process supervision
 
@@ -109,4 +107,4 @@ kills them, and a resumed campaign resets any `running` node to `pending`.
 `agent start`-style supervision, tmux attachment, and long-lived background
 sessions from the design are not implemented.
 
-Prev: [Local implementation](./implementation.md) · Next: [Remote plane](./remote-plane.md)
+Prev: [Local implementation](./implementation.md) · Next: [Orchestration](./orchestration.md)
