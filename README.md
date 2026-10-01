@@ -61,7 +61,7 @@ pi                               # launch a session
 
 Under the hood the tools drive the bundled engine, whose six verbs are `start`,
 `status`, `commit`, `integrate`, `report`, and `exec` (the sandboxed executor
-queue). See [docs/guide.md](./docs/guide.md) for the model and the target
+queue). See [docs/guide.md](./docs/guide.md) for the model and the
 one-worktree-per-wave design, and [docs/reference.md](./docs/reference.md) for
 the action reference.
 
@@ -94,3 +94,4 @@ the CLI follows, and the pi tools drive the CLI. See
   agent integration.
 - [Reference](./docs/reference.md) — actions, modules, state layout,
   verification, tests, and gaps.
+- [Publishing](./docs/publishing.md) — packaging, npm/PyPI release, and install.
