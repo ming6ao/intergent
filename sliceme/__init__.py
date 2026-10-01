@@ -1,11 +1,11 @@
-"""Intergent — local coordination for parallel coding agents.
+"""Sliceme — local coordination for parallel coding agents.
 
 This package implements the campaign engine described in ``docs/guide.md`` and
 ``docs/reference.md``: worktree-per-unit isolation, plan-time directory
 ownership, verification pinned to content fingerprints, DAG wave planning, and
 agent-callable integration onto a campaign feature branch.
 
-The service layer (``intergent.service``) is the single owner of state and is
+The service layer (``sliceme.service``) is the single owner of state and is
 called by every adapter (CLI, pi): one engine, many adapters, no adapter owns
 state.  This tree is a dependency-free Python implementation so the behaviour
 can be exercised end to end.

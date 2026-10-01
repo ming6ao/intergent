@@ -10,14 +10,14 @@ import time
 from pathlib import Path
 from typing import Any
 
-STATE_DIR = ".intergent"
+STATE_DIR = ".sliceme"
 CONFIG_NAME = "config.json"
 DB_NAME = "state.db"
 WORKTREES_DIR = "worktrees"
 SCRATCH_DIR = "scratch"
 
 
-class IntergentError(Exception):
+class SlicemeError(Exception):
     """User-facing error.  The CLI prints the message and exits non-zero."""
 
 
@@ -39,13 +39,13 @@ def slugify(text: str, max_len: int = 40) -> str:
 
 
 def find_repo_root(start: str | os.PathLike[str] | None = None) -> Path:
-    """Walk up from *start* to the nearest directory holding ``.intergent``."""
+    """Walk up from *start* to the nearest directory holding ``.sliceme``."""
     current = Path(start or os.getcwd()).resolve()
     for candidate in [current, *current.parents]:
         if (candidate / STATE_DIR / CONFIG_NAME).is_file():
             return candidate
-    raise IntergentError(
-        "not inside an Intergent workspace (run `intergent init` first)"
+    raise SlicemeError(
+        "not inside an Sliceme workspace (run `sliceme init` first)"
     )
 
 

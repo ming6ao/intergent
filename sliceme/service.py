@@ -23,7 +23,7 @@ from .ownership import (
 )
 from .store import Store
 from .util import (
-    IntergentError,
+    SlicemeError,
     config_path,
     now,
     read_json,
@@ -46,7 +46,7 @@ class Service:
     def config(self) -> dict[str, Any]:
         cfg = read_json(config_path(self.root))
         if cfg is None:
-            raise IntergentError("missing .intergent/config.json")
+            raise SlicemeError("missing .sliceme/config.json")
         return cfg
 
     # ------------------------------------------------------------------
@@ -66,17 +66,17 @@ class Service:
         from .util import ensure_parent, state_dir
 
         if not gitutil.is_git_repo(root):
-            raise IntergentError(f"{root} is not a git repository")
+            raise SlicemeError(f"{root} is not a git repository")
         state = state_dir(root)
         cfg_file = config_path(root)
         if cfg_file.exists() and not force:
-            raise IntergentError(
-                "already initialised (.intergent/config.json exists); use --force to reset config"
+            raise SlicemeError(
+                "already initialised (.sliceme/config.json exists); use --force to reset config"
             )
         detected = gitutil.current_branch(root)
         main_branch = main_branch or detected
         if not main_branch:
-            raise IntergentError(
+            raise SlicemeError(
                 "not on a branch; create or check out the campaign branch before start"
             )
         if not gitutil.branch_exists(root, main_branch):
@@ -84,8 +84,8 @@ class Service:
             # one.  A missing integration branch means the caller passed
             # `--main` explicitly (or HEAD is unborn): fail loudly instead of
             # silently branching off history the user did not choose.
-            raise IntergentError(
-                f"branch '{main_branch}' does not exist; intergent adopts the current "
+            raise SlicemeError(
+                f"branch '{main_branch}' does not exist; sliceme adopts the current "
                 "branch and never creates one"
             )
         base = base or main_branch
@@ -118,13 +118,13 @@ class Service:
         is an error.
         """
         if not gitutil.branch_exists(root, main_branch):
-            raise IntergentError(
-                f"branch '{main_branch}' does not exist; intergent adopts the current "
+            raise SlicemeError(
+                f"branch '{main_branch}' does not exist; sliceme adopts the current "
                 "branch and never creates one"
             )
         cfg = read_json(config_path(root))
         if cfg is None:
-            raise IntergentError("missing .intergent/config.json")
+            raise SlicemeError("missing .sliceme/config.json")
         if cfg.get("main_branch") == main_branch:
             return
         cfg["main_branch"] = main_branch
@@ -166,7 +166,7 @@ class Service:
         initialized = False
         if root is None or force:
             if not gitutil.is_git_repo(start):
-                raise IntergentError(f"{start} is not a git repository")
+                raise SlicemeError(f"{start} is not a git repository")
             root = gitutil.toplevel(start)
             cls.init_plane(
                 root,
@@ -201,7 +201,7 @@ class Service:
         try:
             unit = service.current_unit(start)
             created = False
-        except IntergentError:
+        except SlicemeError:
             existing = {u["name"] for u in service.list_units()}
             base_name = name or slugify(start.name) or "session"
             unit_name = base_name
@@ -312,9 +312,9 @@ class Service:
             for unit in self.store.list_units():
                 if unit["branch"] == branch:
                     return unit
-        raise IntergentError(
-            "current directory is not an Intergent unit worktree; "
-            "run `intergent workspace create` and cd into it, or pass --unit"
+        raise SlicemeError(
+            "current directory is not an Sliceme unit worktree; "
+            "run `sliceme workspace create` and cd into it, or pass --unit"
         )
 
     # ------------------------------------------------------------------
@@ -324,10 +324,10 @@ class Service:
         unit = self.store.require_unit(unit_ref)
         worktree = Path(unit["worktree"])
         if not worktree.exists():
-            raise IntergentError(f"worktree missing: {worktree}")
+            raise SlicemeError(f"worktree missing: {worktree}")
         result = gitutil.commit_all(worktree, message)
         if not result.ok:
-            raise IntergentError(result.stderr.strip() or result.stdout.strip() or "git commit failed")
+            raise SlicemeError(result.stderr.strip() or result.stdout.strip() or "git commit failed")
         return {"unit": unit["name"], "commit": gitutil.head_commit(worktree)}
 
     def finish(
@@ -336,14 +336,14 @@ class Service:
         unit = self.store.require_unit(unit_ref)
         worktree = Path(unit["worktree"])
         if not gitutil.is_clean(worktree):
-            raise IntergentError(
-                "worktree has uncommitted changes; commit them (`intergent commit`) before finishing"
+            raise SlicemeError(
+                "worktree has uncommitted changes; commit them (`sliceme commit`) before finishing"
             )
         head = gitutil.head_commit(worktree)
         violations = self._conformance_violations(unit, head)
         if violations:
             listing = ", ".join(sorted(violations)[:10])
-            raise IntergentError(
+            raise SlicemeError(
                 f"commit touches paths outside unit '{unit['name']}' owned directories: "
                 f"{listing}; the coordinator must widen `owns` or add a `depends_on` edge "
                 "in dag.json (waves replan on the next status/spawn)"
@@ -444,7 +444,7 @@ class Service:
         try:
             validate_dag(list(dag["nodes"]))
             planned = plan_dag_waves(list(dag["nodes"]), wave_size=wave_size)
-        except IntergentError as exc:
+        except SlicemeError as exc:
             return [], str(exc)
         return [w.to_dict() for w in planned], None
 
@@ -484,7 +484,7 @@ class Service:
     ) -> dict[str, Any]:
         """Merge prepared candidates onto the feature branch (agent-callable)."""
         if cleanup not in {"none", "worktrees", "all"}:
-            raise IntergentError("cleanup must be one of: none, worktrees, all")
+            raise SlicemeError("cleanup must be one of: none, worktrees, all")
         results = integrate.integrate(
             self.store,
             self.root,
@@ -527,7 +527,7 @@ class Service:
             campaign.state_path(self.root, branch),
         ]
         removed.extend(self._remove_files(paths))
-        for log in sorted(self.root.glob(f".intergent/{campaign.branch_key(branch)}.worker_*.log")):
+        for log in sorted(self.root.glob(f".sliceme/{campaign.branch_key(branch)}.worker_*.log")):
             removed.extend(self._remove_files([log]))
         if not keep_report:
             removed.extend(self._remove_files([campaign.report_path(self.root, branch)]))
@@ -557,7 +557,7 @@ class Service:
             if path.exists() or registered:
                 removed.append(unit["name"])
             # Landed content is already on main as a squashed commit, so its
-            # `ig/<unit>` branch is disposable; otherwise one branch leaks per
+            # `sliceme/<unit>` branch is disposable; otherwise one branch leaks per
             # landed unit.  Closed units may hold unmerged work, so keep their
             # branches.  ``cleanup_worktree`` prunes stale metadata before
             # deleting the branch, so a hand-deleted worktree no longer blocks it.
@@ -571,7 +571,7 @@ class Service:
         gitutil.prune_worktrees(self.root)
         from .util import rmtree
 
-        scratch = self.root / ".intergent" / "scratch"
+        scratch = self.root / ".sliceme" / "scratch"
         rmtree(scratch)
         self.store.conn.commit()
         return {"removed_worktrees": removed, "pruned_branches": pruned_branches}
@@ -585,7 +585,7 @@ def _session_unit_slugs(session: str, name: str) -> tuple[str, str]:
 
     ``create_workspace`` defaults the session to the unit name, so without this
     a plain ``start`` produced ``<name>-<name>`` worktree directories and
-    ``ig/<name>/<name>`` branches.
+    ``sliceme/<name>/<name>`` branches.
     """
     session_slug = slugify(session, 24)
     name_slug = slugify(name, 32)
@@ -596,7 +596,7 @@ def _session_unit_slugs(session: str, name: str) -> tuple[str, str]:
 
 def _unique_branch(root: Path, session: str, name: str) -> str:
     session_slug, name_slug = _session_unit_slugs(session, name)
-    base = f"ig/{session_slug}/{name_slug}" if session_slug != name_slug else f"ig/{name_slug}"
+    base = f"sliceme/{session_slug}/{name_slug}" if session_slug != name_slug else f"sliceme/{name_slug}"
     branch = base
     counter = 2
     while gitutil.branch_exists(root, branch):
@@ -618,12 +618,12 @@ def _unique_worktree(base_dir: Path, session: str, name: str) -> Path:
 
 
 def _ensure_gitignore(root: Path) -> None:
-    """Ignore ``.intergent/`` via the repo-local exclude file.
+    """Ignore ``.sliceme/`` via the repo-local exclude file.
 
     Using ``.git/info/exclude`` (shared by all worktrees) keeps the main
     worktree clean, unlike creating an untracked ``.gitignore``.
     """
-    entry = ".intergent/"
+    entry = ".sliceme/"
     res = gitutil.git(root, "rev-parse", "--git-common-dir", check=False)
     git_dir = Path(res.stdout.strip()) if res.ok else root / ".git"
     if not git_dir.is_absolute():

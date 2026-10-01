@@ -12,7 +12,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator, Sequence
 
-from .util import IntergentError, db_path, now
+from .util import SlicemeError, db_path, now
 
 SCHEMA = """
 PRAGMA journal_mode=WAL;
@@ -342,5 +342,5 @@ class Store:
     def require_unit(self, name_or_id: str | int) -> dict[str, Any]:
         unit = self.get_unit(name_or_id)
         if unit is None:
-            raise IntergentError(f"unknown unit: {name_or_id}")
+            raise SlicemeError(f"unknown unit: {name_or_id}")
         return unit

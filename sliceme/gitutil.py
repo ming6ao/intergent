@@ -13,7 +13,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from .util import IntergentError, rmtree
+from .util import SlicemeError, rmtree
 
 
 @dataclass
@@ -48,7 +48,7 @@ def git(
     )
     result = GitResult(list(args), proc.returncode, proc.stdout, proc.stderr)
     if check and not result.ok:
-        raise IntergentError(
+        raise SlicemeError(
             f"git {' '.join(args)} failed ({result.returncode}): "
             f"{result.stderr.strip() or result.stdout.strip()}"
         )
@@ -76,7 +76,7 @@ def rev_parse(repo: str | os.PathLike[str], ref: str) -> str:
     if not res.ok:
         res = git(repo, "rev-parse", "--verify", ref, check=False)
     if not res.ok:
-        raise IntergentError(f"cannot resolve git ref: {ref}")
+        raise SlicemeError(f"cannot resolve git ref: {ref}")
     return res.stdout.strip()
 
 

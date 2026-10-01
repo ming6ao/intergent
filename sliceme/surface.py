@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .util import IntergentError
+from .util import SlicemeError
 
 if TYPE_CHECKING:  # pragma: no cover
     from .service import Service
@@ -111,7 +111,7 @@ def resolve_action(name: str) -> Action:
     canonical = _ALIAS_TO_NAME.get(name, name)
     action = ACTION_BY_NAME.get(canonical)
     if action is None:
-        raise IntergentError(f"unknown action: {name}")
+        raise SlicemeError(f"unknown action: {name}")
     return action
 
 
@@ -171,8 +171,8 @@ def doctor(root: Path) -> dict[str, Any]:
 
     checks = [
         ("git", gitutil.is_git_repo(root)),
-        ("config", (root / ".intergent" / "config.json").is_file()),
-        ("state_db", (root / ".intergent" / "state.db").is_file()),
+        ("config", (root / ".sliceme" / "config.json").is_file()),
+        ("state_db", (root / ".sliceme" / "state.db").is_file()),
     ]
     return {
         "root": str(root),
@@ -235,10 +235,10 @@ _HANDLERS = {
 def _validate(spec: Action, params: dict[str, Any]) -> None:
     for param in spec.params:
         if param.required and not params.get(param.name):
-            raise IntergentError(f"{spec.name} requires --{param.name.replace('_', '-')}")
+            raise SlicemeError(f"{spec.name} requires --{param.name.replace('_', '-')}")
         value = params.get(param.name)
         if value and param.choices and value not in param.choices:
-            raise IntergentError(
+            raise SlicemeError(
                 f"{spec.name} --{param.name.replace('_', '-')} must be one of: "
                 + ", ".join(param.choices)
             )

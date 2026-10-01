@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from . import gitutil
-from .util import IntergentError, scratch_dir, sha256_json, sha256_text
+from .util import SlicemeError, scratch_dir, sha256_json, sha256_text
 
 
 @dataclass
@@ -37,7 +37,7 @@ class CheckSpec:
                 required=bool(item.get("required", True)),
                 timeout=int(item.get("timeout", 900)),
             )
-        raise IntergentError(f"invalid check entry: {item!r}")
+        raise SlicemeError(f"invalid check entry: {item!r}")
 
 
 @dataclass

@@ -1,7 +1,7 @@
-"""Command line interface (``intergent``).
+"""Command line interface (``sliceme``).
 
-The CLI is a thin, *generated* adapter over :mod:`intergent.surface`.  Every
-action is built from :data:`intergent.surface.ACTIONS`, so the CLI can never
+The CLI is a thin, *generated* adapter over :mod:`sliceme.surface`.  Every
+action is built from :data:`sliceme.surface.ACTIONS`, so the CLI can never
 drift from the pi tool surface.  See ``docs/reference.md`` ("one engine,
 many adapters").
 """
@@ -16,7 +16,7 @@ from typing import Any
 
 from . import __version__, surface
 from .service import Service
-from .util import IntergentError, find_repo_root
+from .util import SlicemeError, find_repo_root
 
 
 def _print(data: Any, as_json: bool) -> None:
@@ -83,11 +83,11 @@ def _add_action(sub: Any, action: surface.Action) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="intergent",
+        prog="sliceme",
         description="Local coordination for parallel coding agents.",
     )
-    parser.add_argument("--version", action="version", version=f"intergent {__version__}")
-    parser.add_argument("--root", help="workspace root (defaults to nearest .intergent)")
+    parser.add_argument("--version", action="version", version=f"sliceme {__version__}")
+    parser.add_argument("--root", help="workspace root (defaults to nearest .sliceme)")
     parser.add_argument("--json", action="store_true", help="emit machine-readable JSON")
 
     sub = parser.add_subparsers(dest="action", required=True, metavar="ACTION")
@@ -132,7 +132,7 @@ def main(argv: list[str] | None = None) -> int:
     as_json = bool(getattr(args, "json", False))
     try:
         return _dispatch(args, as_json)
-    except IntergentError as exc:
+    except SlicemeError as exc:
         if as_json:
             print(json.dumps({"error": str(exc)}, indent=2))
         else:

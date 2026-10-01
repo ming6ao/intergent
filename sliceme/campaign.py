@@ -1,17 +1,17 @@
 """Campaign plane state, DAG/state readers, and the deterministic report.
 
-All campaign files live under ``.intergent/`` and are **prefixed by the
+All campaign files live under ``.sliceme/`` and are **prefixed by the
 feature-branch name** so one campaign's files form a single glob and no two
 campaigns collide.  ``/`` in the branch name is replaced with ``--``::
 
     feat/nanochat-cpp  ->  feat--nanochat-cpp
 
 The orchestrator (the pi `campaign` extension) owns writing ``dag.json`` and
-``state.json``; Python reads them for ``intergent report`` and resolves their
+``state.json``; Python reads them for ``sliceme report`` and resolves their
 paths.  ``dag.json`` is plane state, never committed to the repository.
 
 This module also renders the deterministic report skeleton
-(``.intergent/<branch-key>.report.md``): design ref, feature branch, nodes,
+(``.sliceme/<branch-key>.report.md``): design ref, feature branch, nodes,
 worker ids, commits, fingerprints/verifications, and artifact paths, with an
 optional narrative appended by the coordinator.
 """
@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from .store import Store
-from .util import IntergentError, read_json, state_dir
+from .util import SlicemeError, read_json, state_dir
 
 
 def branch_key(branch: str) -> str:
@@ -71,7 +71,7 @@ def node_status(state: dict[str, Any], node: str) -> str:
 def config_branch(config: dict[str, Any]) -> str:
     branch = config.get("main_branch")
     if not branch:
-        raise IntergentError("plane has no main_branch; run `intergent start` first")
+        raise SlicemeError("plane has no main_branch; run `sliceme start` first")
     return str(branch)
 
 

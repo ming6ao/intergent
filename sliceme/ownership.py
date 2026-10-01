@@ -28,7 +28,7 @@ import posixpath
 from dataclasses import dataclass, field
 from typing import Any
 
-from .util import IntergentError
+from .util import SlicemeError
 
 DEFAULT_WAVE_SIZE = 3
 
@@ -61,7 +61,7 @@ def parse_owns(specs: list[str]) -> list[str]:
     """Parse an ``owns`` list into normalized directories.
 
     Accepts ``dir:path`` and bare paths. A recognized non-directory kind raises
-    :class:`IntergentError`.
+    :class:`SlicemeError`.
     """
     owns: list[str] = []
     seen: set[str] = set()
@@ -72,7 +72,7 @@ def parse_owns(specs: list[str]) -> list[str]:
         if ":" in text:
             prefix = text.split(":", 1)[0].strip().lower()
             if prefix in _NON_DIR_KINDS:
-                raise IntergentError(
+                raise SlicemeError(
                     f"owns must be directories, not {prefix}: '{text}' "
                     "(declare the deepest directory that contains the paths)"
                 )
@@ -134,7 +134,7 @@ class DagWave:
 def _node_id(node: dict[str, Any]) -> str:
     nid = node.get("id")
     if not nid:
-        raise IntergentError("dag node is missing an id")
+        raise SlicemeError("dag node is missing an id")
     return str(nid)
 
 
@@ -161,7 +161,7 @@ def _conflict_reason(a: dict[str, Any], b: dict[str, Any]) -> str | None:
 def _topological_order(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Kahn topological sort, stable by declaration order.
 
-    Raises :class:`IntergentError` on duplicate ids, unknown dependencies, or a
+    Raises :class:`SlicemeError` on duplicate ids, unknown dependencies, or a
     dependency cycle.
     """
     by_id: dict[str, dict[str, Any]] = {}
@@ -169,7 +169,7 @@ def _topological_order(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for node in nodes:
         nid = _node_id(node)
         if nid in by_id:
-            raise IntergentError(f"dag node id '{nid}' appears more than once")
+            raise SlicemeError(f"dag node id '{nid}' appears more than once")
         by_id[nid] = node
         order.append(nid)
 
@@ -180,7 +180,7 @@ def _topological_order(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
         for dep in node.get("depends_on") or []:
             dep = str(dep)
             if dep not in by_id:
-                raise IntergentError(f"dag node '{nid}' depends on unknown node '{dep}'")
+                raise SlicemeError(f"dag node '{nid}' depends on unknown node '{dep}'")
             indegree[nid] += 1
             dependents[dep].append(nid)
 
@@ -194,7 +194,7 @@ def _topological_order(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
         )
         if picked is None:
             remaining = [nid for nid in order if nid not in placed]
-            raise IntergentError(
+            raise SlicemeError(
                 f"dependency cycle among dag nodes: {', '.join(remaining)}"
             )
         placed.add(picked)
@@ -227,7 +227,7 @@ def plan_dag_waves(
     * contains no node whose owned directories overlap (strict subtree rule).
     """
     if wave_size < 1:
-        raise IntergentError("wave_size (concurrency) must be >= 1")
+        raise SlicemeError("wave_size (concurrency) must be >= 1")
 
     waves: list[DagWave] = []
     wave_of: dict[str, int] = {}

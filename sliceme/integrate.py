@@ -36,7 +36,7 @@ from typing import Any
 from . import campaign, gitutil
 from .ownership import DEFAULT_WAVE_SIZE, plan_dag_waves
 from .store import Store
-from .util import IntergentError, scratch_dir, worktrees_dir
+from .util import SlicemeError, scratch_dir, worktrees_dir
 from .verifier import (
     CheckResult,
     VerificationResult,
@@ -307,10 +307,10 @@ def integrate(
     main_branch = main_branch_of(config)
     default_branch = _recorded_default(config, root, exclude=main_branch)
     if main_branch == default_branch:
-        raise IntergentError(
+        raise SlicemeError(
             f"refusing to integrate onto the plane's default branch '{main_branch}'; "
             "campaigns must set a feature branch at init "
-            "(`intergent start --no-unit --main feat/... --base ...`)"
+            "(`sliceme start --no-unit --main feat/... --base ...`)"
         )
 
     acceptance = list(acceptance or [])
@@ -319,7 +319,7 @@ def integrate(
     if node is not None:
         candidate, already_landed = _candidate_for_node(store, node)
         if candidate is None:
-            raise IntergentError(f"no candidate for node '{node}'")
+            raise SlicemeError(f"no candidate for node '{node}'")
         candidates = [] if already_landed else [candidate]
         if already_landed:
             results.append(
@@ -384,7 +384,7 @@ def integrate(
 
     wt_path, _created = main_worktree(root, main_branch)
     if not gitutil.is_clean(wt_path):
-        raise IntergentError(
+        raise SlicemeError(
             f"integration worktree {wt_path} is dirty; commit or discard changes before integrate"
         )
 
@@ -436,7 +436,7 @@ def integrate(
         merge = gitutil.merge_into(
             wt_path,
             candidate["branch"],
-            message=f"intergent integrate {candidate['branch']}",
+            message=f"sliceme integrate {candidate['branch']}",
             no_ff=True,
         )
         if not merge.ok:
@@ -594,7 +594,7 @@ def _merge_into_wave(root: Path, combined: str, branch: str) -> tuple[bool, str]
     if not outcome.clean or not outcome.tree:
         return False, combined
     new_ref = _synthetic_commit(
-        root, outcome.tree, [combined, gitutil.rev_parse(root, branch)], "intergent wave combine"
+        root, outcome.tree, [combined, gitutil.rev_parse(root, branch)], "sliceme wave combine"
     )
     return True, new_ref
 
@@ -627,7 +627,7 @@ def simulate(
             status, results, _duration = run_checks(root, config, wave.combined, worktree=path)
             wave.check_status = status
             wave.checks = results
-        except IntergentError:
+        except SlicemeError:
             wave.check_status = "error"
         finally:
             gitutil.cleanup_worktree(root, path)
