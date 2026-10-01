@@ -73,13 +73,13 @@ pi                                # launch pi
 Then, inside the session:
 
 ```text
-/skill:sliceme DESIGN.md          # activates the campaign + sliceme tools
-campaign start DESIGN.md          # adopt the current branch + run the planner
-campaign ready                    # current-wave nodes whose deps are integrated
-campaign spawn <node>             # one-shot worker
-campaign verify <node>            # executor runs checks; a read-only verifier judges
-campaign integrate <node>         # land the verified node
-campaign report --narrative "..." # deterministic report + your summary
+/skill:sliceme DESIGN.md          # activates the sliceme + sliceme-unit tools
+sliceme start DESIGN.md           # adopt the current branch + run the planner
+sliceme ready                     # current-wave nodes whose deps are integrated
+sliceme spawn <node>              # one-shot worker
+sliceme verify <node>             # executor runs checks; a read-only verifier judges
+sliceme integrate <node>          # land the verified node
+sliceme report --narrative "..."  # deterministic report + your summary
 ```
 
 Local development without installing:

@@ -37,15 +37,15 @@
     "docs/",
     "integrations/pi/agents/",
     "integrations/pi/common.ts",
-    "integrations/pi/sliceme.ts",
-    "integrations/pi/campaign.ts",
+    "integrations/pi/unit.ts",
+    "integrations/pi/coordinator.ts",
     "!sliceme/__pycache__",
     "!sliceme/**/*.pyc"
   ],
   "pi": {
     "extensions": [
-      "./integrations/pi/sliceme.ts",
-      "./integrations/pi/campaign.ts"
+      "./integrations/pi/unit.ts",
+      "./integrations/pi/coordinator.ts"
     ],
     "skills": ["."]
   },

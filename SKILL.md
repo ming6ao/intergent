@@ -59,41 +59,42 @@ COORDINATOR (this session)
   `status`/`ready`/`spawn` replans).
 - Everything is reconstructable from `.sliceme/` + git after a crash.
 
-The pi package provides two tools: `campaign` for the coordinator and `sliceme` for
-workers. Both register **inactive**, so a plain session never lists them or
-their prompt guidelines; `/skill:sliceme <design.md>` activates them for the
-session when the argument is an existing design document. `runSubagent` applies
-each subagent's `tools:` allowlist, so a worker gets `sliceme` but never `campaign`,
-and the verifier gets neither.
+The pi package provides two tools: `sliceme` for the coordinator and
+`sliceme-unit` for workers. Both register **inactive**, so a plain session never
+lists them or their prompt guidelines; `/skill:sliceme <design.md>` activates
+them for the session when the argument is an existing design document.
+`runSubagent` applies each subagent's `tools:` allowlist, so a worker gets
+`sliceme-unit` but never `sliceme`, and the verifier gets neither.
 
 ## Hard rules
 
-1. **Workers run inside their unit worktree.** `sliceme` `action: status`
+1. **Workers run inside their unit worktree.** `sliceme-unit` `action: status`
    (`short: true`) must succeed; otherwise stop. Never edit the main working
    tree.
 2. **Edit only your node's owned directories.** Ownership is declared in
    `dag.json` and enforced by `commit`; a rejected commit means the planner
    under-declared, not that you should widen your own scope.
-3. **A worker's last step is `commit`.** Workers never call `sliceme` `integrate` or
-   `git merge`. The coordinator owns verification and integration.
+3. **A worker's last step is `commit`.** Workers never call `sliceme-unit`
+   `integrate` or `git merge`. The coordinator owns verification and integration.
 4. **Ordering is authored in the DAG.** If two nodes would touch the same
    directory, the planner must put them in different waves (disjoint `owns`) or
    add a `depends_on` edge. Never rely on runtime arbitration.
-5. **The GPU is the verifier's.** T0 CPU is the inner loop; GPU acceptance goes
-   through `tools/gpu.sh --tier <T1|T2> -- <command>`.
+5. **The GPU is the executor's.** The single executor runs checks and composes
+   the sandbox and GPU runner; workers never touch the GPU, and verifiers only
+   judge the executor's recorded evidence.
 
 ## Campaign loop (the coordinator)
 
-Use the `campaign` tool:
+Use the `sliceme` tool:
 
 ```
-campaign start <DESIGN.md>   adopt current branch + planner -> dag.json + waves
-campaign ready               current-wave nodes whose dependencies are integrated
-campaign status              waves + DAG + live child state
-campaign spawn <node>        one-shot worker in its own worktree
-campaign verify <node>       read-only verifier; records a verdict
-campaign integrate <node>    land the verified candidate, before spawning dependents
-campaign report              deterministic report (`--narrative` appends the summary)
+sliceme start <DESIGN.md>   adopt current branch + planner -> dag.json + waves
+sliceme ready               current-wave nodes whose dependencies are integrated
+sliceme status              waves + DAG + live child state
+sliceme spawn <node>        one-shot worker in its own worktree
+sliceme verify <node>       executor runs checks; a read-only verifier judges
+sliceme integrate <node>    land the verified candidate, before spawning dependents
+sliceme report              deterministic report (`--narrative` appends the summary)
 ```
 
 `start` projects the DAG into waves (directory-subtree overlap, `depends_on`
@@ -103,14 +104,14 @@ the next wave opens and its units fork from the updated feature branch. A
 coordinator-added `depends_on` edge changes the DAG fingerprint and the next
 `status`/`ready`/`spawn` automatically replans the waves.
 
-The coordinator's own checkout is **not** an Sliceme unit; `campaign start`
+The coordinator's own checkout is **not** an Sliceme unit; `sliceme start`
 bootstraps the plane with `--no-unit` and adopts the **currently checked-out
 branch** as the campaign feature branch — it never creates one. Starting on the
 repository default branch is refused; promotion from the feature branch to the
 default branch is a human `git` step (`integrate` refuses the plane's recorded
 default branch).
 
-## Unit actions (the `sliceme` tool)
+## Unit actions (the `sliceme-unit` tool)
 
 | Action | Purpose |
 |---|---|
@@ -123,12 +124,12 @@ default branch).
 
 ## Worker workflow
 
-A spawned worker calls the `sliceme` tool from its own worktree:
+A spawned worker calls the `sliceme-unit` tool from its own worktree:
 
 ```
-sliceme action: status, short: true
+sliceme-unit action: status, short: true
 # ... edit only files under your node's owned directories ...
-sliceme action: commit, message: "add scope check to Login", summary: "scope check"
+sliceme-unit action: commit, message: "add scope check to Login", summary: "scope check"
 ```
 
 Under **wave scope** (one shared worktree per wave) workers are pure editors:

@@ -1,8 +1,8 @@
 """Guards the pi package contract.
 
 Sliceme supports exactly one install path: ``pi install`` of this package,
-which registers the ``campaign``/``sliceme`` tools and ships the bundled skill and
-engine. These tests fail if that structure regresses.
+which registers the ``sliceme``/``sliceme-unit`` tools and ships the bundled skill
+and engine. These tests fail if that structure regresses.
 """
 
 import json
@@ -16,8 +16,8 @@ README = REPO_ROOT / "README.md"
 SKILL = REPO_ROOT / "SKILL.md"
 PACKAGE = REPO_ROOT / "package.json"
 PI_DIR = REPO_ROOT / "integrations" / "pi"
-PI_EXTENSION = PI_DIR / "sliceme.ts"
-PI_CAMPAIGN = PI_DIR / "campaign.ts"
+PI_UNIT = PI_DIR / "unit.ts"
+PI_COORDINATOR = PI_DIR / "coordinator.ts"
 PI_COMMON = PI_DIR / "common.ts"
 
 sys.path.insert(0, str(REPO_ROOT))
@@ -91,19 +91,19 @@ class SkillPackageTests(unittest.TestCase):
         # The pi package must not leak Sliceme into every session: both tools
         # register inactive, and only `/skill:sliceme <design.md>` turns them
         # on. Without a design document the invocation is dropped.
-        for path in (PI_EXTENSION, PI_CAMPAIGN):
+        for path in (PI_UNIT, PI_COORDINATOR):
             text = path.read_text(encoding="utf-8")
             self.assertIn("defaultActive: false", text, path)
-        campaign = PI_CAMPAIGN.read_text(encoding="utf-8")
-        self.assertIn('pi.on("input"', campaign)
-        self.assertIn("/skill:sliceme", campaign)
-        self.assertIn("hasDesignDocument", campaign)
-        self.assertIn('action: "handled"', campaign)
+        coordinator = PI_COORDINATOR.read_text(encoding="utf-8")
+        self.assertIn('pi.on("input"', coordinator)
+        self.assertIn("/skill:sliceme", coordinator)
+        self.assertIn("hasDesignDocument", coordinator)
+        self.assertIn('action: "handled"', coordinator)
 
     def test_pi_extension_is_a_thin_forwarder(self):
         # There is no single-agent bootstrap: the extension only registers the
-        # `sliceme` tool and forwards to the CLI via the shared helpers.
-        text = PI_EXTENSION.read_text(encoding="utf-8")
+        # `sliceme-unit` tool and forwards to the CLI via the shared helpers.
+        text = PI_UNIT.read_text(encoding="utf-8")
         self.assertIn('from "./common.ts"', text)
         self.assertIn("runSliceme(pi, ctx", text)
         self.assertNotIn("bindingIsStale", text)
@@ -116,37 +116,37 @@ class SkillPackageTests(unittest.TestCase):
         self.assertIn("pi-package", manifest.get("keywords", []))
         pi = manifest.get("pi", {})
         extensions = pi.get("extensions", [])
-        self.assertIn("./integrations/pi/sliceme.ts", extensions)
-        self.assertIn("./integrations/pi/campaign.ts", extensions)
+        self.assertIn("./integrations/pi/unit.ts", extensions)
+        self.assertIn("./integrations/pi/coordinator.ts", extensions)
         self.assertIn(".", pi.get("skills", []))
         # The shared helpers ship with the package and are imported by both tools.
         self.assertTrue(PI_COMMON.is_file())
-        self.assertIn('from "./common.ts"', PI_CAMPAIGN.read_text(encoding="utf-8"))
+        self.assertIn('from "./common.ts"', PI_COORDINATOR.read_text(encoding="utf-8"))
 
     def test_subagent_tools_are_scoped(self):
         # runSubagent must pass the agent's `tools:` allowlist to `pi --tools`;
-        # this keeps workers on the `sliceme` unit tool and away from `campaign`,
-        # and gives the read-only verifier no Sliceme tool at all.
+        # this keeps workers on the `sliceme-unit` tool and away from the
+        # `sliceme` coordinator tool, and gives the read-only verifier neither.
         common = PI_COMMON.read_text(encoding="utf-8")
         self.assertIn('"--tools"', common)
         self.assertIn("agentFrontmatterValue", common)
         worker = _frontmatter((PI_DIR / "agents" / "worker.md").read_text(encoding="utf-8"))
         worker_tools = [t.strip() for t in worker["tools"].split(",")]
-        self.assertIn("sliceme", worker_tools)
-        self.assertNotIn("campaign", worker_tools)
+        self.assertIn("sliceme-unit", worker_tools)
+        self.assertNotIn("sliceme", worker_tools)
         verifier = _frontmatter((PI_DIR / "agents" / "verifier.md").read_text(encoding="utf-8"))
         verifier_tools = [t.strip() for t in verifier["tools"].split(",")]
-        self.assertNotIn("sliceme", verifier_tools)
+        self.assertNotIn("sliceme-unit", verifier_tools)
         self.assertNotIn("bash", verifier_tools, "the verifier must not run commands")
 
     def test_campaign_executor_and_gate_wiring(self):
         # The coordinator drives the single executor and the sandbox gate, and
         # the verifier judges recorded evidence rather than running a suite.
-        campaign = PI_CAMPAIGN.read_text(encoding="utf-8")
-        self.assertIn('"exec"', campaign)
-        self.assertIn("sandboxGate", campaign)
-        self.assertIn('["exec", "--validate"]', campaign)
-        self.assertIn("EXEC_KEYS", campaign)
+        coordinator = PI_COORDINATOR.read_text(encoding="utf-8")
+        self.assertIn('"exec"', coordinator)
+        self.assertIn("sandboxGate", coordinator)
+        self.assertIn('["exec", "--validate"]', coordinator)
+        self.assertIn("EXEC_KEYS", coordinator)
         verifier = (PI_DIR / "agents" / "verifier.md").read_text(encoding="utf-8")
         self.assertNotIn("tools/gpu.sh", verifier)
         self.assertIn("executor", verifier)
@@ -171,7 +171,7 @@ class SkillPackageTests(unittest.TestCase):
         for gone in ("submit", "verify", "handoff", "review", "declare"):
             self.assertNotIn(gone, names)
         self.assertIn("integrate", names)
-        text = PI_EXTENSION.read_text(encoding="utf-8")
+        text = PI_UNIT.read_text(encoding="utf-8")
         for gone in ("submit", "verify", "handoff", "review", "declare"):
             self.assertNotIn(f'"{gone}"', text)
 
@@ -179,7 +179,7 @@ class SkillPackageTests(unittest.TestCase):
         names = [a.name for a in surface.ACTIONS]
         self.assertIn("integrate", names)
         self.assertIn("report", names)
-        text = PI_EXTENSION.read_text(encoding="utf-8")
+        text = PI_UNIT.read_text(encoding="utf-8")
         match = re.search(r"SLICEME_ACTIONS\s*=\s*\[(.*?)\]\s*as const", text, re.DOTALL)
         self.assertIsNotNone(match)
         self.assertEqual(re.findall(r'"([a-z_]+)"', match.group(1)), names)
@@ -192,9 +192,9 @@ class SkillPackageTests(unittest.TestCase):
     def test_campaign_scheduler_is_wave_aware(self):
         # The coordinator projects the DAG into waves via the engine and gates
         # spawns on the current wave; the wave planner is a first-class module.
-        campaign_text = PI_CAMPAIGN.read_text(encoding="utf-8")
+        coordinator_text = PI_COORDINATOR.read_text(encoding="utf-8")
         for needle in ("dag_waves", "currentWave", "readyWaveNodes", "advanceWaves"):
-            self.assertIn(needle, campaign_text)
+            self.assertIn(needle, coordinator_text)
         self.assertTrue((REPO_ROOT / "sliceme" / "ownership.py").is_file())
         self.assertTrue((REPO_ROOT / "tests" / "test_waves.py").is_file())
 

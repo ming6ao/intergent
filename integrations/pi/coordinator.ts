@@ -1,13 +1,13 @@
 /**
- * Sliceme **campaign** extension for pi — the coordinator tool.
+ * Sliceme **coordinator** extension for pi — the `sliceme` tool.
  *
  * One top-level coordinator session turns a design document into landed work by
- * spawning a planner, one-shot workers, and a read-only verifier, while
- * `sliceme` remains the deterministic isolation/integration engine.  The DAG
- * in `.sliceme/<branch-key>.dag.json` is the only schedule; there are no
- * phases in the scheduler (docs/guide.md).
+ * spawning a planner, one-shot workers, and a read-only verifier, while the
+ * engine remains the deterministic isolation/integration layer.  The DAG in
+ * `.sliceme/<branch-key>.dag.json` is the only schedule; there are no phases
+ * in the scheduler (docs/guide.md).
  *
- * One tool, `campaign`, wraps the CLI's orchestration verbs:
+ * One tool, `sliceme`, wraps the CLI's orchestration verbs:
  *
  *   start <design>   adopt current branch + no-unit plane + planner -> dag.json
  *   status           merge `sliceme status --json` with live child state
@@ -17,9 +17,9 @@
  *   integrate <node> land the verified candidate onto the feature branch
  *   report           `sliceme report` plus the coordinator's narrative
  *
- * Workers are scoped to the `sliceme` unit tool (`sliceme.ts`) and run inside
+ * Workers are scoped to the `sliceme-unit` tool (`unit.ts`) and run inside
  * their unit worktree; `runSubagent` enforces the agent `tools:` allowlist, so
- * a worker never sees this `campaign` tool.
+ * a worker never sees this `sliceme` tool.
  *
  * Workers are child processes of the coordinator and are **not detached**: an
  * orchestrator crash kills them, and on resume any `running` node is reset to
@@ -265,8 +265,8 @@ function summarise(dag: Dag, state: CampaignState): string {
 	return lines.join("\n");
 }
 
-export default function campaignExtension(pi: ExtensionAPI) {
-	// Sliceme is opt-in. The `campaign`/`sliceme` tools are registered inactive, so
+export default function coordinatorExtension(pi: ExtensionAPI) {
+	// Sliceme is opt-in. The `sliceme`/`sliceme-unit` tools are registered inactive, so
 	// a plain session neither lists them nor appends their prompt guidelines.
 	// `/skill:sliceme <design.md>` is the only thing that turns them on for
 	// the session. A design document is required: without one the input is
@@ -295,8 +295,8 @@ export default function campaignExtension(pi: ExtensionAPI) {
 			return { action: "handled" as const };
 		}
 		const active = new Set(pi.getActiveTools());
-		active.add("campaign");
 		active.add("sliceme");
+		active.add("sliceme-unit");
 		pi.setActiveTools([...active]);
 	});
 
@@ -306,7 +306,7 @@ export default function campaignExtension(pi: ExtensionAPI) {
 	async function featureBranch(ctx: ExtensionContext): Promise<string> {
 		const { json } = await sliceme(ctx, ["status"]);
 		const branch = json?.feature_branch ?? json?.main_branch;
-		if (!branch) throw new Error("campaign: no feature branch; run `campaign start` first");
+		if (!branch) throw new Error("sliceme: no feature branch; run `sliceme start` first");
 		return String(branch);
 	}
 
@@ -318,7 +318,7 @@ export default function campaignExtension(pi: ExtensionAPI) {
 		const branch = result.stdout?.trim();
 		if (result.code !== 0 || !branch) {
 			throw new Error(
-				"campaign: not on a branch (detached HEAD); check out the campaign branch first",
+				"sliceme: not on a branch (detached HEAD); check out the campaign branch first",
 			);
 		}
 		return branch;
@@ -379,7 +379,7 @@ export default function campaignExtension(pi: ExtensionAPI) {
 		const fingerprint = dagFingerprint(dag);
 		if (state.waves?.length && state.dag_fingerprint === fingerprint) return;
 		const { json } = await sliceme(ctx, ["status"]);
-		if (json?.dag_waves_error) throw new Error(`campaign: ${json.dag_waves_error}`);
+		if (json?.dag_waves_error) throw new Error(`sliceme: ${json.dag_waves_error}`);
 		reconcileWaves(state, json?.dag_waves ?? []);
 		state.dag_fingerprint = fingerprint;
 		state.wave_size = Number(dag.concurrency ?? 3);
@@ -410,7 +410,7 @@ export default function campaignExtension(pi: ExtensionAPI) {
 				}),
 			);
 		}
-		ctx.ui.setWidget("campaign", lines.length ? lines : ["campaign: no plan"]);
+		ctx.ui.setWidget("sliceme", lines.length ? lines : ["sliceme: no plan"]);
 	}
 
 	// ------------------------------------------------------------------
@@ -464,7 +464,7 @@ export default function campaignExtension(pi: ExtensionAPI) {
 			: undefined;
 		const base = params.base ? String(params.base) : String(existing?.base ?? branch);
 		const notice =
-			`campaign: using current branch '${branch}' as the feature branch ` +
+			`sliceme: using current branch '${branch}' as the feature branch ` +
 			`(no branch created).`;
 		if (ctx.hasUI) ctx.ui.notify(notice, "info");
 
@@ -477,7 +477,7 @@ export default function campaignExtension(pi: ExtensionAPI) {
 					{
 						type: "text" as const,
 						text:
-							`campaign: '${branch}' is the repository default branch. ` +
+							`sliceme: '${branch}' is the repository default branch. ` +
 							`Create or check out a feature branch first; sliceme adopts the ` +
 							`current branch and never creates one.`,
 					},
@@ -528,7 +528,7 @@ export default function campaignExtension(pi: ExtensionAPI) {
 					content: [
 						{
 							type: "text" as const,
-							text: `campaign: sandbox gate failed: ${resumeGateError}`,
+							text: `sliceme: sandbox gate failed: ${resumeGateError}`,
 						},
 					],
 					isError: true,
@@ -597,7 +597,7 @@ export default function campaignExtension(pi: ExtensionAPI) {
 				content: [
 					{
 						type: "text" as const,
-						text: `campaign: sandbox gate failed: ${gateError}`,
+						text: `sliceme: sandbox gate failed: ${gateError}`,
 					},
 				],
 				isError: true,
@@ -872,13 +872,13 @@ export default function campaignExtension(pi: ExtensionAPI) {
 	}
 
 	pi.registerTool({
-		name: "campaign",
-		label: "Sliceme campaign",
+		name: "sliceme",
+		label: "Sliceme",
 		description:
 			"Coordinate a design into landed work: start (adopt current branch + planner), " +
-			"status, ready, spawn (one-shot worker), verify (read-only verifier), " +
-			"integrate (land a verified node), report. The dag.json plan is the only schedule; " +
-			"waves are a projection of it.",
+			"status, ready, spawn (one-shot worker), verify (executor runs; verifier judges), " +
+			"integrate (land a verified node), report, exec (sandbox gate, wave worktree, " +
+			"check queue). The dag.json plan is the only schedule; waves are a projection of it.",
 		promptSnippet: "Drive an Sliceme campaign (start → spawn → verify → integrate)",
 		promptGuidelines: [
 			"The DAG in dag.json is the only authored schedule; waves are its deterministic " +
@@ -1012,7 +1012,7 @@ export default function campaignExtension(pi: ExtensionAPI) {
 					return { content: [{ type: "text" as const, text }], details: json ?? {} };
 				}
 				default:
-					throw new Error(`campaign: unknown action '${params.action}'`);
+					throw new Error(`sliceme: unknown action '${params.action}'`);
 			}
 		},
 	});

@@ -1,8 +1,8 @@
 /**
  * Shared helpers for the Sliceme pi extensions.
  *
- * `campaign.ts` is the coordinator tool and `sliceme.ts` is the `sliceme` unit
- * tool; both are thin adapters over the bundled `sliceme` CLI. The CLI is the
+ * `coordinator.ts` is the `sliceme` coordinator tool and `unit.ts` is the
+ * `sliceme-unit` tool; both are thin adapters over the bundled `sliceme` CLI. The CLI is the
  * engine surface, so the tools stay harness-agnostic and need no `PATH`
  * install. `runSubagent` also applies each agent's `tools:` allowlist, scoping
  * workers to the unit tool and the coordinator to the campaign tool.

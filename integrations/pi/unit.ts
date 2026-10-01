@@ -1,25 +1,25 @@
 /**
  * Sliceme unit lifecycle tool for pi.
  *
- * Registers a native `sliceme` tool that forwards to the bundled `sliceme` CLI.
- * This is the unit lifecycle tool that campaign **workers** use
+ * Registers a native `sliceme-unit` tool that forwards to the bundled `sliceme`
+ * CLI.  This is the unit lifecycle tool that campaign **workers** use
  * (`status → commit`). Workers are scoped to it by their agent `tools:`
- * allowlist, so they never see `campaign.ts`; the coordinator drives the
- * campaign with the `campaign` tool instead.  The tool shells out to the
- * bundled CLI, so no `sliceme` install on `PATH` is needed.
+ * allowlist, so they never see the `sliceme` coordinator tool
+ * (`coordinator.ts`).  The tool shells out to the bundled CLI, so no
+ * `sliceme` install on `PATH` is needed.
  *
  * Ownership is decided at plan time: a worker edits only the directories its
  * DAG node owns, and `commit` refuses paths outside them (plan conformance).
  * There is no runtime declare/lease step.
  *
  * There is no automatic single-agent bootstrap: a session is only bound to a
- * unit when something explicitly creates one (the `campaign` tool's `spawn`,
- * or a human running `sliceme start`).  `sliceme` resolves the unit from `ctx.cwd`,
- * so a worker launched inside its unit worktree needs no `--unit`.
+ * unit when something explicitly creates one (the `sliceme` coordinator tool's
+ * `spawn`, or a human running `sliceme start`).  The tool resolves the unit from
+ * `ctx.cwd`, so a worker launched inside its unit worktree needs no `--unit`.
  *
  * The tool is registered `defaultActive: false`, so a plain session never sees
  * it.  The `sliceme` skill turns it on for the session; workers get it back
- * through their `tools:` allowlist (`pi --tools sliceme`).
+ * through their `tools:` allowlist (`pi --tools sliceme-unit`).
  */
 
 import { StringEnum } from "@earendil-works/pi-ai";
@@ -56,10 +56,10 @@ function toArgs(action: string, params: Record<string, unknown>): string[] {
 	return args;
 }
 
-export default function slicemeExtension(pi: ExtensionAPI) {
+export default function unitExtension(pi: ExtensionAPI) {
 	pi.registerTool({
-		name: "sliceme",
-		label: "Sliceme",
+		name: "sliceme-unit",
+		label: "Sliceme unit",
 		description:
 			"Sliceme unit lifecycle for campaign workers: edit only the directories your " +
 			"node owns, then `commit`. The coordinator owns the campaign and lands work with " +
@@ -67,12 +67,12 @@ export default function slicemeExtension(pi: ExtensionAPI) {
 		promptSnippet: "Drive the Sliceme unit lifecycle (edit owned dirs → commit)",
 		promptGuidelines: [
 			"Edit only files inside the directories your DAG node owns; `commit` rejects paths outside them.",
-			"Use `sliceme` action `status` with `short: true` to confirm you are inside your unit worktree.",
-			"Finish with `sliceme` action `commit`. Never run `integrate` or `git merge` yourself.",
+			"Use `sliceme-unit` action `status` with `short: true` to confirm you are inside your unit worktree.",
+			"Finish with `sliceme-unit` action `commit`. Never run `integrate` or `git merge` yourself.",
 		],
 		// Inert until the `sliceme` skill activates it: a plain session must not
 		// advertise (or inject guidelines for) the unit lifecycle. Workers get it
-		// back through their `tools:` allowlist (`pi --tools sliceme`).
+		// back through their `tools:` allowlist (`pi --tools sliceme-unit`).
 		defaultActive: false,
 		parameters: Type.Object({
 			action: StringEnum(SLICEME_TOOL_ACTIONS),

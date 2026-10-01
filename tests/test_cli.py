@@ -265,7 +265,7 @@ class CliTests(unittest.TestCase):
 
     def test_cli_and_agent_surfaces_share_actions(self):
         """The pi extension's action list must match surface.ACTIONS."""
-        ext = REPO_ROOT / "integrations" / "pi" / "sliceme.ts"
+        ext = REPO_ROOT / "integrations" / "pi" / "unit.ts"
         text = ext.read_text(encoding="utf-8")
         match = re.search(r"SLICEME_ACTIONS\s*=\s*\[(.*?)\]\s*as const", text, re.DOTALL)
         self.assertIsNotNone(match, "SLICEME_ACTIONS not found in pi extension")

@@ -5,8 +5,8 @@ deliberate gaps. For the model and workflow, see [guide.md](./guide.md).
 
 ## 1. Actions
 
-The CLI, the pi `sliceme` tool, and the pi `campaign` tool all derive from one action
-registry (`sliceme/surface.py`). Six engine verbs:
+The CLI, the pi `sliceme-unit` tool, and the pi `sliceme` coordinator tool all
+derive from one action registry (`sliceme/surface.py`). Six engine verbs:
 
 | Action | Purpose |
 |---|---|
@@ -17,8 +17,9 @@ registry (`sliceme/surface.py`). Six engine verbs:
 | `report` | Write the deterministic campaign report plus an optional narrative. |
 | `exec` | The single sandboxed executor queue: `submit`/`run`/`wait`/`cancel` check jobs. |
 
-The pi `campaign` tool adds orchestration verbs (`ready`, `spawn`, `verify`) on
-top; those drive the engine and the DAG rather than adding engine actions.
+The pi `sliceme` coordinator tool adds orchestration verbs (`ready`, `spawn`,
+`verify`) on top; those drive the engine and the DAG rather than adding engine
+actions.
 
 ### `start`
 

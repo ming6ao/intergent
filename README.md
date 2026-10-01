@@ -31,8 +31,8 @@ pi install ./                    # or: pi install git:github.com/ming6ao/sliceme
 pi                               # launch a coordinator session
 ```
 
-`pi install` registers both tools (`campaign` for the coordinator, `sliceme` for
-workers) and installs the bundled skill. Both tools are registered **inactive**:
+`pi install` registers both tools (`sliceme` for the coordinator, `sliceme-unit`
+for workers) and installs the bundled skill. Both tools are registered **inactive**:
 a plain session never lists Sliceme, and
 `/skill:sliceme <DESIGN.md>` turns them on for that session (the design path
 must exist). Nothing else is needed: the tools invoke the bundled engine, so
@@ -41,9 +41,9 @@ there is no `pip install` and no `sliceme` on `PATH`.
 ## Quick start
 
 In pi, run `/skill:sliceme <DESIGN.md>` to start a coordinator session; the
-coordinator then drives the design into landed work with the `campaign` tool,
-and each spawned worker uses the `sliceme` tool to edit its owned directories and
-commit.
+coordinator then drives the design into landed work with the `sliceme` tool,
+and each spawned worker uses the `sliceme-unit` tool to edit its owned directories
+and commit.
 
 ```bash
 pi install ./                    # or git:/npm: sliceme
@@ -51,12 +51,12 @@ pi                               # launch a session
 
 # then, in the session:
 #   /skill:sliceme DESIGN.md   activate Sliceme for this session
-#   campaign start <DESIGN.md>   adopt current branch + planner DAG
-#   campaign ready               current-wave nodes whose dependencies are done
-#   campaign spawn <node>        one-shot worker in its own worktree
-#   campaign verify <node>       read-only verifier
-#   campaign integrate <node>    land the verified candidate
-#   campaign report --narrative "what changed / risks"
+#   sliceme start <DESIGN.md>    adopt current branch + planner DAG
+#   sliceme ready                current-wave nodes whose dependencies are done
+#   sliceme spawn <node>         one-shot worker in its own worktree
+#   sliceme verify <node>        read-only verifier
+#   sliceme integrate <node>     land the verified candidate
+#   sliceme report --narrative "what changed / risks"
 ```
 
 Under the hood the tools drive the bundled engine, whose six verbs are `start`,
@@ -79,7 +79,8 @@ sliceme/          engine: service, store, git/worktrees, ownership, verifier,
                     sandbox (isolation profiles), executor (sandboxed queue),
                     integrate (landing + wave ordering + simulation), campaign
 bin/sliceme       CLI shim (runs without install)
-integrations/pi/    pi package: campaign.ts tool, sliceme tool, common.ts, agents/
+integrations/pi/    pi package: coordinator.ts (sliceme tool), unit.ts
+                    (sliceme-unit tool), common.ts, agents/
 tools/gpu.sh        GPU broker (sliceme-owned; invoked by resolved path)
 tests/              unittest suite
 ```

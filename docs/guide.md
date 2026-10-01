@@ -176,7 +176,7 @@ USER
  │  launches pi in the repository, on the feature-branch checkout
  ▼
 COORDINATOR  (top-level pi session — the session the user sees)
- │  tools: campaign start | status | ready | spawn | verify | integrate | report
+ │  tools: sliceme start | status | ready | spawn | verify | integrate | report | exec
  ├── PLANNER   (subagent, invoked by the coordinator via `start`)
  │               reads the design, writes dag.json (plane state, not committed)
  ├── WORKER_*  (one-shot subagent per ready DAG node, own sliceme worktree)
@@ -195,7 +195,7 @@ The verifier never runs commands itself: it delegates to the single sandboxed
 ### Lifecycle
 
 ```text
-campaign start <design>     # adopt current branch, planner -> dag.json + waves
+sliceme start <design>      # adopt current branch, planner -> dag.json + waves
         │
         ▼
 wave N ready ──► spawn (<= concurrency) ──► worker commits candidate
@@ -383,7 +383,8 @@ it; both are exercised by the test suite.
 ## 7. Agent integration (pi)
 
 pi is the supported agent harness. The repository is a **pi package** that ships
-the `campaign` coordinator tool, the `sliceme` worker tool, and the bundled skill.
+the `sliceme` coordinator tool, the `sliceme-unit` worker tool, and the bundled
+skill.
 
 ```bash
 pi install ./                                       # local checkout
@@ -395,9 +396,9 @@ pi                                                  # launch the coordinator
 Both tools register **inactive**: a plain session never lists them nor receives
 their prompt guidelines, so Sliceme is only used when asked for.
 `/skill:sliceme <DESIGN.md>` is the single entry point: when the argument is
-an existing design document, the skill turns `campaign` and `sliceme` on for that
-session. There is no single-agent bootstrap — a session is only bound to a unit
-when the campaign `spawn` action (or the user) creates one.
+an existing design document, the skill turns `sliceme` and `sliceme-unit` on for
+that session. There is no single-agent bootstrap — a session is only bound to a
+unit when the `spawn` action (or the user) creates one.
 
 | Role | Bound to a unit? | Contract |
 |---|---|---|
@@ -407,21 +408,24 @@ when the campaign `spawn` action (or the user) creates one.
 | **Verifier** | no (read-only) | submits acceptance to the executor, judges the recorded evidence, never edits |
 
 `runSubagent` passes each agent's `tools:` allowlist to `pi --tools`, so a
-worker gets `sliceme` but never `campaign`, and the verifier gets no Sliceme tool
-at all.
+worker gets `sliceme-unit` but never the `sliceme` coordinator tool, and the
+verifier gets no Sliceme tool at all.
 
 ### Worker contract
 
-1. `sliceme` action `status` with `short: true` must succeed — you are in your unit
-   worktree.
-2. Edit only files under the directories your DAG node owns. `commit` enforces
-   this: a changed path outside the owned directories is rejected.
-3. Run the node's acceptance commands (CPU only; never the GPU).
-4. `commit` and stop. Workers never run `integrate` or `git merge`.
+1. `sliceme-unit` action `status` with `short: true` must succeed — you are in
+   your unit worktree.
+2. Edit only files under the directories your DAG node owns. `commit` (node
+   scope) or the wave recorder (wave scope) enforces this: a changed path
+   outside the owned directories is rejected.
+3. Under node scope, run the node's acceptance commands (CPU only; never the
+   GPU). Under wave scope the executor runs them.
+4. Node scope: `commit` and stop. Wave scope: stop after editing. Workers never
+   run `integrate` or `git merge`.
 
 ### Coordinator
 
 Start the coordinator with `/skill:sliceme <DESIGN.md>` in pi, then use the
-`campaign` tool — or drive the CLI directly: `start --no-unit` (which adopts the
+`sliceme` tool — or drive the CLI directly: `start --no-unit` (which adopts the
 current branch; check out your branch first), then `spawn`/`verify`/`integrate`
 per ready node, a final idempotent `integrate` sweep, and `report`.
