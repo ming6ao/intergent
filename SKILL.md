@@ -1,19 +1,19 @@
 ---
-name: intergent
-description: 'Deliver a design document as landed work on a feature branch using the Intergent campaign orchestrator: a coordinator turns the design into a DAG of planner/worker/verifier subagents, each worker isolated by a git worktree, each node owning disjoint directories (plan-time ownership), each candidate verified against a fingerprint before integration. Use ONLY when the user explicitly invokes this skill: runs `/skill:intergent`, or names it ("intergent"/"ig") and asks to run a campaign, coordinate parallel agents, or land a feature branch. Do NOT auto-load it merely because a repository contains .intergent/config.json. Requires the intergent pi package. Not for read-only research.'
+name: sliceme
+description: 'Deliver a design document as landed work on a feature branch using the Sliceme campaign orchestrator: a coordinator turns the design into a DAG of planner/worker/verifier subagents, each worker isolated by a git worktree, each node owning disjoint directories (plan-time ownership), each candidate verified against a fingerprint before integration. Use ONLY when the user explicitly invokes this skill: runs `/skill:sliceme`, or names it ("sliceme") and asks to run a campaign, coordinate parallel agents, or land a feature branch. Do NOT auto-load it merely because a repository contains .sliceme/config.json. Requires the sliceme pi package. Not for read-only research.'
 license: Apache-2.0
 disable-model-invocation: true
 metadata:
   version: "0.3.0"
-  author: intergent
+  author: sliceme
 ---
 
-# Intergent
+# Sliceme
 
-Intergent delivers a design document as a set of components on a **feature
+Sliceme delivers a design document as a set of components on a **feature
 branch**. A top-level **coordinator** turns the design into a machine-readable
 DAG (`dag.json`) and drives planner, worker, and verifier subagents. The
-`intergent` engine owns isolation, verification, and integration; all
+`sliceme` engine owns isolation, verification, and integration; all
 serialization is decided at **plan time** from directory ownership.
 
 ```text
@@ -42,24 +42,24 @@ COORDINATOR (this session)
   outside its node's owned directories is rejected, and the coordinator widens
   `owns` or adds a `depends_on` edge (the DAG fingerprint changes, so the next
   `status`/`ready`/`spawn` replans).
-- Everything is reconstructable from `.intergent/` + git after a crash.
+- Everything is reconstructable from `.sliceme/` + git after a crash.
 
-The pi package provides two tools: `campaign` for the coordinator and `ig` for
+The pi package provides two tools: `campaign` for the coordinator and `sliceme` for
 workers. Both register **inactive**, so a plain session never lists them or
-their prompt guidelines; `/skill:intergent <design.md>` activates them for the
+their prompt guidelines; `/skill:sliceme <design.md>` activates them for the
 session when the argument is an existing design document. `runSubagent` applies
-each subagent's `tools:` allowlist, so a worker gets `ig` but never `campaign`,
+each subagent's `tools:` allowlist, so a worker gets `sliceme` but never `campaign`,
 and the verifier gets neither.
 
 ## Hard rules
 
-1. **Workers run inside their unit worktree.** `ig` `action: status`
+1. **Workers run inside their unit worktree.** `sliceme` `action: status`
    (`short: true`) must succeed; otherwise stop. Never edit the main working
    tree.
 2. **Edit only your node's owned directories.** Ownership is declared in
    `dag.json` and enforced by `commit`; a rejected commit means the planner
    under-declared, not that you should widen your own scope.
-3. **A worker's last step is `commit`.** Workers never call `ig` `integrate` or
+3. **A worker's last step is `commit`.** Workers never call `sliceme` `integrate` or
    `git merge`. The coordinator owns verification and integration.
 4. **Ordering is authored in the DAG.** If two nodes would touch the same
    directory, the planner must put them in different waves (disjoint `owns`) or
@@ -88,14 +88,14 @@ the next wave opens and its units fork from the updated feature branch. A
 coordinator-added `depends_on` edge changes the DAG fingerprint and the next
 `status`/`ready`/`spawn` automatically replans the waves.
 
-The coordinator's own checkout is **not** an Intergent unit; `campaign start`
+The coordinator's own checkout is **not** an Sliceme unit; `campaign start`
 bootstraps the plane with `--no-unit` and adopts the **currently checked-out
 branch** as the campaign feature branch — it never creates one. Starting on the
 repository default branch is refused; promotion from the feature branch to the
 default branch is a human `git` step (`integrate` refuses the plane's recorded
 default branch).
 
-## Unit actions (the `ig` tool)
+## Unit actions (the `sliceme` tool)
 
 | Action | Purpose |
 |---|---|
@@ -107,12 +107,12 @@ default branch).
 
 ## Worker workflow
 
-A spawned worker calls the `ig` tool from its own worktree:
+A spawned worker calls the `sliceme` tool from its own worktree:
 
 ```
-ig action: status, short: true
+sliceme action: status, short: true
 # ... edit only files under your node's owned directories ...
-ig action: commit, message: "add scope check to Login", summary: "scope check"
+sliceme action: commit, message: "add scope check to Login", summary: "scope check"
 ```
 
 Ownership syntax is `dir:PATH` (a bare path is also accepted), always a

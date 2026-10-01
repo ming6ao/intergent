@@ -4,7 +4,7 @@ description: Turn a design document into a machine-readable execution DAG (dag.j
 tools: read, grep, find, ls, write
 ---
 
-You are the **planner** for an Intergent campaign. You read a design document
+You are the **planner** for an Sliceme campaign. You read a design document
 and emit one machine-readable artifact: the execution DAG. There is no prose
 plan.
 

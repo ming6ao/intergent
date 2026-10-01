@@ -1,23 +1,23 @@
 /**
- * Intergent **campaign** extension for pi — the coordinator tool.
+ * Sliceme **campaign** extension for pi — the coordinator tool.
  *
  * One top-level coordinator session turns a design document into landed work by
  * spawning a planner, one-shot workers, and a read-only verifier, while
- * `intergent` remains the deterministic isolation/integration engine.  The DAG
- * in `.intergent/<branch-key>.dag.json` is the only schedule; there are no
+ * `sliceme` remains the deterministic isolation/integration engine.  The DAG
+ * in `.sliceme/<branch-key>.dag.json` is the only schedule; there are no
  * phases in the scheduler (docs/guide.md).
  *
  * One tool, `campaign`, wraps the CLI's orchestration verbs:
  *
  *   start <design>   adopt current branch + no-unit plane + planner -> dag.json
- *   status           merge `intergent status --json` with live child state
+ *   status           merge `sliceme status --json` with live child state
  *   ready            nodes whose every dependency is done
  *   spawn <node>     create the unit, launch a one-shot worker, tee its log
  *   verify <node>    verifier on the latest prepared candidate; record a verdict
  *   integrate <node> land the verified candidate onto the feature branch
- *   report           `intergent report` plus the coordinator's narrative
+ *   report           `sliceme report` plus the coordinator's narrative
  *
- * Workers are scoped to the `ig` unit tool (`intergent.ts`) and run inside
+ * Workers are scoped to the `sliceme` unit tool (`sliceme.ts`) and run inside
  * their unit worktree; `runSubagent` enforces the agent `tools:` allowlist, so
  * a worker never sees this `campaign` tool.
  *
@@ -25,13 +25,13 @@
  * orchestrator crash kills them, and on resume any `running` node is reset to
  * `pending`.  Only the verifier is given the GPU broker (`tools/gpu.sh`).
  *
- * Both Intergent tools are registered `defaultActive: false`: a plain session
- * never advertises them.  The `intergent` skill activates them for the session
- * only when invoked as `/skill:intergent <design.md>` with an existing design
+ * Both Sliceme tools are registered `defaultActive: false`: a plain session
+ * never advertises them.  The `sliceme` skill activates them for the session
+ * only when invoked as `/skill:sliceme <design.md>` with an existing design
  * document.
  *
- * Install as part of the `intergent` pi package (`pi install ./` or
- * `pi install npm:intergent`); shared helpers live in `./common.ts`.
+ * Install as part of the `sliceme` pi package (`pi install ./` or
+ * `pi install npm:sliceme`); shared helpers live in `./common.ts`.
  */
 
 import * as fs from "node:fs";
@@ -45,7 +45,7 @@ import {
 	logEvent,
 	logPath,
 	readJson,
-	runIg,
+	runSliceme,
 	runSubagent,
 	stateDir,
 	statePath,
@@ -240,12 +240,12 @@ function summarise(dag: Dag, state: CampaignState): string {
 }
 
 export default function campaignExtension(pi: ExtensionAPI) {
-	// Intergent is opt-in. The `campaign`/`ig` tools are registered inactive, so
+	// Sliceme is opt-in. The `campaign`/`sliceme` tools are registered inactive, so
 	// a plain session neither lists them nor appends their prompt guidelines.
-	// `/skill:intergent <design.md>` is the only thing that turns them on for
+	// `/skill:sliceme <design.md>` is the only thing that turns them on for
 	// the session. A design document is required: without one the input is
 	// dropped with a warning rather than starting a campaign.
-	const SKILL_INVOCATION = /^\/skill:intergent(?:\s+([\s\S]*))?$/;
+	const SKILL_INVOCATION = /^\/skill:sliceme(?:\s+([\s\S]*))?$/;
 
 	function hasDesignDocument(args: string, cwd: string): boolean {
 		for (const raw of args.split(/\s+/)) {
@@ -262,7 +262,7 @@ export default function campaignExtension(pi: ExtensionAPI) {
 		if (!hasDesignDocument(match[1] ?? "", ctx.cwd)) {
 			if (ctx.hasUI) {
 				ctx.ui.notify(
-					"intergent: pass a design document, e.g. /skill:intergent docs/design.md",
+					"sliceme: pass a design document, e.g. /skill:sliceme docs/design.md",
 					"warning",
 				);
 			}
@@ -270,15 +270,15 @@ export default function campaignExtension(pi: ExtensionAPI) {
 		}
 		const active = new Set(pi.getActiveTools());
 		active.add("campaign");
-		active.add("ig");
+		active.add("sliceme");
 		pi.setActiveTools([...active]);
 	});
 
-	const ig = (ctx: ExtensionContext, args: string[], signal?: AbortSignal) =>
-		runIg(pi, ctx, args, signal);
+	const sliceme = (ctx: ExtensionContext, args: string[], signal?: AbortSignal) =>
+		runSliceme(pi, ctx, args, signal);
 
 	async function featureBranch(ctx: ExtensionContext): Promise<string> {
-		const { json } = await ig(ctx, ["status"]);
+		const { json } = await sliceme(ctx, ["status"]);
 		const branch = json?.feature_branch ?? json?.main_branch;
 		if (!branch) throw new Error("campaign: no feature branch; run `campaign start` first");
 		return String(branch);
@@ -339,7 +339,7 @@ export default function campaignExtension(pi: ExtensionAPI) {
 
 	/**
 	 * Ensure `state.waves` matches the current DAG.  Waves are the engine's
-	 * deterministic projection (`ig status` -> `dag_waves`); a coordinator-added
+	 * deterministic projection (`sliceme status` -> `dag_waves`); a coordinator-added
 	 * `depends_on` edge changes the DAG fingerprint and triggers a replan.
 	 * Replanning preserves each node's done/pending status and the per-wave
 	 * cleanup flag, so a resume never re-runs finished work.
@@ -352,7 +352,7 @@ export default function campaignExtension(pi: ExtensionAPI) {
 	): Promise<void> {
 		const fingerprint = dagFingerprint(dag);
 		if (state.waves?.length && state.dag_fingerprint === fingerprint) return;
-		const { json } = await ig(ctx, ["status"]);
+		const { json } = await sliceme(ctx, ["status"]);
 		if (json?.dag_waves_error) throw new Error(`campaign: ${json.dag_waves_error}`);
 		reconcileWaves(state, json?.dag_waves ?? []);
 		state.dag_fingerprint = fingerprint;
@@ -422,7 +422,7 @@ export default function campaignExtension(pi: ExtensionAPI) {
 						type: "text" as const,
 						text:
 							`campaign: '${branch}' is the repository default branch. ` +
-							`Create or check out a feature branch first; intergent adopts the ` +
+							`Create or check out a feature branch first; sliceme adopts the ` +
 							`current branch and never creates one.`,
 					},
 				],
@@ -432,7 +432,7 @@ export default function campaignExtension(pi: ExtensionAPI) {
 
 		// 1. Plane with no coordinator unit; the engine adopts the current branch
 		// as the integration/feature branch (and re-points an existing plane).
-		await ig(ctx, ["start", "--no-unit", "--main", branch], signal);
+		await sliceme(ctx, ["start", "--no-unit", "--main", branch], signal);
 
 		const dagFile = dagPath(ctx.cwd, branch);
 		const stateFile = statePath(ctx.cwd, branch);
@@ -441,7 +441,7 @@ export default function campaignExtension(pi: ExtensionAPI) {
 		// over state.json. A node left `running` by a crash is reset.
 		if (existing?.nodes?.length && !params.replan) {
 			const state: any = readJson(stateFile, { nodes: {} });
-			const status = (await ig(ctx, ["status"], signal)).json;
+			const status = (await sliceme(ctx, ["status"], signal)).json;
 			const units = new Map<string, any>((status?.units ?? []).map((u: any) => [u.name, u]));
 			const candidates = status?.candidates ?? [];
 			for (const node of nodeIds(existing)) {
@@ -533,7 +533,7 @@ export default function campaignExtension(pi: ExtensionAPI) {
 	): Promise<any> {
 		const node = String(params.node ?? "");
 		if (!node) throw new Error("spawn requires --node <id>");
-		const { json } = await ig(ctx, ["status"]);
+		const { json } = await sliceme(ctx, ["status"]);
 		const branch = String(json?.feature_branch ?? "main");
 		const stateFile = statePath(ctx.cwd, branch);
 		const dag = readJson<Dag>(dagPath(ctx.cwd, branch), { nodes: [] });
@@ -569,12 +569,12 @@ export default function campaignExtension(pi: ExtensionAPI) {
 		const attempt = attempts + 1;
 		const unitName = attempt === 1 ? node : `${node}-a${attempt}`;
 		try {
-			await ig(ctx, ["status", "--gc"]);
+			await sliceme(ctx, ["status", "--gc"]);
 		} catch {
 			/* nothing to prune */
 		}
 
-		const created = await ig(
+		const created = await sliceme(
 			ctx,
 			["start", "--name", unitName, "--base", branch, "--kind", "worker"],
 			signal,
@@ -603,7 +603,7 @@ export default function campaignExtension(pi: ExtensionAPI) {
 			`You are a one-shot worker for DAG node "${node}" (${spec.label ?? ""}). ` +
 			`Goal: ${spec.goal ?? ""}. You own these directories: ${(spec.owns ?? []).join(", ")}. ` +
 			`Run these acceptance commands before committing: ${(spec.acceptance ?? []).join(" ; ")}. ` +
-			`You MUST use the \`ig\` tool: edit ONLY files inside your owned directories, then ` +
+			`You MUST use the \`sliceme\` tool: edit ONLY files inside your owned directories, then ` +
 			`commit. A commit that touches anything else is rejected. Never use the GPU and ` +
 			`never touch another node.` +
 			previousEvidence;
@@ -654,10 +654,10 @@ export default function campaignExtension(pi: ExtensionAPI) {
 			signal,
 		});
 
-		// Record the verdict in intergent (§6.4) so re-integration can reuse it.
+		// Record the verdict in sliceme (§6.4) so re-integration can reuse it.
 		const acceptanceArgs: string[] = [];
 		for (const cmd of spec.acceptance ?? []) acceptanceArgs.push("--acceptance", cmd);
-		const recorded = await ig(
+		const recorded = await sliceme(
 			ctx,
 			["integrate", "--node", unit, "--check-only", "--gpu", spec.gpu ?? "none", ...acceptanceArgs],
 			signal,
@@ -696,7 +696,7 @@ export default function campaignExtension(pi: ExtensionAPI) {
 		const args = unit
 			? ["integrate", "--node", unit, "--cleanup", "none"]
 			: ["integrate", "--cleanup", "none"];
-		const { json: integrated, text } = await ig(ctx, args, signal);
+		const { json: integrated, text } = await sliceme(ctx, args, signal);
 		const results = integrated?.results ?? [];
 		const failed = results.some((r: any) => r.status === "failed");
 		let completed: WaveState[] = [];
@@ -735,7 +735,7 @@ export default function campaignExtension(pi: ExtensionAPI) {
 						`(${wave.members.join(", ")}) now?`,
 				);
 				if (!ok) continue;
-				await ig(ctx, ["integrate", "--cleanup", "worktrees"], signal);
+				await sliceme(ctx, ["integrate", "--cleanup", "worktrees"], signal);
 				for (const id of wave.members) {
 					try {
 						fs.rmSync(logPath(ctx.cwd, branch, id));
@@ -756,13 +756,13 @@ export default function campaignExtension(pi: ExtensionAPI) {
 
 	pi.registerTool({
 		name: "campaign",
-		label: "Intergent campaign",
+		label: "Sliceme campaign",
 		description:
 			"Coordinate a design into landed work: start (adopt current branch + planner), " +
 			"status, ready, spawn (one-shot worker), verify (read-only verifier), " +
 			"integrate (land a verified node), report. The dag.json plan is the only schedule; " +
 			"waves are a projection of it.",
-		promptSnippet: "Drive an Intergent campaign (start → spawn → verify → integrate)",
+		promptSnippet: "Drive an Sliceme campaign (start → spawn → verify → integrate)",
 		promptGuidelines: [
 			"The DAG in dag.json is the only authored schedule; waves are its deterministic " +
 				"projection (owns + depends_on, capped by concurrency).",
@@ -777,7 +777,7 @@ export default function campaignExtension(pi: ExtensionAPI) {
 			"Only the verifier may use the GPU (tools/gpu.sh); workers never touch it.",
 			"Integrate each node after its verifier passes; cleanup is offered once per wave.",
 		],
-		// Inert until the `intergent` skill activates it, so a plain session never
+		// Inert until the `sliceme` skill activates it, so a plain session never
 		// advertises the campaign workflow or injects its guidelines.
 		defaultActive: false,
 		parameters: Type.Object({
@@ -834,7 +834,7 @@ export default function campaignExtension(pi: ExtensionAPI) {
 					const args = ["report"];
 					if (params.narrative) args.push("--narrative", String(params.narrative));
 					if (dag.design) args.push("--design", dag.design);
-					const { json, text } = await ig(ctx, args, signal);
+					const { json, text } = await sliceme(ctx, args, signal);
 					return { content: [{ type: "text" as const, text }], details: json ?? {} };
 				}
 				default:

@@ -1,8 +1,8 @@
 /**
- * Shared helpers for the Intergent pi extensions.
+ * Shared helpers for the Sliceme pi extensions.
  *
- * `campaign.ts` is the coordinator tool and `intergent.ts` is the `ig` unit
- * tool; both are thin adapters over the bundled `intergent` CLI. The CLI is the
+ * `campaign.ts` is the coordinator tool and `sliceme.ts` is the `sliceme` unit
+ * tool; both are thin adapters over the bundled `sliceme` CLI. The CLI is the
  * engine surface, so the tools stay harness-agnostic and need no `PATH`
  * install. `runSubagent` also applies each agent's `tools:` allowlist, scoping
  * workers to the unit tool and the coordinator to the campaign tool.
@@ -16,7 +16,7 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
-export interface IgResult {
+export interface SlicemeResult {
 	text: string;
 	json: any;
 }
@@ -27,7 +27,7 @@ export interface SubagentResult {
 	stderr: string;
 }
 
-export interface IgInvocation {
+export interface SlicemeInvocation {
 	command: string;
 	prefix: string[];
 }
@@ -44,7 +44,7 @@ const HERE = (() => {
 export function packageDir(): string {
 	let dir = HERE;
 	for (let i = 0; i < 6; i++) {
-		if (existsSync(path.join(dir, "bin", "intergent"))) return dir;
+		if (existsSync(path.join(dir, "bin", "sliceme"))) return dir;
 		const parent = path.dirname(dir);
 		if (parent === dir) break;
 		dir = parent;
@@ -53,16 +53,16 @@ export function packageDir(): string {
 }
 
 /**
- * Resolve how to run the bundled CLI. `INTERGENT_BIN` overrides for local
+ * Resolve how to run the bundled CLI. `SLICEME_BIN` overrides for local
 development; otherwise the CLI shipped inside the pi package is used, so no
 `PATH` install is needed. Running the bundled script through `python3` keeps it
 portable.
  */
-export function resolveIgInvocation(): IgInvocation {
-	if (process.env.INTERGENT_BIN) {
-		return { command: process.env.INTERGENT_BIN, prefix: [] };
+export function resolveSlicemeInvocation(): SlicemeInvocation {
+	if (process.env.SLICEME_BIN) {
+		return { command: process.env.SLICEME_BIN, prefix: [] };
 	}
-	const bundled = path.join(packageDir(), "bin", "intergent");
+	const bundled = path.join(packageDir(), "bin", "sliceme");
 	return { command: "python3", prefix: [bundled] };
 }
 
@@ -74,15 +74,15 @@ export function parseJson(text: string): any {
 	}
 }
 
-/** Run the Intergent CLI with `--json` from the session's cwd. */
-export async function runIg(
+/** Run the Sliceme CLI with `--json` from the session's cwd. */
+export async function runSliceme(
 	pi: ExtensionAPI,
 	ctx: ExtensionContext,
 	args: string[],
 	signal?: AbortSignal,
 	timeout = 600_000,
-): Promise<IgResult> {
-	const invocation = resolveIgInvocation();
+): Promise<SlicemeResult> {
+	const invocation = resolveSlicemeInvocation();
 	const result = await pi.exec(invocation.command, [...invocation.prefix, "--json", ...args], {
 		cwd: ctx.cwd,
 		signal,
@@ -90,7 +90,7 @@ export async function runIg(
 	});
 	const text = [result.stdout, result.stderr].filter((s) => s?.trim()).join("\n").trim();
 	if (result.code !== 0) {
-		throw new Error(text || `intergent exited with code ${result.code}`);
+		throw new Error(text || `sliceme exited with code ${result.code}`);
 	}
 	return { text: text || "ok", json: parseJson(result.stdout) };
 }
@@ -104,7 +104,7 @@ export function branchKey(branch: string): string {
 }
 
 export function stateDir(cwd: string): string {
-	return path.join(cwd, ".intergent");
+	return path.join(cwd, ".sliceme");
 }
 
 export function dagPath(cwd: string, branch: string): string {
@@ -209,14 +209,14 @@ export async function runSubagent(options: {
 		const raw = fs.readFileSync(agentFile, "utf8");
 		// Scope the subagent to its frontmatter `tools:`. `--tools` replaces the
 		// default selection, so the list must name every tool the agent needs;
-		// this is what gives workers the `ig` unit tool but never `campaign`.
+		// this is what gives workers the `sliceme` unit tool but never `campaign`.
 		const tools = agentFrontmatterValue(raw, "tools");
 		if (tools) args.push("--tools", tools);
 		// Strip the YAML frontmatter before appending the system prompt.
 		const stripped = raw.replace(/^---\n[\s\S]*?\n---\n/, "");
 		promptPath = path.join(
 			os.tmpdir(),
-			`ig-campaign-${options.agent}-${process.pid}-${Date.now()}.md`,
+			`sliceme-campaign-${options.agent}-${process.pid}-${Date.now()}.md`,
 		);
 		fs.writeFileSync(promptPath, stripped, "utf8");
 		args.push("--append-system-prompt", promptPath);

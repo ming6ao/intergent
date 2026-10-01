@@ -1,12 +1,12 @@
 /**
- * Intergent unit lifecycle tool for pi.
+ * Sliceme unit lifecycle tool for pi.
  *
- * Registers a native `ig` tool that forwards to the bundled `intergent` CLI.
+ * Registers a native `sliceme` tool that forwards to the bundled `sliceme` CLI.
  * This is the unit lifecycle tool that campaign **workers** use
  * (`status → commit`). Workers are scoped to it by their agent `tools:`
  * allowlist, so they never see `campaign.ts`; the coordinator drives the
  * campaign with the `campaign` tool instead.  The tool shells out to the
- * bundled CLI, so no `intergent` install on `PATH` is needed.
+ * bundled CLI, so no `sliceme` install on `PATH` is needed.
  *
  * Ownership is decided at plan time: a worker edits only the directories its
  * DAG node owns, and `commit` refuses paths outside them (plan conformance).
@@ -14,21 +14,21 @@
  *
  * There is no automatic single-agent bootstrap: a session is only bound to a
  * unit when something explicitly creates one (the `campaign` tool's `spawn`,
- * or a human running `intergent start`).  `ig` resolves the unit from `ctx.cwd`,
+ * or a human running `sliceme start`).  `sliceme` resolves the unit from `ctx.cwd`,
  * so a worker launched inside its unit worktree needs no `--unit`.
  *
  * The tool is registered `defaultActive: false`, so a plain session never sees
- * it.  The `intergent` skill turns it on for the session; workers get it back
- * through their `tools:` allowlist (`pi --tools ig`).
+ * it.  The `sliceme` skill turns it on for the session; workers get it back
+ * through their `tools:` allowlist (`pi --tools sliceme`).
  */
 
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { runIg } from "./common.ts";
+import { runSliceme } from "./common.ts";
 
-/** Mirrors `intergent.surface.ACTIONS`; kept in sync by a test. */
-export const IG_ACTIONS = [
+/** Mirrors `sliceme.surface.ACTIONS`; kept in sync by a test. */
+export const SLICEME_ACTIONS = [
 	"start",
 	"status",
 	"commit",
@@ -36,8 +36,8 @@ export const IG_ACTIONS = [
 	"report",
 ] as const;
 
-/** The `ig` tool exposes exactly the agent surface. */
-export const IG_TOOL_ACTIONS = [...IG_ACTIONS] as const;
+/** The `sliceme` tool exposes exactly the agent surface. */
+export const SLICEME_TOOL_ACTIONS = [...SLICEME_ACTIONS] as const;
 
 function toArgs(action: string, params: Record<string, unknown>): string[] {
 	const args = [action];
@@ -55,26 +55,26 @@ function toArgs(action: string, params: Record<string, unknown>): string[] {
 	return args;
 }
 
-export default function intergentExtension(pi: ExtensionAPI) {
+export default function slicemeExtension(pi: ExtensionAPI) {
 	pi.registerTool({
-		name: "ig",
-		label: "Intergent",
+		name: "sliceme",
+		label: "Sliceme",
 		description:
-			"Intergent unit lifecycle for campaign workers: edit only the directories your " +
+			"Sliceme unit lifecycle for campaign workers: edit only the directories your " +
 			"node owns, then `commit`. The coordinator owns the campaign and lands work with " +
 			"`integrate`; there is no single-agent handoff and no declare step.",
-		promptSnippet: "Drive the Intergent unit lifecycle (edit owned dirs → commit)",
+		promptSnippet: "Drive the Sliceme unit lifecycle (edit owned dirs → commit)",
 		promptGuidelines: [
 			"Edit only files inside the directories your DAG node owns; `commit` rejects paths outside them.",
-			"Use `ig` action `status` with `short: true` to confirm you are inside your unit worktree.",
-			"Finish with `ig` action `commit`. Never run `integrate` or `git merge` yourself.",
+			"Use `sliceme` action `status` with `short: true` to confirm you are inside your unit worktree.",
+			"Finish with `sliceme` action `commit`. Never run `integrate` or `git merge` yourself.",
 		],
-		// Inert until the `intergent` skill activates it: a plain session must not
+		// Inert until the `sliceme` skill activates it: a plain session must not
 		// advertise (or inject guidelines for) the unit lifecycle. Workers get it
-		// back through their `tools:` allowlist (`pi --tools ig`).
+		// back through their `tools:` allowlist (`pi --tools sliceme`).
 		defaultActive: false,
 		parameters: Type.Object({
-			action: StringEnum(IG_TOOL_ACTIONS),
+			action: StringEnum(SLICEME_TOOL_ACTIONS),
 			unit: Type.Optional(Type.String({ description: "unit (defaults to this worktree)" })),
 			task: Type.Optional(Type.String()),
 			summary: Type.Optional(Type.String()),
@@ -117,7 +117,7 @@ export default function intergentExtension(pi: ExtensionAPI) {
 		}),
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			const { action, ...rest } = params as Record<string, unknown> & { action: string };
-			const { text, json } = await runIg(pi, ctx, toArgs(action, rest), signal);
+			const { text, json } = await runSliceme(pi, ctx, toArgs(action, rest), signal);
 			return { content: [{ type: "text" as const, text }], details: json ?? {} };
 		},
 	});

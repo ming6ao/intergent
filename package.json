@@ -1,25 +1,25 @@
 {
-  "name": "intergent",
+  "name": "sliceme",
   "version": "0.3.0",
   "description": "Coordination for parallel coding agents: campaign DAG, git worktrees, plan-time directory ownership, verified integration.",
   "license": "Apache-2.0",
-  "keywords": ["pi-package", "pi", "pi-coding-agent", "intergent", "agents", "orchestration"],
+  "keywords": ["pi-package", "pi", "pi-coding-agent", "sliceme", "agents", "orchestration"],
   "files": [
     "SKILL.md",
     "README.md",
     "LICENSE",
     "bin/",
-    "intergent/",
+    "sliceme/",
     "tools/",
     "docs/",
     "integrations/pi/agents/",
     "integrations/pi/common.ts",
-    "integrations/pi/intergent.ts",
+    "integrations/pi/sliceme.ts",
     "integrations/pi/campaign.ts"
   ],
   "pi": {
     "extensions": [
-      "./integrations/pi/intergent.ts",
+      "./integrations/pi/sliceme.ts",
       "./integrations/pi/campaign.ts"
     ],
     "skills": ["."]
