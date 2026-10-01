@@ -7,15 +7,19 @@
  * in `.intergent/<branch-key>.dag.json` is the only schedule; there are no
  * phases in the scheduler (docs/orchestration.md).
  *
- * One tool, `campaign`, mirrors the shape of `ig`:
+ * One tool, `campaign`, wraps the CLI's orchestration verbs:
  *
  *   start <design>   feature branch + no-unit plane + planner -> dag.json
- *   status           merge `ig status --json` with live child state
+ *   status           merge `intergent status --json` with live child state
  *   ready            nodes whose every dependency is done
  *   spawn <node>     create the unit, launch a one-shot worker, tee its log
  *   verify <node>    verifier on the latest prepared candidate; record a verdict
  *   integrate <node> land the verified candidate onto the feature branch
- *   report           `ig report` plus the coordinator's narrative
+ *   report           `intergent report` plus the coordinator's narrative
+ *
+ * Workers are scoped to the `ig` unit tool (`intergent.ts`) and run inside
+ * their unit worktree; `runSubagent` enforces the agent `tools:` allowlist, so
+ * a worker never sees this `campaign` tool.
  *
  * Workers are child processes of the coordinator and are **not detached**: an
  * orchestrator crash kills them, and on resume any `running` node is reset to
@@ -332,7 +336,7 @@ export default function campaignExtension(pi: ExtensionAPI) {
 			`You are a one-shot worker for DAG node "${node}" (${spec.label ?? ""}). ` +
 			`Goal: ${spec.goal ?? ""}. You own: ${(spec.owns ?? []).join(", ")}. ` +
 			`Run these acceptance commands before committing: ${(spec.acceptance ?? []).join(" ; ")}. ` +
-			`You MUST use the ig lifecycle: declare every owned scope, edit only your worktree, ` +
+			`You MUST use the \`ig\` tool: declare every owned scope, edit only your worktree, ` +
 			`then commit. Never use the GPU and never touch another node.` +
 			previousEvidence;
 		const result = await runSubagent({

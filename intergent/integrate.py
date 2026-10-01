@@ -226,7 +226,7 @@ def integrate(
         raise IntergentError(
             f"refusing to integrate onto the plane's default branch '{main_branch}'; "
             "campaigns must set a feature branch at init "
-            "(`ig start --no-unit --main feat/... --base ...`)"
+            "(`intergent start --no-unit --main feat/... --base ...`)"
         )
 
     acceptance = list(acceptance or [])
@@ -352,7 +352,7 @@ def integrate(
         merge = gitutil.merge_into(
             wt_path,
             candidate["branch"],
-            message=f"ig integrate {candidate['branch']}",
+            message=f"intergent integrate {candidate['branch']}",
             no_ff=True,
         )
         if not merge.ok:

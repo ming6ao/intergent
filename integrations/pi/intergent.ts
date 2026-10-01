@@ -2,9 +2,11 @@
  * Intergent unit lifecycle tool for pi.
  *
  * Registers a native `ig` tool that forwards to the bundled `intergent` CLI.
- * This is the tool campaign **workers** use (`declare → commit`) and that the
- * coordinator uses for `start`/`status`; the campaign orchestration itself
- * lives in `campaign.ts`.
+ * This is the unit lifecycle tool that campaign **workers** use
+ * (`declare → commit`). Workers are scoped to it by their agent `tools:`
+ * allowlist, so they never see `campaign.ts`; the coordinator drives the
+ * campaign with the `campaign` tool instead.  The tool shells out to the
+ * bundled CLI, so no `intergent` install on `PATH` is needed.
  *
  * There is no automatic single-agent bootstrap: a session is only bound to a
  * unit when something explicitly creates one (the `campaign` tool's `spawn`,
@@ -51,10 +53,9 @@ export default function intergentExtension(pi: ExtensionAPI) {
 		name: "ig",
 		label: "Intergent",
 		description:
-			"Intergent unit lifecycle. Campaign workers call `declare` before editing and " +
-			"`commit` when done; the coordinator calls `start`/`status` and lands work with " +
-			"`integrate`. There is no single-agent handoff: the campaign coordinator owns " +
-			"verification and integration.",
+			"Intergent unit lifecycle for campaign workers: `declare` before editing and " +
+			"`commit` when done. The coordinator owns the campaign and lands work with " +
+			"`integrate`; there is no single-agent handoff.",
 		promptSnippet: "Drive the Intergent unit lifecycle (declare → commit)",
 		promptGuidelines: [
 			"Use `ig` action `declare` before editing any file; scope every file or symbol you touch.",

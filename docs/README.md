@@ -23,5 +23,5 @@ ships the native tools, the CLI, and the skill ([`SKILL.md`](../SKILL.md)).
 ## Naming
 
 ```
-CLI:     intergent  (alias: ig)
+CLI:     intergent
 ```

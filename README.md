@@ -4,20 +4,75 @@
 > DAG, a git worktree per worker, scope leases, and fingerprint-pinned
 > integration onto a feature branch.
 
-**Status:** implemented as a dependency-free Python reference
-(see [docs/implementation.md](./docs/implementation.md)).
-
 Intergent lets several coding agents work the same repository in parallel
 without authoring conflicting changes, verifies each candidate against a
 content fingerprint, and lands verified candidates one DAG node at a time on a
-campaign feature branch.
+campaign feature branch. It is a dependency-free Python 3.11+ engine
+([`intergent/`](./intergent)) plus a pi coordinator tool.
 
 - **Isolation:** one `git worktree` + branch per worker unit.
 - **Leases:** declared scopes are granted, queued, or escalated deterministically.
-- **Verification:** the plane's checks and each node's acceptance commands are
-  pinned to a fingerprint and reused across re-integration.
-- **Integration:** `--no-ff` merges onto the feature branch, ordered by wave
-  mergeability; a safety rail refuses the default branch.
+- **Verification:** plane checks and per-node acceptance are pinned to a
+  fingerprint and reused across re-integration.
+- **Integration:** ordered `--no-ff` merges onto the feature branch; a safety
+  rail refuses the default branch.
+
+## Install
+
+```bash
+pi install ./                    # or: pi install git:github.com/ming6ao/intergent
+pi                               # launch a coordinator session
+```
+
+`pi install` registers both tools (`campaign` for the coordinator, `ig` for
+workers) and installs the bundled skill. Nothing else is needed: the tools
+invoke the bundled engine, so there is no `pip install` and no `intergent` on
+`PATH`.
+
+## Quick start
+
+In pi, the coordinator drives a design into landed work with the `campaign`
+tool; each spawned worker uses the `ig` tool to declare scopes, edit, and
+commit.
+
+```bash
+pi install ./                    # or git:/npm: intergent
+pi                               # launch a coordinator session
+
+# then, in the session:
+#   campaign start <DESIGN.md>   feature branch + planner DAG
+#   campaign ready               nodes whose dependencies are done
+#   campaign spawn <node>        one-shot worker in its own worktree
+#   campaign verify <node>       read-only verifier
+#   campaign integrate <node>    land the verified candidate
+#   campaign report --narrative "what changed / risks"
+```
+
+Under the hood the tools drive the bundled engine, whose six verbs are `start`,
+`status`, `declare`, `commit`, `integrate`, `report`. See
+[docs/orchestration.md](./docs/orchestration.md) and
+[docs/implementation.md](./docs/implementation.md).
+
+## Develop
+
+The engine is Python 3.11+ with no runtime dependencies; the pi adapter is
+TypeScript. Run the suite with:
+
+```bash
+python3 -m unittest discover -s tests -v
+```
+
+```
+intergent/          engine: service, store, git/worktrees, leases, verifier
+bin/intergent       CLI shim (runs without install)
+integrations/pi/    pi package: campaign.ts tool, common.ts, agents/
+tools/gpu.sh        GPU broker (verifier only)
+tests/              unittest suite
+```
+
+When adding an engine action, update `intergent/surface.py` (source of truth)
+and the CLI follows; the pi `campaign` tool drives the CLI. See
+[docs/implementation.md](./docs/implementation.md).
 
 ## Documentation
 
@@ -25,71 +80,5 @@ Start here: **[docs/README.md](./docs/README.md)**
 
 - [Overview](./docs/overview.md) · [Architecture](./docs/architecture.md) ·
   [Conflict engine](./docs/conflict-engine.md) · [Local plane](./docs/local-plane.md) ·
-  [**Local implementation**](./docs/implementation.md) ·
-  [**Agent integration**](./docs/agents.md) ·
-  [Orchestration](./docs/orchestration.md)
-
-## Campaign quick start
-
-`intergent` is implemented in [`intergent/`](./intergent) (dependency-free
-Python 3.11+). A **coordinator** session drives the campaign; workers run in
-their own worktrees.
-
-```bash
-# 1. campaign bootstrap: feature branch, no coordinator unit
-./bin/intergent start --no-unit --main feat/example --base main
-
-# 2. a worker node (its own worktree on the feature branch)
-./bin/intergent start --name w1 --base feat/example
-#    ... worker declares, edits, runs acceptance, commits ...
-
-# 3. verify + land the verified candidate, then report
-./bin/intergent integrate --node w1
-./bin/intergent report --narrative "what changed / risks"
-```
-
-In pi the coordinator drives the same steps with the `campaign` tool
-(`start → status/ready → spawn → verify → integrate → report`). See
-[docs/orchestration.md](./docs/orchestration.md).
-
-Six actions cover the whole lifecycle: `start`, `status`, `declare`, `commit`,
-`integrate`, `report`. `start --no-unit --main <feature> --base <base>`
-bootstraps a campaign; `declare` also does `--dry-run` checks and
-`--renew`/`--release`; `integrate` takes `--node`, `--acceptance`, `--gpu`,
-`--check-only`, and `--cleanup`; `status --health/--simulate/--gc` diagnoses.
-The pi extension exposes exactly **one** tool whose `action` is one of these
-verbs. See [docs/implementation.md](./docs/implementation.md).
-
-### Run a campaign inside pi
-
-- **pi** — the repository is a pi package shipping the `ig` and `campaign`
-  tools plus the skill:
-
-  ```bash
-  pi install ./                                  # or git:/npm: intergent
-  INTERGENT_AUTO_BOOTSTRAP=0 pi                  # launch the coordinator
-  ```
-
-- **Bundled skill**: [`SKILL.md`](./SKILL.md) and
-  [integrations/pi/](./integrations/pi/README.md).
-- Full guide: [docs/agents.md](./docs/agents.md).
-
-Workers `declare`, edit, and `commit`; the coordinator runs the read-only
-verifier and lands the candidate with `integrate`. Promotion from the feature
-branch to the default branch stays a human `git` step.
-
-### Install as an agent skill
-
-```bash
-npx skills add ming6ao/intergent -g -y -a pi
-```
-
-This repository **is** an Agent Skill: the root [`SKILL.md`](./SKILL.md) bundles
-the CLI (`bin/intergent` + the `intergent/` package), so no separate
-`pip install` is required. The same repo is a **pi package** (`package.json`)
-that installs the tools and the skill together with `pi install`. See
-[docs/agents.md](./docs/agents.md).
-
-```
-CLI:     intergent  (alias: ig)
-```
+  [Local implementation](./docs/implementation.md) ·
+  [Agent integration](./docs/agents.md) · [Orchestration](./docs/orchestration.md)

@@ -77,7 +77,7 @@ def _merge_into_wave(root: Path, combined: str, branch: str) -> tuple[bool, str,
     if not outcome.clean or not outcome.tree:
         return False, combined, outcome.conflicts
     new_ref = _synthetic_commit(
-        root, outcome.tree, [combined, gitutil.rev_parse(root, branch)], "ig wave combine"
+        root, outcome.tree, [combined, gitutil.rev_parse(root, branch)], "intergent wave combine"
     )
     return True, new_ref, []
 

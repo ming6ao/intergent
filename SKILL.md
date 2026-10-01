@@ -1,6 +1,6 @@
 ---
 name: intergent
-description: 'Deliver a design document as landed work on a feature branch using the Intergent campaign orchestrator: a coordinator turns the design into a DAG of planner/worker/verifier subagents, each worker isolated by a git worktree and scope leases, each candidate verified against a fingerprint before integration. Use ONLY when the user explicitly invokes this skill: runs `/skill:intergent`, or names it ("intergent"/"ig") and asks to run a campaign, coordinate parallel agents, or land a feature branch. Do NOT auto-load it merely because a repository contains .intergent/config.json. Bundles the intergent CLI. Not for read-only research.'
+description: 'Deliver a design document as landed work on a feature branch using the Intergent campaign orchestrator: a coordinator turns the design into a DAG of planner/worker/verifier subagents, each worker isolated by a git worktree and scope leases, each candidate verified against a fingerprint before integration. Use ONLY when the user explicitly invokes this skill: runs `/skill:intergent`, or names it ("intergent"/"ig") and asks to run a campaign, coordinate parallel agents, or land a feature branch. Do NOT auto-load it merely because a repository contains .intergent/config.json. Requires the intergent pi package. Not for read-only research.'
 license: Apache-2.0
 disable-model-invocation: true
 metadata:
@@ -30,29 +30,18 @@ COORDINATOR (this session)
 - Only the verifier may use the GPU. Workers never touch it.
 - Everything is reconstructable from `.intergent/` + git after a crash.
 
-## Locate the bundled CLI
-
-The CLI lives at `bin/intergent` **relative to the directory containing this
-SKILL.md** (the pi package also resolves it automatically). Resolve it before
-running:
-
-```bash
-# $SKILL_DIR is the folder containing this SKILL.md
-IG="$SKILL_DIR/bin/intergent"   # absolute path to the bundled CLI
-python3 "$IG" --version
-```
-
-Always invoke it as `python3 "$IG" ...`. Do **not** wrap the command string in
-quotes. If `intergent` is already on `PATH`, use it directly. Add `--json` for
-parseable output.
+The pi package provides two tools: `campaign` for the coordinator and `ig` for
+workers. `runSubagent` applies each subagent's `tools:` allowlist, so a worker
+gets `ig` but never `campaign`, and the verifier gets neither.
 
 ## Hard rules
 
-1. **Workers run inside their unit worktree.** `intergent status --short` must
-   succeed; otherwise stop. Never edit the main working tree.
-2. **Declare before editing.** No edits before `intergent declare` returns
+1. **Workers run inside their unit worktree.** `ig` `action: status`
+   (`short: true`) must succeed; otherwise stop. Never edit the main working
+   tree.
+2. **Declare before editing.** No edits before `ig` `action: declare` returns
    `granted`.
-3. **A worker's last step is `commit`.** Workers never run `integrate` or
+3. **A worker's last step is `commit`.** Workers never call `ig` `integrate` or
    `git merge`. The coordinator owns verification and integration.
 4. **Never force a conflict.** If `declare` returns `queued`, exit and report the
    blocker; if it returns `needs_decision`, stop — the coordinator re-plans the
@@ -62,50 +51,43 @@ parseable output.
 
 ## Campaign loop (the coordinator)
 
-Use the `campaign` tool in pi, or the CLI directly:
+Use the `campaign` tool:
 
-```bash
-# 1. Create/verify the feature branch and run the planner -> dag.json
-intergent start --no-unit --main feat/example --base main
-#    (in pi: campaign start with design/feature_branch/base)
-
-# 2. ready -> spawn each node whose dependencies are done
-intergent start --name w1 --base feat/example --kind worker
-#    worker declares, edits, runs acceptance, commits
-
-# 3. verify the latest prepared candidate (records a node verdict)
-intergent integrate --node w1 --check-only --acceptance "<cmd>" --gpu none
-
-# 4. land the verified candidate immediately, before spawning dependents
-intergent integrate --node w1
-
-# 5. final idempotent sweep, then report
-intergent integrate
-intergent report --narrative "what changed / risks"
+```
+campaign start <DESIGN.md>   feature branch + planner -> dag.json
+campaign ready               nodes whose dependencies are integrated
+campaign status              DAG + live child state
+campaign spawn <node>        one-shot worker in its own worktree
+campaign verify <node>       read-only verifier; records a verdict
+campaign integrate <node>    land the verified candidate, before spawning dependents
+campaign report              deterministic report (`--narrative` appends the summary)
 ```
 
-The coordinator's own checkout is **not** an Intergent unit; bootstrap the plane
-with `--no-unit`. Promotion from the feature branch to the default branch is a
-human `git` step — `integrate` refuses the plane's recorded default branch.
+The coordinator's own checkout is **not** an Intergent unit; `campaign start`
+bootstraps the plane with `--no-unit`. Promotion from the feature branch to the
+default branch is a human `git` step — `integrate` refuses the plane's recorded
+default branch.
 
-## Unit actions (used by workers and the coordinator)
+## Unit actions (the `ig` tool)
 
 | Action | Purpose |
 |---|---|
-| `start` | bootstrap the plane; `--no-unit` for the coordinator's checkout; `--name N --base <feature>` creates a worker unit |
-| `status` | units, candidates, leases, waves; `--short`, `--unit U`, `--simulate`, `--health` |
-| `declare` | declare scopes and acquire leases; `--dry-run`, `--renew`, `--release` |
+| `start` | bootstrap the plane; `no_unit: true` for the coordinator's checkout; `name` + `base` creates a worker unit |
+| `status` | units, candidates, leases, waves; `short`, `unit`, `simulate`, `health` |
+| `declare` | declare scopes and acquire leases; `dry_run`, `renew`, `release` |
 | `commit` | commit the worktree and register the candidate |
-| `integrate` | merge a verified candidate onto the feature branch; `--node`, `--acceptance`, `--gpu`, `--check-only`, `--cleanup` |
-| `report` | write the deterministic campaign report; `--narrative` appends the coordinator's summary |
+| `integrate` | merge a verified candidate onto the feature branch; `node`, `acceptance`, `gpu`, `check_only`, `cleanup` |
+| `report` | write the deterministic campaign report; `narrative` appends the coordinator's summary |
 
 ## Worker workflow
 
-```bash
-intergent --json declare --operation modify \
-  --scope "symbol:src/login.py#Login.run" --scope "file:docs/auth.md"
+A spawned worker calls the `ig` tool from its own worktree:
+
+```
+ig action: declare, operation: modify,
+   scope: ["symbol:src/login.py#Login.run", "file:docs/auth.md"]
 # ... edit only your worktree ...
-intergent commit -m "add scope check to Login" --summary "scope check"
+ig action: commit, message: "add scope check to Login", summary: "scope check"
 ```
 
 `declare` responses:
@@ -122,5 +104,5 @@ Scope syntax is `kind:key[=operation]`, e.g. `file:src/api/routes.py`,
 Operations `add`/`extend`/`modify` are additive; `replace`/`remove`/`rename`/
 `migrate` are destructive and queue behind a holder.
 
-Full specification: [docs/orchestration.md](./docs/orchestration.md). CLI
+Full specification: [docs/orchestration.md](./docs/orchestration.md). Tool
 reference: [docs/implementation.md](./docs/implementation.md).

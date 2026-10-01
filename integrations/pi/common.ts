@@ -1,10 +1,11 @@
 /**
  * Shared helpers for the Intergent pi extensions.
  *
- * Both `intergent.ts` (the `ig` unit tool) and `campaign.ts` (the coordinator
- * tool) are thin adapters over the bundled `intergent` CLI.  Keeping the CLI
- * resolution, JSON helpers, campaign state paths, and subagent runner here
- * avoids a second copy drifting between the two extensions.
+ * `campaign.ts` is the coordinator tool and `intergent.ts` is the `ig` unit
+ * tool; both are thin adapters over the bundled `intergent` CLI. The CLI is the
+ * engine surface, so the tools stay harness-agnostic and need no `PATH`
+ * install. `runSubagent` also applies each agent's `tools:` allowlist, scoping
+ * workers to the unit tool and the coordinator to the campaign tool.
  */
 
 import { spawn } from "node:child_process";
@@ -52,19 +53,17 @@ export function packageDir(): string {
 }
 
 /**
- * Resolve how to run the bundled CLI. Precedence: `INTERGENT_BIN`, the CLI
- * shipped inside the pi package (`<package>/bin/intergent`), then `intergent`
- * on `PATH`. Running the bundled script through `python3` keeps it portable.
+ * Resolve how to run the bundled CLI. `INTERGENT_BIN` overrides for local
+development; otherwise the CLI shipped inside the pi package is used, so no
+`PATH` install is needed. Running the bundled script through `python3` keeps it
+portable.
  */
 export function resolveIgInvocation(): IgInvocation {
 	if (process.env.INTERGENT_BIN) {
 		return { command: process.env.INTERGENT_BIN, prefix: [] };
 	}
 	const bundled = path.join(packageDir(), "bin", "intergent");
-	if (existsSync(bundled)) {
-		return { command: "python3", prefix: [bundled] };
-	}
-	return { command: "intergent", prefix: [] };
+	return { command: "python3", prefix: [bundled] };
 }
 
 export function parseJson(text: string): any {
@@ -179,6 +178,18 @@ export function findAgentFile(name: string): string | undefined {
 	return undefined;
 }
 
+/** Read a scalar `key: value` from an agent file's YAML frontmatter. */
+function agentFrontmatterValue(raw: string, key: string): string | undefined {
+	const match = raw.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+	if (!match) return undefined;
+	for (const line of match[1].split(/\r?\n/)) {
+		const idx = line.indexOf(":");
+		if (idx === -1) continue;
+		if (line.slice(0, idx).trim() === key) return line.slice(idx + 1).trim();
+	}
+	return undefined;
+}
+
 /**
  * Spawn a one-shot `pi` subagent, tee its raw output to `log`, return the final
  * assistant text. The child is a direct child of the coordinator and is not
@@ -195,8 +206,14 @@ export async function runSubagent(options: {
 	const args = ["--mode", "json", "-p", "--no-session"];
 	let promptPath: string | undefined;
 	if (agentFile) {
+		const raw = fs.readFileSync(agentFile, "utf8");
+		// Scope the subagent to its frontmatter `tools:`. `--tools` replaces the
+		// default selection, so the list must name every tool the agent needs;
+		// this is what gives workers the `ig` unit tool but never `campaign`.
+		const tools = agentFrontmatterValue(raw, "tools");
+		if (tools) args.push("--tools", tools);
 		// Strip the YAML frontmatter before appending the system prompt.
-		const stripped = fs.readFileSync(agentFile, "utf8").replace(/^---\n[\s\S]*?\n---\n/, "");
+		const stripped = raw.replace(/^---\n[\s\S]*?\n---\n/, "");
 		promptPath = path.join(
 			os.tmpdir(),
 			`ig-campaign-${options.agent}-${process.pid}-${Date.now()}.md`,

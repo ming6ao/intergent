@@ -19,27 +19,18 @@ and its specification in [Orchestration](./orchestration.md).
 
 ## Install
 
-The repository is a **pi package** that ships the `ig` and `campaign` tools, the
-skill, and the bundled CLI:
+The repository is a **pi package** that ships the `campaign` coordinator tool,
+the `ig` worker tool, and the bundled skill:
 
 ```bash
 pi install ./                                       # local checkout
 # pi install git:github.com/ming6ao/intergent
 # pi install npm:intergent
-INTERGENT_AUTO_BOOTSTRAP=0 pi                       # launch the coordinator
+pi                                                  # launch the coordinator
 ```
 
-See [`integrations/pi/`](../integrations/pi/README.md).
-
-The repository is also a self-contained Agent Skill (root `SKILL.md` + bundled
-`bin/intergent`). For a CLI-only install:
-
-```bash
-npx skills add ming6ao/intergent -g -y -a pi
-```
-
-The skill runs the bundled CLI with `python3 <skill-dir>/bin/intergent`, so no
-separate `pip install` is required.
+See [`integrations/pi/`](../integrations/pi/README.md). The skill ships with
+the package; there is no separate skill install.
 
 ## Agent roles
 

@@ -1,4 +1,4 @@
-"""Command line interface (``intergent`` / ``ig``).
+"""Command line interface (``intergent``).
 
 The CLI is a thin, *generated* adapter over :mod:`intergent.surface`.  Every
 action is built from :data:`intergent.surface.ACTIONS`, so the CLI can never

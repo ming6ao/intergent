@@ -10,7 +10,6 @@ The implementation lives in [`intergent/`](../intergent) with a test suite in
 
 ```
 CLI:     ./bin/intergent   (or: python -m intergent)
-Alias:   ig
 State:   .intergent/state.db  (SQLite, WAL)
 Config:  .intergent/config.json
 ```
@@ -19,7 +18,7 @@ Config:  .intergent/config.json
 
 | Module | Responsibility |
 |---|---|
-| `intergent/cli.py` | generated `argparse` CLI (`intergent` / `ig`), human + `--json` output |
+| `intergent/cli.py` | generated `argparse` CLI (`intergent`), human + `--json` output |
 | `intergent/surface.py` | **single source of truth**: action registry, validation, dispatch |
 | `intergent/service.py` | **single owner of state**: sessions, units, intents, leases, candidates, integration |
 | `intergent/store.py` | SQLite persistence (WAL) |
@@ -61,8 +60,9 @@ its dependencies' code.
 
 ## 3. Action reference
 
-Six actions. The CLI renders them as subcommands and the pi extension as one
-`ig` tool with an `action` enum — all from `surface.py`.
+Six actions. The CLI renders them as subcommands and the pi `ig` tool mirrors
+them (`IG_ACTIONS`, asserted in lockstep); the `campaign` tool drives the CLI's
+orchestration loop on top. The engine surface comes from `surface.py`.
 
 ### Bootstrap
 
@@ -209,12 +209,18 @@ merge. `commitops.py` holds the shared primitives (worktree lookup, merge order,
 
 ## 5. pi tool surface
 
-The pi extension exposes one tool, `ig`, with an `action` enum
-(`start`, `status`, `declare`, `commit`, `integrate`, `report`). The schema is
-generated from `surface.py`, and the same module implements dispatch, so the pi
-and CLI surfaces cannot drift. `unit` is optional on hot-loop calls; the tool
-resolves it from its cwd. Every action is agent-callable. See
-[Agent integration](./agents.md).
+The pi package registers two tools:
+
+- `campaign` (coordinator): `start`, `status`, `ready`, `spawn`, `verify`,
+  `integrate`, `report`.
+- `ig` (worker): the engine verbs `start`, `status`, `declare`, `commit`,
+  `integrate`, `report`.
+
+Both are thin forwarders over the CLI (`runIg`), so the engine is never imported
+into the agent runtime and no `PATH` install is needed. `runSubagent` passes each
+agent's `tools:` allowlist to `pi --tools`: a worker gets `ig` but never
+`campaign`, and the verifier gets neither. The engine's action registry remains
+`intergent/surface.py`. See [Agent integration](./agents.md).
 
 ## 6. Tests
 

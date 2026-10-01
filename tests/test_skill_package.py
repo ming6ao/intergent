@@ -1,9 +1,8 @@
-"""Guards the repository packaging contract: the Agent Skill and the pi package.
+"""Guards the pi package contract.
 
-The repo is installable both with
-``npx skills add ming6ao/intergent -g -y -a pi`` (root ``SKILL.md`` +
-bundled CLI) and with ``pi install ./`` (a pi package with a ``package.json``
-manifest). These tests fail if either structure regresses.
+Intergent supports exactly one install path: ``pi install`` of this package,
+which registers the ``campaign``/``ig`` tools and ships the bundled skill and
+engine. These tests fail if that structure regresses.
 """
 
 import json
@@ -13,6 +12,7 @@ import unittest
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+README = REPO_ROOT / "README.md"
 SKILL = REPO_ROOT / "SKILL.md"
 PACKAGE = REPO_ROOT / "package.json"
 PI_DIR = REPO_ROOT / "integrations" / "pi"
@@ -40,7 +40,7 @@ def _frontmatter(text: str) -> dict[str, str]:
 
 class SkillPackageTests(unittest.TestCase):
     def test_root_skill_md_is_valid(self):
-        self.assertTrue(SKILL.is_file(), "root SKILL.md is required for `npx skills add`")
+        self.assertTrue(SKILL.is_file(), "root SKILL.md is required as the pi package skill")
         data = _frontmatter(SKILL.read_text(encoding="utf-8"))
         self.assertEqual(data.get("name"), "intergent")
         self.assertTrue(data.get("description"), "description is required frontmatter")
@@ -49,15 +49,30 @@ class SkillPackageTests(unittest.TestCase):
         self.assertTrue((REPO_ROOT / "bin" / "intergent").is_file())
         self.assertTrue((REPO_ROOT / "intergent" / "cli.py").is_file())
 
-    def test_no_nested_duplicate_skill(self):
-        # The skills CLI returns the root SKILL.md immediately; a duplicate in a
-        # subdirectory only creates confusion.
-        nested = list(REPO_ROOT.glob("skills/**/SKILL.md"))
-        self.assertEqual(nested, [], f"unexpected nested skills: {nested}")
+    def test_no_skills_sh_install_path(self):
+        # pi is the only supported harness; the package installs the skill, so
+        # there is no separate `npx skills add` path to document.
+        for path in (README, SKILL, REPO_ROOT / "docs" / "agents.md", PI_DIR / "README.md"):
+            self.assertNotIn("npx skills add", path.read_text(encoding="utf-8"))
 
-    def test_skill_documents_bundled_cli_path(self):
-        text = SKILL.read_text(encoding="utf-8")
-        self.assertIn("bin/intergent", text)
+    def test_no_dead_bootstrap_env_or_cli_alias(self):
+        # `INTERGENT_AUTO_BOOTSTRAP` belonged to a removed auto-bootstrap path,
+        # and the `ig` CLI alias is gone (no `bin/ig`, no console scripts);
+        # neither should reappear in the docs.
+        docs = (
+            README,
+            SKILL,
+            REPO_ROOT / "docs" / "README.md",
+            REPO_ROOT / "docs" / "overview.md",
+            REPO_ROOT / "docs" / "implementation.md",
+            REPO_ROOT / "docs" / "agents.md",
+            REPO_ROOT / "docs" / "orchestration.md",
+            PI_DIR / "README.md",
+        )
+        for path in docs:
+            text = path.read_text(encoding="utf-8")
+            self.assertNotIn("INTERGENT_AUTO_BOOTSTRAP", text, path)
+            self.assertNotIn("alias: ig", text, path)
 
     def test_root_skill_is_explicit_invocation_only(self):
         # The skill must not auto-load just because a repo has a plane; the
@@ -88,6 +103,26 @@ class SkillPackageTests(unittest.TestCase):
         # The shared helpers ship with the package and are imported by both tools.
         self.assertTrue(PI_COMMON.is_file())
         self.assertIn('from "./common.ts"', PI_CAMPAIGN.read_text(encoding="utf-8"))
+
+    def test_subagent_tools_are_scoped(self):
+        # runSubagent must pass the agent's `tools:` allowlist to `pi --tools`;
+        # this keeps workers on the `ig` unit tool and away from `campaign`,
+        # and gives the read-only verifier no Intergent tool at all.
+        common = PI_COMMON.read_text(encoding="utf-8")
+        self.assertIn('"--tools"', common)
+        self.assertIn("agentFrontmatterValue", common)
+        worker = _frontmatter((PI_DIR / "agents" / "worker.md").read_text(encoding="utf-8"))
+        worker_tools = [t.strip() for t in worker["tools"].split(",")]
+        self.assertIn("ig", worker_tools)
+        self.assertNotIn("campaign", worker_tools)
+        verifier = _frontmatter((PI_DIR / "agents" / "verifier.md").read_text(encoding="utf-8"))
+        self.assertNotIn("ig", [t.strip() for t in verifier["tools"].split(",")])
+
+    def test_no_console_scripts(self):
+        # The engine is internal: it is invoked from the package, never
+        # installed as a user-facing `intergent`/`ig` command.
+        pyproject = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        self.assertNotIn("[project.scripts]", pyproject)
 
     def test_package_ships_the_bundled_cli(self):
         manifest = json.loads(PACKAGE.read_text(encoding="utf-8"))

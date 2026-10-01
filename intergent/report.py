@@ -1,6 +1,6 @@
 """Deterministic campaign report skeleton (``docs/orchestration.md`` §6.3).
 
-``ig report`` writes ``.intergent/<branch-key>.report.md``: a deterministic
+``intergent report`` writes ``.intergent/<branch-key>.report.md``: a deterministic
 skeleton (design ref, feature branch, nodes, worker ids, commits,
 fingerprints/verifications, artifact paths) with an optional narrative section
 appended by the coordinator.  The skeleton is stable across runs for unchanged

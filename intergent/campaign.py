@@ -8,7 +8,7 @@ replaced with ``--``::
     feat/nanochat-cpp  ->  feat--nanochat-cpp
 
 The orchestrator (the pi `campaign` extension) owns writing ``dag.json`` and
-``state.json``; Python only reads them for ``ig report`` and resolves their
+``state.json``; Python only reads them for ``intergent report`` and resolves their
 paths.  ``dag.json`` is plane state, never committed to the repository.
 """
 
@@ -66,7 +66,7 @@ def node_status(state: dict[str, Any], node: str) -> str:
 def config_branch(config: dict[str, Any]) -> str:
     branch = config.get("main_branch")
     if not branch:
-        raise IntergentError("plane has no main_branch; run `ig start` first")
+        raise IntergentError("plane has no main_branch; run `intergent start` first")
     return str(branch)
 
 

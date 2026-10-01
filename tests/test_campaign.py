@@ -7,7 +7,7 @@ These pin the ``docs/orchestration.md`` S0 contract:
   aborts conflicts atomically, and refuses the plane's default branch;
 * node acceptance verdicts are fingerprinted with source ``node:<id>`` and
   reused (§6.4);
-* ``ig report`` is a deterministic skeleton.
+* ``intergent report`` is a deterministic skeleton.
 """
 
 import json
@@ -114,7 +114,7 @@ class IntegrateTests(CampaignCase):
         self.assertEqual(run("git", "rev-parse", "feat/x", cwd=self.root).stdout.strip(), head)
         # One --no-ff merge commit per unit on top of the base.
         log = run("git", "log", "--format=%s", "main..feat/x", cwd=self.root).stdout
-        self.assertEqual(log.count("ig integrate"), 2)
+        self.assertEqual(log.count("intergent integrate"), 2)
         # Branches are kept for provenance after integration.
         self.assertTrue(self.branch_exists("ig/w1"))
         self.assertTrue(self.branch_exists("ig/w2"))

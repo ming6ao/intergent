@@ -54,9 +54,9 @@ COORDINATOR  (top-level pi session — the session the user sees)
 Rules that fall out of this shape:
 
 - The coordinator is **not** an `intergent` unit and must not be bound to a unit
-  worktree. Launch it with `INTERGENT_AUTO_BOOTSTRAP=0`; the campaign extension
-  calls `ig` explicitly. Plane bootstrap uses `ig start --no-unit`, so campaign
-  setup does not create a phantom unit in the coordinator's checkout.
+  worktree. The campaign extension drives the engine for it. Plane bootstrap
+  uses the engine's `start --no-unit`, so campaign setup does not create a
+  phantom unit in the coordinator's checkout.
 - The planner is invoked by the coordinator, not by the user, and may be
   re-invoked (`start --replan`) after a failure.
 - Workers and the verifier are subagents. Workers run inside their unit
@@ -155,7 +155,7 @@ unit"; the planner writes it through the coordinator, not through a worker
 worktree.
 
 Crash recovery: `campaign start` with an existing `dag.json` loads it, rebuilds
-node status from `ig status` (candidates `prepared`/`landed`, unit states) and
+node status from `intergent status` (candidates `prepared`/`landed`, unit states) and
 `state.json`, and resumes. **Precedence on conflict: git and `state.db` are
 authoritative; `state.json` is a rebuildable cache.** A node that `state.json`
 calls `running` but whose unit has no live process and no `prepared` candidate
@@ -184,13 +184,13 @@ integrate (sweep) ──► offer cleanup (worktrees / artifacts) ──► repo
 ```
 
 1. **`start`** — creates or verifies the feature branch, points the plane's
-   integration branch at it (`ig start --no-unit --main <feature_branch>
+   integration branch at it (`intergent start --no-unit --main <feature_branch>
    --base <base>`, §6), and **invokes the planner** in the same action. The
    planner reads the design and writes `dag.json`; `start` prints the summary
    and stops for an optional human look.
 2. **`ready`** — returns the nodes whose dependencies are all `done`.
 3. **`spawn`** — creates an `intergent` unit for a node
-   (`ig start --name <id> --base <feature_branch>`), launches a one-shot worker
+   (`intergent start --name <id> --base <feature_branch>`), launches a one-shot worker
    in that worktree, and tees output to `worker_<id>.log`. Spawning a node is
    only allowed once **every dependency has been integrated** onto the feature
    branch (not merely verified), so the node's base checkout already contains
@@ -217,7 +217,7 @@ feature branch, so the campaign wiring needs **no schema migration** — the
 exception is §6.4, which extends the verification store:
 
 ```bash
-ig start --no-unit --main feat/nanochat-cpp --base master
+intergent start --no-unit --main feat/nanochat-cpp --base master
 ```
 
 `--no-unit` is a new small flag: it initialises the plane without creating a
@@ -252,7 +252,7 @@ plane's `main_branch` (the feature branch):
   to make non-campaign use work — promotion to `master` is the human git step.
 
 ```
-ig integrate [--node <id>] [--cleanup none|worktrees|all]
+intergent integrate [--node <id>] [--cleanup none|worktrees|all]
 ```
 
 `--cleanup` defaults to `none`; interactive cleanup is offered by the
@@ -266,15 +266,16 @@ git action and is out of scope for the agent surface.
 
 ### 6.3 `status` projection and `report`
 
-`ig status --json` gains the fields the dashboard needs: `feature_branch`, and
-per unit `node`, `log`, `candidate`, and `verification`. `ig report` writes a
+`intergent status --json` gains the fields the dashboard needs: `feature_branch`, and
+per unit `node`, `log`, `candidate`, and `verification`. `intergent report` writes a
 deterministic skeleton (design ref, feature branch, nodes, worker ids, commits,
 fingerprints/verifications, artifact paths) with an LLM-written "what changed /
 risks" section appended.
 
-Adapter lockstep: adding actions touches `surface.py` (source of truth),
-`integrations/pi/intergent.ts` (`IG_ACTIONS`), `SKILL.md`, `docs/agents.md`, and
-`tests/test_skill_package.py`, which asserts the surfaces stay in sync. `start`
+Adapter lockstep: adding an engine action touches `surface.py` (source of
+truth), `integrations/pi/intergent.ts` (`IG_ACTIONS`), `SKILL.md`,
+`docs/agents.md`, and `tests/test_skill_package.py`, which asserts the surfaces
+stay in sync. The `campaign` tool drives the CLI on top of those verbs. `start`
 creating a feature branch stays `human`; `integrate` is `agent`.
 
 ### 6.4 Per-node verification fingerprints (fourth change)
@@ -299,17 +300,17 @@ S0 must stay schema-stable.
 
 ## 7. Orchestrator tool surface
 
-One tool, `campaign`, mirroring the shape of `ig`. `start` and `plan` are merged.
+One tool, `campaign`, mirroring the shape of the `intergent` CLI. `start` and `plan` are merged.
 
 | Action | Purpose |
 |---|---|
 | `start <design>` | Create/verify the feature branch, invoke the planner, write `dag.json`, print the summary. `--replan` re-invokes the planner. |
-| `status` | Merge `ig status --json` with live child state; print the summary. |
+| `status` | Merge `intergent status --json` with live child state; print the summary. |
 | `ready` | Return ready nodes. |
 | `spawn <node>` | Create the unit, launch the one-shot worker, tee `worker_<id>.log`. |
 | `verify <node>` | Run the verifier on the node's latest prepared candidate; record the verdict. |
-| `integrate` | Call `ig integrate --node <id>` after each pass (per-node landing), plus a final idempotent sweep; then **offer cleanup** (below). |
-| `report` | `ig report` plus the coordinator narrative. |
+| `integrate` | Call `intergent integrate --node <id>` after each pass (per-node landing), plus a final idempotent sweep; then **offer cleanup** (below). |
+| `report` | `intergent report` plus the coordinator narrative. |
 
 ### Cleanup on integrate
 
@@ -322,9 +323,9 @@ Integrate succeeded onto feat/nanochat-cpp.
 Remove unit worktrees for this campaign?   [y/N]
 ```
 
-Choices map to `ig integrate --cleanup` and to artifact removal:
+Choices map to `intergent integrate --cleanup` and to artifact removal:
 
-- **worktrees** — `ig status --gc` (or `integrate --cleanup worktrees`);
+- **worktrees** — `intergent status --gc` (or `integrate --cleanup worktrees`);
 - **artifacts** — delete `<branch-key>.dag.json`, `<branch-key>.state.json`,
   and `<branch-key>.worker_*.log`;
 - **`<branch-key>.report.md` is kept** unless the user explicitly asks to
@@ -349,7 +350,7 @@ plane-check fingerprints only.
 | Verifier `fail` | Same as above, with the verifier's findings attached to the retry prompt. |
 | `declare` returns `queued` | The DAG let two parallel nodes own the same file. The one-shot worker **exits immediately** (it must not block on a lease); the node returns to `ready`; the coordinator adds a `depends_on` edge to serialize (or re-plans), then re-spawns. Never force a conflict. |
 | Merge conflict at `integrate` | Merge aborted; findings surfaced. The node stays `failed`; coordinator spawns a resolver or adds an edge. The feature branch is never left half-merged. |
-| Orchestrator crash | Workers are **child processes of the coordinator and are not detached**, so a crash kills them mid-flight. On resume, any node left `running` is reset to `pending` and its worktree reset (partial commits discarded), then re-spawned fresh. `campaign start` reloads `dag.json` + `state.json` + `ig status`; git and `state.db` win over `state.json`. |
+| Orchestrator crash | Workers are **child processes of the coordinator and are not detached**, so a crash kills them mid-flight. On resume, any node left `running` is reset to `pending` and its worktree reset (partial commits discarded), then re-spawned fresh. `campaign start` reloads `dag.json` + `state.json` + `intergent status`; git and `state.db` win over `state.json`. |
 | `dag.json` hand-edited | Coordinator changes (added edges, split nodes) are appended to the event log, so the plan's evolution is auditable alongside commits and fingerprints. |
 
 Caps: `concurrency` (start at 3–4), max attempts per node, and a wall-clock
@@ -361,7 +362,7 @@ not by hope.
 **S0 — `intergent` core.** Add `integrate`, `start --no-unit`, the `status`
 fields, and `report`; update the adapter surfaces and `test_skill_package.py`;
 add tests; land §6.4 or narrow §8 to plane-check reuse. Acceptance: two unit
-candidates on `feat/x` integrate onto `feat/x`; re-running is a no-op; `ig
+candidates on `feat/x` integrate onto `feat/x`; re-running is a no-op; `intergent
 report` is deterministic; a campaign bootstrap leaves no phantom unit.
 
 **S1 — orchestrator and agents.** The `campaign` extension (one tool, one-shot

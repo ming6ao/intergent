@@ -19,7 +19,7 @@ COORDINATOR (top-level pi session)
                    (fingerprint-cached combined checks)
 ```
 
-The coordinator's own checkout is not a unit (`ig start --no-unit`). Workers get
+The coordinator's own checkout is not a unit (`intergent start --no-unit`). Workers get
 a `git worktree` + branch each. `ready(n) := every d in n.depends_on is done`,
 where `done` means verified **and** integrated, so a dependent's base already
 contains its dependencies' code. See [Orchestration](./orchestration.md).
@@ -29,7 +29,7 @@ contains its dependencies' code. See [Orchestration](./orchestration.md).
 | Module | Responsibility |
 |---|---|
 | `intergent/surface.py` | **single source of truth**: action registry, validation, dispatch |
-| `intergent/cli.py` | generated `argparse` CLI (`intergent` / `ig`), human + `--json` output |
+| `intergent/cli.py` | generated `argparse` CLI (`intergent`), human + `--json` output |
 | `intergent/service.py` | **single owner of state**: sessions, units, intents, leases, candidates, integration |
 | `intergent/store.py` | SQLite persistence (WAL) |
 | `intergent/gitutil.py` | Git plumbing (worktree, merge, merge-tree, commit, branch) |
@@ -47,22 +47,34 @@ State lives in the service + SQLite so it survives terminal sessions.
 
 ### Why the CLI still exists
 
-Bootstrap (`start`) happens before the pi tool is bound; CI runs the CLI; humans
-need status and recovery. The CLI renders the same action registry the pi `ig`
-tool exposes, so the two cannot drift.
+Bootstrap (`start`) happens before any pi tool can act; CI runs the CLI; humans
+need status and recovery; and the spawned tools call it as a subprocess. The
+CLI is the engine surface, rendered from `intergent/surface.py`, and every other
+adapter (the pi tools included) drives it or mirrors it. Because it is a bundled
+script, no `intergent` install on `PATH` is required.
 
 ## Interfaces
 
-### pi `ig` tool (agent hot loop)
+### pi `campaign` tool (coordinator)
 
-One tool, parameterized by an `action` enum:
+One tool, parameterized by an `action` enum, for the coordinator's orchestration
+loop:
 
 ```
-start   status   declare   commit   integrate   report
+start   status   ready   spawn   verify   integrate   report
 ```
 
-A single tool keeps the agent's context small; the enum (and every flag) is
-generated from `intergent/surface.py`. Every action is agent-callable.
+It calls the CLI internally (`common.ts` `runIg`) and adds DAG scheduling and
+subagent spawning.
+
+### pi `ig` tool (worker)
+
+The unit lifecycle (`start`, `status`, `declare`, `commit`, `integrate`,
+`report`) wrapped as one tool. `runSubagent` passes each agent's `tools:`
+allowlist to `pi --tools`, so a worker gets `ig` and never `campaign`; the
+verifier gets no Intergent tool at all. The CLI remains the single action
+registry (`intergent/surface.py`), so no engine verb can exist in one adapter
+and not another.
 
 ### CLI
 

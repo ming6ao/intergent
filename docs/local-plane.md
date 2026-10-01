@@ -6,7 +6,7 @@ leases, and local verification.
 ## 1. Workspace isolation
 
 - One `git worktree` + branch per unit, sharing one object store.
-- The coordinator's checkout is **not** a unit (`ig start --no-unit`).
+- The coordinator's checkout is **not** a unit (`intergent start --no-unit`).
 - Gitignored deps (`node_modules`, `.venv`, `target/`) are the user's
   responsibility; a shared dependency cache is out of scope.
 
@@ -98,7 +98,7 @@ intergent status --simulate
 ## 6. Reference implementation
 
 This plane is implemented under [`intergent/`](../intergent) with the CLI
-`intergent` / `ig`. The service layer (`intergent/service.py`) is the single
+`intergent`. The service layer (`intergent/service.py`) is the single
 owner of state; the CLI and the pi extension are thin adapters, and SQLite (WAL)
 is the local store. Key mappings:
 

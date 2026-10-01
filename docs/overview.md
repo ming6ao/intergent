@@ -29,7 +29,7 @@ conflicting routes from being set; Intergent does the same for concurrent agent
 work.
 
 ```
-CLI:     intergent  (short alias: ig)
+CLI:     intergent
 ```
 
 ## 3. Problem statement
