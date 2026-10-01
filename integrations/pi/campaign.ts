@@ -91,12 +91,25 @@ interface NodeState {
 	unit?: string;
 	branch?: string;
 	worktree?: string;
+	wave?: number;
+}
+
+interface WaveState {
+	index: number;
+	members: string[];
+	status: "pending" | "running" | "done";
+	integrated: string[];
+	cleanup_done: boolean;
 }
 
 interface CampaignState {
 	campaign?: string;
 	feature_branch?: string;
 	base?: string;
+	wave_size?: number;
+	current_wave?: number;
+	dag_fingerprint?: string;
+	waves?: WaveState[];
 	nodes: Record<string, NodeState>;
 }
 
@@ -117,19 +130,111 @@ function readyNodes(dag: Dag, state: CampaignState): string[] {
 	});
 }
 
+/** Structural identity of the DAG inputs that determine wave packing. */
+function dagFingerprint(dag: Dag): string {
+	return JSON.stringify(
+		(dag.nodes ?? []).map((n) => ({
+			id: n.id,
+			owns: n.owns ?? [],
+			depends_on: n.depends_on ?? [],
+		})),
+	);
+}
+
+function firstNonDoneWave(state: CampaignState): number {
+	const next = (state.waves ?? []).find((w) => w.status !== "done");
+	return next ? next.index : (state.waves ?? []).length;
+}
+
+function currentWave(state: CampaignState): WaveState | undefined {
+	const index = state.current_wave ?? firstNonDoneWave(state);
+	return (state.waves ?? []).find((w) => w.index === index);
+}
+
+/** Nodes in the current wave whose dependencies are all integrated. */
+function readyWaveNodes(dag: Dag, state: CampaignState): string[] {
+	const wave = currentWave(state);
+	if (!wave) return [];
+	const ready = new Set(readyNodes(dag, state));
+	return wave.members.filter((id) => ready.has(id));
+}
+
+/** Rebuild wave state from the engine's projection, preserving cleanup flags. */
+function reconcileWaves(state: CampaignState, dagWaves: any[]): void {
+	// Key prior cleanup flags by membership, not index, so adding a depends_on
+	// edge (which can reindex waves) never skips or repeats a wave's cleanup.
+	const prior = new Map<string, WaveState>(
+		(state.waves ?? []).map((w) => [[...w.members].sort().join("|"), w]),
+	);
+	state.waves = (dagWaves ?? []).map((dw: any) => {
+		const members: string[] = (dw.members ?? []).map((m: any) => String(m));
+		const prev = prior.get([...members].sort().join("|"));
+		const integrated = members.filter((id) => state.nodes[id]?.status === "done");
+		const running = members.some((id) => state.nodes[id]?.status === "running");
+		const status: WaveState["status"] =
+			members.length > 0 && integrated.length === members.length
+				? "done"
+				: running
+					? "running"
+					: "pending";
+		return {
+			index: Number(dw.wave),
+			members,
+			status,
+			integrated,
+			cleanup_done: prev?.cleanup_done ?? false,
+		};
+	});
+	const byNode = new Map<string, number>();
+	for (const wave of state.waves) {
+		for (const id of wave.members) byNode.set(id, wave.index);
+	}
+	for (const id of Object.keys(state.nodes)) {
+		if (byNode.has(id)) state.nodes[id].wave = byNode.get(id);
+	}
+	state.current_wave = firstNonDoneWave(state);
+}
+
+/** Mark any wave whose members are all integrated as done. */
+function advanceWaves(state: CampaignState): WaveState[] {
+	const completed: WaveState[] = [];
+	for (const wave of state.waves ?? []) {
+		wave.integrated = wave.members.filter((id) => state.nodes[id]?.status === "done");
+		const allDone =
+			wave.members.length > 0 && wave.integrated.length === wave.members.length;
+		if (allDone && wave.status !== "done") {
+			wave.status = "done";
+			completed.push(wave);
+		}
+	}
+	state.current_wave = firstNonDoneWave(state);
+	return completed;
+}
+
 function summarise(dag: Dag, state: CampaignState): string {
 	const lines = [
 		`campaign: ${dag.campaign ?? "(unnamed)"}`,
 		`feature:  ${dag.feature_branch ?? "(unset)"}  base: ${dag.base ?? "(unset)"}`,
 		`design:   ${dag.design ?? "(unspecified)"}`,
-		`nodes:    ${nodeIds(dag).length}  concurrency: ${dag.concurrency ?? "?"}`,
+		`nodes:    ${nodeIds(dag).length}  wave size: ${
+			state.wave_size ?? dag.concurrency ?? "?"
+		}`,
 	];
+	const waveOf = new Map<string, number>();
+	for (const wave of state.waves ?? []) {
+		for (const id of wave.members) waveOf.set(id, wave.index);
+	}
 	for (const id of nodeIds(dag)) {
 		const node = (dag.nodes ?? []).find((n) => n.id === id);
+		const wave =
+			waveOf.get(id) ?? state.nodes[id]?.wave ?? "?";
 		lines.push(
-			`  ${id} [${node?.phase ?? "-"}] ${nodeStatus(state, id)}` +
+			`  w${wave} ${id} [${node?.phase ?? "-"}] ${nodeStatus(state, id)}` +
 				(node?.label ? ` — ${node.label}` : ""),
 		);
+	}
+	for (const wave of state.waves ?? []) {
+		lines.push(`wave ${wave.index} [${wave.status}]: ${wave.members.join(", ")}`);
 	}
 	return lines.join("\n");
 }
@@ -232,15 +337,53 @@ export default function campaignExtension(pi: ExtensionAPI) {
 		};
 	}
 
+	/**
+	 * Ensure `state.waves` matches the current DAG.  Waves are the engine's
+	 * deterministic projection (`ig status` -> `dag_waves`); a coordinator-added
+	 * `depends_on` edge changes the DAG fingerprint and triggers a replan.
+	 * Replanning preserves each node's done/pending status and the per-wave
+	 * cleanup flag, so a resume never re-runs finished work.
+	 */
+	async function ensureWaves(
+		ctx: ExtensionContext,
+		branch: string,
+		dag: Dag,
+		state: CampaignState,
+	): Promise<void> {
+		const fingerprint = dagFingerprint(dag);
+		if (state.waves?.length && state.dag_fingerprint === fingerprint) return;
+		const { json } = await ig(ctx, ["status"]);
+		if (json?.dag_waves_error) throw new Error(`campaign: ${json.dag_waves_error}`);
+		reconcileWaves(state, json?.dag_waves ?? []);
+		state.dag_fingerprint = fingerprint;
+		state.wave_size = Number(dag.concurrency ?? 3);
+		writeJson(statePath(ctx.cwd, branch), state);
+		logEvent(ctx.cwd, branch, "wave.replanned", {
+			waves: (state.waves ?? []).map((w) => w.members),
+		});
+	}
+
 	function widget(ctx: ExtensionContext, dag: Dag, state: CampaignState): void {
 		if (!ctx.hasUI) return;
-		const lines = nodeIds(dag).map((id) => {
-			const node = (dag.nodes ?? []).find((n) => n.id === id);
-			const status = nodeStatus(state, id);
-			const marker =
-				status === "running" ? "●" : status === "done" ? "✓" : status === "failed" ? "✗" : "·";
-			return `${marker} ${id} ${node?.label ?? ""} [${status}]`.trim();
-		});
+		const marker = (status: string) =>
+			status === "running" ? "●" : status === "done" ? "✓" : status === "failed" ? "✗" : "·";
+		const lines: string[] = [];
+		for (const wave of state.waves ?? []) {
+			const members = wave.members.map((id) => {
+				const node = (dag.nodes ?? []).find((n) => n.id === id);
+				const status = nodeStatus(state, id);
+				return `${marker(status)} ${id}${node?.label ? ` ${node.label}` : ""}`.trim();
+			});
+			lines.push(`─ wave ${wave.index} [${wave.status}]  ${members.join("   ")}`);
+		}
+		if (!lines.length) {
+			lines.push(
+				...nodeIds(dag).map((id) => {
+					const status = nodeStatus(state, id);
+					return `${marker(status)} ${id} [${status}]`;
+				}),
+			);
+		}
 		ctx.ui.setWidget("campaign", lines.length ? lines : ["campaign: no plan"]);
 	}
 
@@ -322,6 +465,7 @@ export default function campaignExtension(pi: ExtensionAPI) {
 			state.feature_branch = branch;
 			state.base = existing.base ?? base;
 			writeJson(stateFile, state);
+			await ensureWaves(ctx, branch, existing, state);
 			logEvent(ctx.cwd, branch, "campaign.resumed", {
 				running_reset: nodeIds(existing).filter((id) => state.nodes[id]?.status === "pending"),
 			});
@@ -337,7 +481,10 @@ export default function campaignExtension(pi: ExtensionAPI) {
 			`${dagFile}. Use ONLY the Write tool for that file. The JSON shape is: ` +
 			`{"campaign","feature_branch","base","design","concurrency","max_attempts","nodes":[` +
 			`{"id","label","phase","goal","owns","depends_on","acceptance","gpu"}]}. ` +
-			`Rules: the DAG is the only schedule (no phases); "phase" is a display label only; ` +
+			`Rules: the DAG is the only authored schedule; waves are derived from owns + ` +
+			`depends_on with concurrency (default 3) as the per-wave cap, and a strict ` +
+			`scope overlap puts the later node in a later wave; keep same-wave owns disjoint; ` +
+			`"phase" is a display label only; ` +
 			`route shared build files (BUILD, Cargo.toml, lockfiles) to an explicit aggregation ` +
 			`node every touched component depends_on; each node lists its acceptance commands; ` +
 			`gpu is "none","T1","T2" and only the verifier may use it. Feature branch: ${branch}. ` +
@@ -367,6 +514,7 @@ export default function campaignExtension(pi: ExtensionAPI) {
 		const state: any = { campaign, feature_branch: branch, base, nodes: {} };
 		for (const node of dag.nodes) state.nodes[node.id] = { status: "pending", attempts: 0 };
 		writeJson(stateFile, state);
+		await ensureWaves(ctx, branch, dag, state);
 		logEvent(ctx.cwd, branch, params.replan ? "dag.replanned" : "dag.created", {
 			nodes: nodeIds(dag),
 		});
@@ -390,6 +538,7 @@ export default function campaignExtension(pi: ExtensionAPI) {
 		const state: any = readJson(stateFile, { nodes: {} });
 		const spec = (dag.nodes ?? []).find((n) => n.id === node);
 		if (!spec) throw new Error(`spawn: unknown node '${node}'`);
+		await ensureWaves(ctx, branch, dag, state);
 
 		const maxAttempts = Number(dag.max_attempts ?? 3);
 		const attempts = Number(state.nodes[node]?.attempts ?? 0);
@@ -399,9 +548,17 @@ export default function campaignExtension(pi: ExtensionAPI) {
 			throw new Error(`spawn: node '${node}' exceeded max_attempts=${maxAttempts}`);
 		}
 
-		// Every dependency must already be integrated (done), not merely verified.
-		if (!new Set(readyNodes(dag, state)).has(node)) {
-			throw new Error(`spawn: node '${node}' is not ready`);
+		// A node may only start in the current wave, and only once every
+		// dependency is integrated (done), not merely verified.
+		const wave = currentWave(state);
+		if (!wave || !wave.members.includes(node)) {
+			throw new Error(
+				`spawn: node '${node}' is scheduled in wave ${state.nodes[node]?.wave ?? "?"}; ` +
+					`current wave is ${wave?.index ?? "(none)"}`,
+			);
+		}
+		if (!new Set(readyWaveNodes(dag, state)).has(node)) {
+			throw new Error(`spawn: node '${node}' is not ready in wave ${wave.index}`);
 		}
 
 		// A re-spawn uses a fresh unit name so the previous attempt cannot
@@ -533,6 +690,8 @@ export default function campaignExtension(pi: ExtensionAPI) {
 		const branch = await featureBranch(ctx);
 		const stateFile = statePath(ctx.cwd, branch);
 		const state: any = readJson(stateFile, { nodes: {} });
+		const dag = readJson<Dag>(dagPath(ctx.cwd, branch), { nodes: [] });
+		await ensureWaves(ctx, branch, dag, state);
 		const unit = node ? String(state.nodes[node]?.unit ?? node) : "";
 		const args = unit
 			? ["integrate", "--node", unit, "--cleanup", "none"]
@@ -540,6 +699,7 @@ export default function campaignExtension(pi: ExtensionAPI) {
 		const { json: integrated, text } = await ig(ctx, args, signal);
 		const results = integrated?.results ?? [];
 		const failed = results.some((r: any) => r.status === "failed");
+		let completed: WaveState[] = [];
 		if (results.length) {
 			const landedUnits: string[] = results
 				.filter((r: any) => r.status === "landed")
@@ -554,21 +714,42 @@ export default function campaignExtension(pi: ExtensionAPI) {
 					status: failed ? "failed" : "done",
 				};
 			}
+			completed = advanceWaves(state);
 			writeJson(stateFile, state);
 			logEvent(ctx.cwd, branch, failed ? "node.integrate_failed" : "node.integrated", {
 				node: node || "(sweep)",
 				unit,
 				results,
+				completed_waves: completed.map((w) => w.index),
 			});
 		}
 
-		// Cleanup is destructive, so the agent asks before choosing it (§7).
+		// Cleanup is destructive and grouped by wave: when the last member of a
+		// wave lands, ask once for that whole wave (§7).
 		if (!failed && ctx.hasUI) {
-			const ok = await ctx.ui.confirm(
-				`Integrate succeeded onto ${branch}.`,
-				"Remove the landed unit worktrees and unit branches now?",
-			);
-			if (ok) await ig(ctx, ["integrate", "--cleanup", "worktrees"]);
+			for (const wave of completed) {
+				if (wave.cleanup_done) continue;
+				const ok = await ctx.ui.confirm(
+					`Wave ${wave.index} integrated onto ${branch}.`,
+					`Remove the landed worktrees, branches, and logs for wave ${wave.index} ` +
+						`(${wave.members.join(", ")}) now?`,
+				);
+				if (!ok) continue;
+				await ig(ctx, ["integrate", "--cleanup", "worktrees"], signal);
+				for (const id of wave.members) {
+					try {
+						fs.rmSync(logPath(ctx.cwd, branch, id));
+					} catch {
+						/* the log may not exist */
+					}
+				}
+				wave.cleanup_done = true;
+				writeJson(stateFile, state);
+				logEvent(ctx.cwd, branch, "wave.cleaned", {
+					wave: wave.index,
+					members: wave.members,
+				});
+			}
 		}
 		return { content: [{ type: "text" as const, text }], details: integrated ?? {}, isError: failed };
 	}
@@ -579,13 +760,21 @@ export default function campaignExtension(pi: ExtensionAPI) {
 		description:
 			"Coordinate a design into landed work: start (adopt current branch + planner), " +
 			"status, ready, spawn (one-shot worker), verify (read-only verifier), " +
-			"integrate (land a verified node), report. The dag.json plan is the only schedule.",
+			"integrate (land a verified node), report. The dag.json plan is the only schedule; " +
+			"waves are a projection of it.",
 		promptSnippet: "Drive an Intergent campaign (start → spawn → verify → integrate)",
 		promptGuidelines: [
-			"The DAG in dag.json is the only schedule; there are no phases in the scheduler.",
-			"Spawn a node only once every dependency is integrated (done), never merely verified.",
+			"The DAG in dag.json is the only authored schedule; waves are its deterministic " +
+				"projection (owns + depends_on, capped by concurrency).",
+			"Spawn nodes only from the current wave; a later wave starts after the previous " +
+				"wave is fully integrated (its units fork from the updated feature branch).",
+			"Spawn every ready node in the current wave together (issue the spawn calls in " +
+				"one turn so they run in parallel); never exceed the wave cap.",
+			"A node is ready only once every dependency is integrated (done), never merely verified.",
+			"If a worker exits on a queued lease, add a depends_on edge in dag.json; the next " +
+				"status/ready/spawn replans the waves to serialize it.",
 			"Only the verifier may use the GPU (tools/gpu.sh); workers never touch it.",
-			"Integrate a node immediately after its verifier passes, before spawning dependents.",
+			"Integrate each node after its verifier passes; cleanup is offered once per wave.",
 		],
 		// Inert until the `intergent` skill activates it, so a plain session never
 		// advertises the campaign workflow or injects its guidelines.
@@ -608,6 +797,7 @@ export default function campaignExtension(pi: ExtensionAPI) {
 				case "status": {
 					const branch = await featureBranch(ctx);
 					const { dag, state } = load(ctx, branch);
+					await ensureWaves(ctx, branch, dag, state);
 					widget(ctx, dag, state);
 					return {
 						content: [{ type: "text" as const, text: summarise(dag, state) }],
@@ -617,12 +807,18 @@ export default function campaignExtension(pi: ExtensionAPI) {
 				case "ready": {
 					const branch = await featureBranch(ctx);
 					const { dag, state } = load(ctx, branch);
-					const ready = readyNodes(dag, state);
+					await ensureWaves(ctx, branch, dag, state);
+					const wave = currentWave(state);
+					const ready = readyWaveNodes(dag, state);
+					const label = wave ? `wave ${wave.index}` : "(no open wave)";
 					return {
 						content: [
-							{ type: "text" as const, text: ready.length ? ready.join(", ") : "(none ready)" },
+							{
+								type: "text" as const,
+								text: ready.length ? `${label}: ${ready.join(", ")}` : `(${label}: none ready)`,
+							},
 						],
-						details: { ready },
+						details: { ready, wave: wave?.index, waves: state.waves },
 					};
 				}
 				case "spawn":

@@ -85,6 +85,14 @@ declare → conflict? ──no──► GRANTED ──heartbeat──► commit 
 `status --simulate` merges the prepared candidates into scratch trees and runs
 the combined checks. The same planner orders `integrate`.
 
+The campaign **scheduler** uses a second, stricter projection over the DAG
+itself (`intergent/waves.py`): before any work runs, nodes are packed into
+waves from declared `owns` scopes and `depends_on`, capped by `concurrency`
+(default 3). Any scope overlap forces the later node into a later wave. The
+projection is returned as `status.dag_waves` and persisted by the orchestrator;
+a node may only spawn in the current wave, and the next wave opens after the
+previous one is integrated. See [Orchestration](./orchestration.md) §3/§5.
+
 ```text
 intergent status --simulate
   wave 1: docs-agent, auth-agent
@@ -108,7 +116,7 @@ is the local store. Key mappings:
 | declared intent | `declare --operation ... --scope ...` (`intergent/scopes.py`) |
 | scope lock manager + queue | `intergent/locks.py` (IS/IX/S/SIX/X) and `lock_requests`/`claims` |
 | fingerprint-pinned verification | `intergent/verifier.py` (`tree, cmd, toolchain, policy, source`) |
-| wave planning + simulation | `intergent/planner.py` |
+| wave planning + simulation | `intergent/planner.py`, `intergent/waves.py` |
 | campaign integration | `intergent/integrate.py` + `intergent/commitops.py` |
 | `dag.json` / `state.json` | `intergent/campaign.py`; report in `intergent/report.py` |
 

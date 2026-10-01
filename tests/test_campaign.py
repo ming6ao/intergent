@@ -284,6 +284,51 @@ class ReportTests(CampaignCase):
         self.assertIn("verification", unit)
 
 
+class DagWaveStatusTests(CampaignCase):
+    def _dag(self, nodes, concurrency=2):
+        write_json(
+            campaign.dag_path(self.root, "feat/x"),
+            {
+                "campaign": "demo",
+                "feature_branch": "feat/x",
+                "base": "main",
+                "concurrency": concurrency,
+                "nodes": nodes,
+            },
+        )
+
+    def test_status_projects_dag_waves_with_concurrency_cap(self):
+        self.campaign_plane()
+        self._dag(
+            [
+                {"id": "w1", "owns": ["file:src/a.py"], "depends_on": []},
+                {"id": "w2", "owns": ["file:src/a.py"], "depends_on": []},
+                {"id": "w3", "owns": ["file:src/c.py"], "depends_on": ["w1"]},
+                {"id": "w4", "owns": ["file:src/d.py"], "depends_on": []},
+            ]
+        )
+        status = self.svc.status()
+        self.assertIsNone(status["dag_waves_error"])
+        waves = status["dag_waves"]
+        self.assertTrue(all(len(w["members"]) <= 2 for w in waves))
+        assignment = {m: w["wave"] for w in waves for m in w["members"]}
+        # w2 conflicts with w1 and w3 depends on w1, so both land in wave 1,
+        # while w4 shares wave 0 with w1 within the concurrency cap.
+        self.assertEqual(assignment, {"w1": 0, "w4": 0, "w2": 1, "w3": 1})
+
+    def test_status_reports_a_cyclic_dag_without_crashing(self):
+        self.campaign_plane()
+        self._dag(
+            [
+                {"id": "w1", "owns": ["file:src/a.py"], "depends_on": ["w2"]},
+                {"id": "w2", "owns": ["file:src/b.py"], "depends_on": ["w1"]},
+            ]
+        )
+        status = self.svc.status()
+        self.assertEqual(status["dag_waves"], [])
+        self.assertIn("cycle", status["dag_waves_error"])
+
+
 class DagStateTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

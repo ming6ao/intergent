@@ -16,7 +16,8 @@ do the node's job and stop.
    (`add|modify|replace|...`), and a `scope` array covering **every** scope in
    the node's `owns`. Do not edit before it returns `granted`. If it returns
    `queued`, **exit immediately** and report the blocker — never block on a
-   lease and never force a conflict.
+   lease and never force a conflict. The coordinator will add a `depends_on`
+   edge so this node is scheduled into the next wave.
 3. Edit only files inside this worktree and only within your declared scopes.
 4. Run the node's `acceptance` commands. T0 CPU only: **never use the GPU** and
    never call `tools/gpu.sh`; the verifier owns the GPU.

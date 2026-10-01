@@ -37,7 +37,8 @@ contains its dependencies' code. See [Orchestration](./orchestration.md).
 | `intergent/locks.py` | IS/IX/S/SIX/X compatibility matrix and requirement closure |
 | `intergent/conflict.py` | Deterministic conflict rules `FM-C001..C003` and matching tiers |
 | `intergent/verifier.py` | Fingerprints (plane and node sources) and trusted-check runner |
-| `intergent/planner.py` | Greedy wave packing + combined-tree simulation |
+| `intergent/planner.py` | Greedy candidate wave packing + combined-tree simulation |
+| `intergent/waves.py` | DAG wave projection for the scheduler (strict scope packing, `concurrency` cap) |
 | `intergent/integrate.py` | Agent-callable feature-branch landing and node verification recording |
 | `intergent/commitops.py` | Shared integration primitives (worktree, merge order, landed marking) |
 | `intergent/campaign.py` | `dag.json` / `state.json` layout and readers |

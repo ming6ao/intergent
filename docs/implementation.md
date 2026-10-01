@@ -27,7 +27,8 @@ Config:  .intergent/config.json
 | `intergent/locks.py` | IS/IX/S/SIX/X compatibility matrix and requirement closure |
 | `intergent/conflict.py` | Deterministic conflict rules `FM-C001..C003` and matching tiers |
 | `intergent/verifier.py` | Fingerprints (plane and node sources) and trusted-check runner |
-| `intergent/planner.py` | Greedy wave packing + combined-tree simulation |
+| `intergent/planner.py` | Greedy candidate wave packing + combined-tree simulation |
+| `intergent/waves.py` | DAG wave projection for the scheduler (strict scope packing, `concurrency` cap) |
 | `intergent/integrate.py` | Agent-callable feature-branch landing and node verification recording |
 | `intergent/commitops.py` | Shared integration primitives (worktree, merge order, landed marking) |
 | `intergent/campaign.py` | `dag.json` / `state.json` layout and readers |
@@ -194,13 +195,27 @@ Checks run in a clean detached scratch worktree at the commit. A passing
 verification for an unchanged fingerprint is reused from cache. A pass releases
 the unit's leases and promotes queued waiters; a failure keeps them.
 
-### Waves and simulation (`planner.py`)
+### Waves and simulation (`planner.py`, `waves.py`)
 
-Candidates are packed greedily by real mergeability. A pair is not co-waved if
-`git merge-tree` conflicts or if `evaluate` reports `FM-C001`/`FM-C002`;
-lease-ordering dependencies force the waiter into a later wave. Each wave is
-materialized as a synthetic combined commit and the configured checks run once
-over the combined tree.
+There are two wave planners, and they answer different questions:
+
+- **`waves.plan_dag_waves`** is the **scheduler**. Before any work runs, it packs
+  DAG nodes into waves from declared `owns` scopes and `depends_on`, capped by
+  `concurrency` (default 3). The policy is strict: any scope match between two
+  nodes forces the later one into a later wave. `Service.status()` exposes the
+  projection as `dag_waves`; the orchestrator persists it and refuses to spawn a
+  node outside the current wave. A changed DAG fingerprint (`id`, `owns`,
+  `depends_on`) triggers a replan.
+- **`planner.plan_waves`** orders *committed candidates* for **integration**.
+  Candidates are packed greedily by real mergeability: a pair is not co-waved if
+  `git merge-tree` conflicts or if `evaluate` reports `FM-C001`/`FM-C002`;
+  lease-ordering dependencies force the waiter into a later wave. Each wave is
+  materialized as a synthetic combined commit and the configured checks run once
+  over the combined tree.
+
+`integrate` flattens the candidate wave plan into a merge order and advances the
+feature branch one `--no-ff` merge at a time, verifying the combined tree after
+each merge.
 
 ### Integration (`integrate.py`, `commitops.py`)
 

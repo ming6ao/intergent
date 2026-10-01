@@ -169,6 +169,15 @@ class SkillPackageTests(unittest.TestCase):
         self.assertIn("`report`", skill)
         self.assertIn("--no-unit", skill)
 
+    def test_campaign_scheduler_is_wave_aware(self):
+        # The coordinator projects the DAG into waves via the engine and gates
+        # spawns on the current wave; the wave planner is a first-class module.
+        campaign_text = PI_CAMPAIGN.read_text(encoding="utf-8")
+        for needle in ("dag_waves", "currentWave", "readyWaveNodes", "advanceWaves"):
+            self.assertIn(needle, campaign_text)
+        self.assertTrue((REPO_ROOT / "intergent" / "waves.py").is_file())
+        self.assertTrue((REPO_ROOT / "tests" / "test_waves.py").is_file())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -10,11 +10,19 @@ plan.
 
 ## Rules
 
-- The DAG is the **only schedule**. There are no phases in the scheduler; a
-  node's `phase` field is a display/report label only.
-- `ready(n) := every d in n.depends_on is done`. `done` means verified **and
-  integrated** onto the feature branch, so a dependent's base already contains
-  its dependencies' code.
+- The DAG is the **only authored schedule**. The coordinator derives **waves**
+  from it: nodes are packed into concurrent groups by `owns` scope overlap and
+  `depends_on`, with `concurrency` (default 3) as the per-wave cap. You do not
+  write waves; you write the scopes and edges they are computed from.
+- `ready(n) := every d in n.depends_on is done`, and `n` is in the current wave.
+  `done` means verified **and integrated** onto the feature branch, so a later
+  wave's base already contains the previous wave's code.
+- Keep `owns` scopes **disjoint** across nodes that should run together in a
+  wave: a strict scope overlap puts the later node in a later wave. Use `dir:`
+  scopes narrowly and never give two independent components the same file.
+- A spec may pin an operation with `=op` (e.g. `file:src/a.py=modify`), but the
+  wave projection is strict regardless of operation; it does not co-wave two
+  additive nodes that share a scope.
 - Route shared build files (Bazel `BUILD`, `Cargo.toml`, lockfiles) to an
   explicit **aggregation node** that every touched component `depends_on`; that
   node owns the shared file. Do not let scope conflicts be the common path.
@@ -22,7 +30,7 @@ plan.
 - `gpu` is `none`, `T1`, or `T2`; only the verifier may use it, so a GPU
   acceptance command must call `tools/gpu.sh --tier <T> -- <command>`.
 - A barrier is an explicit node that every member of the prior group depends on,
-  never an implicit wave.
+  or a `depends_on` edge; `phase` is a display label only.
 
 ## Output
 
@@ -42,7 +50,7 @@ It must be valid JSON with this shape:
       "label": "human label",
       "phase": "P0",                 // display only
       "goal": "prompt seed for the worker",
-      "owns": ["dir:backends/cpu", "file:src/tensor.cc"],
+      "owns": ["dir:backends/cpu", "file:src/tensor.cc=modify"],
       "depends_on": [],
       "acceptance": ["bazel test //..."],
       "gpu": "none"

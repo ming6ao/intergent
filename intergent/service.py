@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from . import campaign, conflict, gitutil, integrate, locks, planner, report as report_mod
+from . import waves as waveplan
 from .conflict import Finding, IntentRef
 from .locks import HeldLock, Requirement
 from .scopes import (
@@ -578,6 +579,7 @@ class Service:
             self.config,
             [c for c in candidates if c["status"] in {"prepared", "pending"}],
         )
+        dag_waves, dag_waves_error = self._dag_waves(branch)
         return {
             "root": str(self.root),
             "main_branch": branch,
@@ -587,7 +589,28 @@ class Service:
             "candidates": candidates,
             "queue": self.store.queued_requests(),
             "waves": [w.to_dict() for w in waves],
+            "dag_waves": dag_waves,
+            "dag_waves_error": dag_waves_error,
         }
+
+    def _dag_waves(self, branch: str | None) -> tuple[list[dict[str, Any]], str | None]:
+        """Compute the scheduler's wave projection of the campaign DAG.
+
+        The DAG is the only authored schedule; waves are derived here from
+        ``owns``/``depends_on`` and the campaign's ``concurrency`` cap.  A
+        malformed or cyclic DAG is reported rather than crashing ``status``.
+        """
+        if not branch:
+            return [], None
+        dag = campaign.load_dag(self.root, branch)
+        if not dag or not dag.get("nodes"):
+            return [], None
+        wave_size = int(dag.get("concurrency") or waveplan.DEFAULT_WAVE_SIZE)
+        try:
+            planned = waveplan.plan_dag_waves(list(dag["nodes"]), wave_size=wave_size)
+        except IntergentError as exc:
+            return [], str(exc)
+        return [w.to_dict() for w in planned], None
 
     def _project_unit(self, unit: dict[str, Any], branch: str | None) -> dict[str, Any]:
         """Add the campaign columns the dashboard needs (§6.3).

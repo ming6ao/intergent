@@ -31,8 +31,12 @@ document into landed work by spawning a planner, workers, and a verifier, while
   coordinator). RPC-managed, steerable workers are a later, separate upgrade.
 - Multiple concurrent campaigns per plane. One plane integrates one feature
   branch.
-- A second scheduler. The DAG is the only schedule; there is no separate
-  "wave" or "phase" engine.
+- A second *authored* schedule. `dag.json` is the only plan a human or planner
+  writes; **waves are a deterministic projection of it**, computed by
+  `intergent/waves.py` from `owns` + `depends_on` and capped by `concurrency`.
+  There is no `plan-waves` file and no phase engine: `phase` remains a display
+  label, and a coordinator-added `depends_on` edge triggers a replan rather than
+  a hand-edited wave list.
 
 ## 2. Topology
 
@@ -106,23 +110,33 @@ Fields:
 | `label` | Human label for the report and dashboard. |
 | `phase` | **Display/report grouping only.** Never used for scheduling. |
 | `goal` | The prompt seed handed to the worker. |
-| `owns` | Scope specs the worker must `declare` before editing. |
+| `owns` | Scope specs the worker must `declare` before editing. A spec may pin an operation (`file:src/a.py=modify`); waves use these scopes. |
 | `depends_on` | Node ids that must be `done` before this node is `ready`. |
 | `acceptance` | Commands the worker must run and the verifier re-runs. |
 | `gpu` | `none`, `T1`, or `T2`; only the verifier may use it. |
+| `concurrency` | **Per-wave size cap.** Defaults to 3 when absent; reused by the wave projection. |
 
-**There are no phases in the scheduler.** A graph plus the rule
+**Phases never schedule; waves do — and waves are derived.** A graph plus the
+rules
 
 ```text
-ready(n)  :=  every d in n.depends_on is done
+wave(n)  :=  max(wave(d) + 1 for d in n.depends_on), then earliest wave with
+             room (<= concurrency) and no strict scope conflict
+ready(n) :=  every d in n.depends_on is done AND n is in the current wave
 ```
 
-is the whole executor. `done` means **verified *and* integrated** onto the
-feature branch (§5), so a dependent's `--base <feature_branch>` checkout always
-contains its dependencies' code. Batching integration until the end would make
-`depends_on` meaningless. A barrier is expressed by depending on every node of
-the prior group, or by adding an explicit aggregation node. `phase` survives
-only as a label so reports can group components.
+are the whole executor. The packing is **strict**: any `owns` scope match
+between two nodes (`file:` vs `file:`, `dir:` vs `file:`, related symbol, token
+similarity) puts the later node in a later wave, even if both operations are
+additive. `done` means **verified *and* integrated** onto the feature branch
+(§5), so a later wave's `--base <feature_branch>` checkout already contains the
+previous wave's code. Batching integration until the end would make `depends_on`
+meaningless. A barrier is expressed by `depends_on` or by the wave itself;
+`phase` survives only as a label so reports can group components.
+
+The waves are computed by `Service.status()` and returned as `dag_waves`; the
+orchestrator persists them in `state.json` and recomputes when the DAG's
+`(id, owns, depends_on)` fingerprint changes.
 
 ## 4. State layout
 
@@ -165,22 +179,23 @@ before re-spawn). In-memory state is never trusted.
 ## 5. Lifecycle
 
 ```text
-campaign start <design>            # adopt current branch, invoke planner, write dag.json
+campaign start <design>     # adopt current branch, planner -> dag.json + waves
         │
         ▼  (user may review the printed summary)
-ready ──► spawn (<= concurrency) ──► worker commits candidate
-  ▲                                        │
-  │                                        ▼
-  │                          verify (verifier: T0, then gpu.sh)
-  │                                        │ pass
-  │                                        ▼
-  └──── node done ◄── integrate --node <id> (lands dep before dependents)
-                  │  failed -> retry / split / stop (coordinator decides)
-                  ▼
-        all nodes done or stopped
-                  │
-                  ▼
-integrate (sweep) ──► offer cleanup (worktrees / artifacts) ──► report
+wave N ready ──► spawn (<= concurrency) ──► worker commits candidate
+  ▲                                              │
+  │                                              ▼
+  │                                verify (verifier: T0, then gpu.sh)
+  │                                              │ pass
+  │                                              ▼
+  │                       node done ◄── integrate --node <id>
+  │                                              │
+  │            all wave N members done ──► ask cleanup once ──► open wave N+1
+  ▼
+all nodes done or stopped
+        │
+        ▼
+integrate (idempotent sweep) ──► final cleanup ──► report
 ```
 
 1. **`start`** — adopts the **currently checked-out branch** as the campaign
@@ -188,29 +203,34 @@ integrate (sweep) ──► offer cleanup (worktrees / artifacts) ──► repo
    branch is refused), bootstraps the plane with `intergent start --no-unit`
    whose integration branch is that branch, and **invokes the planner** in the
    same action. The planner reads the design and writes `dag.json`; `start`
-   prints the branch it adopted plus the summary, and stops for an optional
-   human look.
-2. **`ready`** — returns the nodes whose dependencies are all `done`.
-3. **`spawn`** — creates an `intergent` unit for a node
-   (`intergent start --name <id> --base <feature_branch>`), launches a one-shot worker
-   in that worktree, and tees output to `worker_<id>.log`. Spawning a node is
-   only allowed once **every dependency has been integrated** onto the feature
-   branch (not merely verified), so the node's base checkout already contains
-   its dependencies' code.
+   projects it into waves (strict `owns` overlap, `depends_on` barrier,
+   `concurrency` cap), stores them in `state.json`, prints the branch and
+   summary, and stops for an optional human look.
+2. **`ready`** — returns the nodes in the **current wave** whose dependencies
+   are all `done`.
+3. **`spawn`** — only a node in the current wave may start. It creates an
+   `intergent` unit (`intergent start --name <id> --base <feature_branch>`),
+   launches a one-shot worker in that worktree, and tees output to
+   `worker_<id>.log`. Because the previous wave was integrated before this wave
+   opened, the base checkout already contains it: the "rebase" is the fresh
+   `--base` fork, with no in-place rebase.
 4. **`verify`** — spawns the read-only verifier on the node's **latest prepared
    candidate** (the newest candidate row for the unit, i.e. `get_candidate`'s
    `ORDER BY id DESC` result); the verdict is recorded.
 5. **`land the node`** — on a `pass` verdict, the coordinator immediately calls
    `integrate --node <id>` to merge that one candidate onto the feature branch,
-   *then* marks the node `done`. Integrating before marking done is what makes
-   `depends_on` meaningful (§11); a final `integrate` sweep is idempotent and
-   lands any stragglers.
+   *then* marks the node `done`. When the last member of the current wave is
+   `done`, the wave is marked complete and the next wave opens (a final
+   `integrate` sweep is idempotent and lands any stragglers).
 6. **`integrate` (final)** — merges any remaining prepared candidates onto the
-   feature branch (see §6.2), then offers cleanup.
+   feature branch (see §6.2), then offers final cleanup.
 7. **`report`** — deterministic skeleton plus the coordinator's narrative.
 
 The coordinator drives this loop; it is not itself scheduled. It may re-invoke
-the planner (`start --replan`) or edit `dag.json` after a failure.
+the planner (`start --replan`) or edit `dag.json` after a failure. A
+coordinator-added `depends_on` edge (for example after a `declare` returns
+`queued`) changes the DAG fingerprint, so the next `status`/`ready`/`spawn`
+reprojects the waves.
 
 ## 6. `intergent` core changes
 
@@ -308,29 +328,30 @@ One tool, `campaign`, mirroring the shape of the `intergent` CLI. `start` and `p
 | Action | Purpose |
 |---|---|
 | `start <design>` | Adopt the current branch as the feature branch, invoke the planner, write `dag.json`, print the summary. `--replan` re-invokes the planner. |
-| `status` | Merge `intergent status --json` with live child state; print the summary. |
-| `ready` | Return ready nodes. |
-| `spawn <node>` | Create the unit, launch the one-shot worker, tee `worker_<id>.log`. |
+| `status` | Merge `intergent status --json` with live child state; project waves; print the summary. |
+| `ready` | Return the current wave's ready nodes. |
+| `spawn <node>` | Create the unit, launch the one-shot worker, tee `worker_<id>.log`; refuse a node outside the current wave. |
 | `verify <node>` | Run the verifier on the node's latest prepared candidate; record the verdict. |
-| `integrate` | Call `intergent integrate --node <id>` after each pass (per-node landing), plus a final idempotent sweep; then **offer cleanup** (below). |
+| `integrate` | Call `intergent integrate --node <id>` after each pass (per-node landing), plus a final idempotent sweep; when a wave completes, **offer its cleanup once** (below). |
 | `report` | `intergent report` plus the coordinator narrative. |
 
-### Cleanup on integrate
+### Cleanup per wave
 
 Cleanup is destructive, so the agent cannot silently choose it. `integrate`
-first performs the merge; then the extension asks the user with
-`ctx.ui.confirm`, e.g.:
+first performs the merge; when the last member of a wave lands, the extension
+asks the user **once for that wave** with `ctx.ui.confirm`, e.g.:
 
 ```text
-Integrate succeeded onto feat/nanochat-cpp.
-Remove unit worktrees for this campaign?   [y/N]
+Wave 0 integrated onto feat/nanochat-cpp.
+Remove the landed worktrees, branches, and logs for wave 0 (w1, w4) now?   [y/N]
 ```
 
-Choices map to `intergent integrate --cleanup` and to artifact removal:
+Accepting maps to `intergent integrate --cleanup worktrees` and removes that
+wave's `worker_<id>.log` artifacts; the wave's `cleanup_done` flag is persisted
+so the prompt never repeats. Declining also counts as asking once.
 
 - **worktrees** — `intergent status --gc` (or `integrate --cleanup worktrees`);
-- **artifacts** — delete `<branch-key>.dag.json`, `<branch-key>.state.json`,
-  and `<branch-key>.worker_*.log`;
+- **artifacts** — the wave's `<branch-key>.worker_<id>.log` files;
 - **`<branch-key>.report.md` is kept** unless the user explicitly asks to
   remove everything.
 
@@ -386,14 +407,15 @@ any human-authored prose plan.
 | Piece | Location |
 |---|---|
 | `integrate`, `report`, `start --no-unit`, status projection | `intergent/integrate.py`, `intergent/report.py`, `intergent/service.py`, `intergent/surface.py` |
+| DAG wave projection (strict scope packing, `concurrency` cap) | `intergent/waves.py`, `intergent/service.py` (`status.dag_waves`) |
 | `dag.json`/`state.json` layout and readers | `intergent/campaign.py` |
 | per-node verification fingerprints (§6.4) | `intergent/verifier.py`, `intergent/store.py` |
-| `campaign` coordinator tool + widget + log tee | `integrations/pi/campaign.ts` |
+| `campaign` coordinator tool + waves + widget + per-wave cleanup | `integrations/pi/campaign.ts` |
 | shared pi-extension helpers (CLI resolution, state paths, subagent runner) | `integrations/pi/common.ts` |
 | pi package manifest (tools + skill together) | `package.json` |
 | planner/worker/verifier agents | `integrations/pi/agents/*.md` |
 | GPU broker | `tools/gpu.sh` |
-| tests | `tests/test_campaign.py`, `tests/test_cli.py`, `tests/test_skill_package.py` |
+| tests | `tests/test_waves.py`, `tests/test_campaign.py`, `tests/test_cli.py`, `tests/test_skill_package.py` |
 
 ## 11. Open questions
 
@@ -401,8 +423,9 @@ any human-authored prose plan.
   and before any dependent spawns**. Batching is not viable: with
   `--base <feature_branch>`, a dependent would start from a base lacking its
   dependencies' code, so its `acceptance` could not pass. A final sweep remains
-  for idempotence. Barriers/group aggregation are expressed as explicit nodes
-  that every group member depends on, never as implicit batching.
+  for idempotence. Barriers are now first-class: the strict wave packing is a
+  `depends_on`-respecting barrier, and explicit aggregation nodes remain the
+  escape hatch for shared files.
 - Shared build files (Bazel `BUILD`, `Cargo.toml`, lockfiles) make overlap the
   common case, not an edge case. Rather than letting `declare`'s `queued` path
   become the main path, the planner must route shared-file edits to an explicit

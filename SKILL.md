@@ -23,11 +23,18 @@ COORDINATOR (this session)
  └── VERIFIER  read-only per candidate: T0 CPU then tools/gpu.sh
 ```
 
-- The DAG is the **only schedule** — there is no phase/wave engine in the
-  scheduler. `ready(n) := every d in n.depends_on is done`, where `done` means
+- The DAG is the **only authored schedule**. Waves are a deterministic
+  projection of it: nodes are packed into waves by `owns` scope overlap and
+  `depends_on`, capped by `concurrency` (default 3). `ready(n) := every d in
+  n.depends_on is done` **and** `n` is in the current wave, where `done` means
   verified **and integrated** onto the feature branch.
-- No two workers write the same file: each declares scope leases before editing.
+- A node starts only in the current wave; a later wave begins after every
+  member of the previous wave is integrated, so its units fork from the updated
+  feature branch.
+- No two same-wave workers declare overlapping scopes: strict scope overlap
+  puts the later node in a later wave.
 - Only the verifier may use the GPU. Workers never touch it.
+- Cleanup is grouped by wave: the coordinator asks once per completed wave.
 - Everything is reconstructable from `.intergent/` + git after a crash.
 
 The pi package provides two tools: `campaign` for the coordinator and `ig` for
@@ -47,8 +54,9 @@ and the verifier gets neither.
 3. **A worker's last step is `commit`.** Workers never call `ig` `integrate` or
    `git merge`. The coordinator owns verification and integration.
 4. **Never force a conflict.** If `declare` returns `queued`, exit and report the
-   blocker; if it returns `needs_decision`, stop — the coordinator re-plans the
-   node.
+   blocker; the coordinator adds a `depends_on` edge so the DAG replan puts the
+   node in the next wave. If it returns `needs_decision`, stop — the coordinator
+   re-plans the node.
 5. **The GPU is the verifier's.** T0 CPU is the inner loop; GPU acceptance goes
    through `tools/gpu.sh --tier <T1|T2> -- <command>`.
 
@@ -57,14 +65,22 @@ and the verifier gets neither.
 Use the `campaign` tool:
 
 ```
-campaign start <DESIGN.md>   adopt current branch + planner -> dag.json
-campaign ready               nodes whose dependencies are integrated
-campaign status              DAG + live child state
+campaign start <DESIGN.md>   adopt current branch + planner -> dag.json + waves
+campaign ready               current-wave nodes whose dependencies are integrated
+campaign status              waves + DAG + live child state
 campaign spawn <node>        one-shot worker in its own worktree
 campaign verify <node>       read-only verifier; records a verdict
 campaign integrate <node>    land the verified candidate, before spawning dependents
 campaign report              deterministic report (`--narrative` appends the summary)
 ```
+
+`start` projects the DAG into waves (strict `owns` scope overlap, `depends_on`
+barrier, `concurrency` cap; default 3) and stores them in `state.json`. A node
+may only spawn in the current wave; when every member of a wave is integrated
+the next wave opens and its units fork from the updated feature branch. A
+coordinator-added `depends_on` edge (e.g. after a `declare` returns `queued`)
+changes the DAG fingerprint and the next `status`/`ready`/`spawn` automatically
+replans the waves.
 
 The coordinator's own checkout is **not** an Intergent unit; `campaign start`
 bootstraps the plane with `--no-unit` and adopts the **currently checked-out
