@@ -1,4 +1,4 @@
-"""DAG wave planner (``intergent/ownership.py``).
+"""DAG wave planner (``sliceme/ownership.py``).
 
 Pins the strict scheduling contract:
 * waves are a deterministic projection of the DAG;
@@ -10,8 +10,8 @@ Pins the strict scheduling contract:
 
 import unittest
 
-from intergent.util import IntergentError
-from intergent.ownership import DEFAULT_WAVE_SIZE, plan_dag_waves, validate_dag
+from sliceme.util import SlicemeError
+from sliceme.ownership import DEFAULT_WAVE_SIZE, plan_dag_waves, validate_dag
 
 
 def node(nid, owns=None, depends_on=None):
@@ -138,11 +138,11 @@ class WavePlanTests(unittest.TestCase):
         self.assertEqual(first, second)
 
     def test_unknown_dependency_raises(self):
-        with self.assertRaises(IntergentError):
+        with self.assertRaises(SlicemeError):
             plan_dag_waves([node("w1", depends_on=["ghost"])])
 
     def test_cycle_raises(self):
-        with self.assertRaises(IntergentError):
+        with self.assertRaises(SlicemeError):
             plan_dag_waves(
                 [
                     node("w1", depends_on=["w2"]),
@@ -151,21 +151,21 @@ class WavePlanTests(unittest.TestCase):
             )
 
     def test_duplicate_id_raises(self):
-        with self.assertRaises(IntergentError):
+        with self.assertRaises(SlicemeError):
             plan_dag_waves([node("w1"), node("w1")])
 
     def test_wave_size_must_be_positive(self):
-        with self.assertRaises(IntergentError):
+        with self.assertRaises(SlicemeError):
             plan_dag_waves([node("w1")], wave_size=0)
 
     def test_non_directory_owns_is_rejected(self):
-        with self.assertRaises(IntergentError) as ctx:
+        with self.assertRaises(SlicemeError) as ctx:
             plan_dag_waves([node("w1", ["file:src/a.py"])])
         self.assertIn("must be directories", str(ctx.exception))
 
     def test_validate_dag_accepts_and_rejects(self):
         validate_dag([node("w1", ["dir:src/api"]), node("w2", ["dir:docs"])])
-        with self.assertRaises(IntergentError):
+        with self.assertRaises(SlicemeError):
             validate_dag([node("w1", ["symbol:src/a.py#A"])])
 
 

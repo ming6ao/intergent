@@ -10,9 +10,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from intergent import campaign
-from intergent.service import Service
-from intergent.util import IntergentError, write_json
+from sliceme import campaign
+from sliceme.service import Service
+from sliceme.util import SlicemeError, write_json
 
 
 def run(*args, cwd):
@@ -89,7 +89,7 @@ class ConformanceTests(RepoCase):
         workspace = self.svc.create_workspace("alpha", base="feat/x")
         self.write(workspace["worktree"], "docs/api.md", "# changed\n")
         self.svc.commit("alpha", "docs")
-        with self.assertRaises(IntergentError) as ctx:
+        with self.assertRaises(SlicemeError) as ctx:
             self.svc.finish("alpha")
         self.assertIn("owned directories", str(ctx.exception))
 
@@ -103,7 +103,7 @@ class ConformanceTests(RepoCase):
         workspace = self.svc.create_workspace("alpha-a2", base="feat/x")
         self.write(workspace["worktree"], "docs/api.md", "# changed\n")
         self.svc.commit("alpha-a2", "docs")
-        with self.assertRaises(IntergentError):
+        with self.assertRaises(SlicemeError):
             self.svc.finish("alpha-a2")
 
 
@@ -111,7 +111,7 @@ class IntegrationTests(RepoCase):
     def test_failed_check_blocks_integration(self):
         import json
 
-        from intergent.util import config_path
+        from sliceme.util import config_path
 
         cfg = json.loads(config_path(self.root).read_text())
         cfg["checks"] = [{"name": "needs-OK", "command": "test -f OK", "required": True}]

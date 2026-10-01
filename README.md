@@ -1,14 +1,14 @@
-# Intergent
+# Sliceme
 
-> *interlock + agent* — coordination for parallel coding agents: one campaign
-> DAG, a git worktree per worker, plan-time directory ownership, and
-> fingerprint-pinned integration onto a feature branch.
+> *slice the design into parallel agents* — coordination for parallel coding
+> agents: one campaign DAG, a git worktree per worker, plan-time directory
+> ownership, and fingerprint-pinned integration onto a feature branch.
 
-Intergent lets several coding agents work the same repository in parallel
+Sliceme lets several coding agents work the same repository in parallel
 without authoring conflicting changes, verifies each candidate against a
 content fingerprint, and lands verified candidates one DAG node at a time on a
 campaign feature branch. It is a dependency-free Python 3.11+ engine
-([`intergent/`](./intergent)) plus a pi coordinator tool.
+([`sliceme/`](./sliceme)) plus a pi coordinator tool.
 
 - **Isolation:** one `git worktree` + branch per worker unit.
 - **Ownership:** nodes own directories at plan time; overlapping subtrees are
@@ -21,30 +21,30 @@ campaign feature branch. It is a dependency-free Python 3.11+ engine
 ## Install
 
 ```bash
-pi install ./                    # or: pi install git:github.com/ming6ao/intergent
+pi install ./                    # or: pi install git:github.com/ming6ao/sliceme
 pi                               # launch a coordinator session
 ```
 
-`pi install` registers both tools (`campaign` for the coordinator, `ig` for
+`pi install` registers both tools (`campaign` for the coordinator, `sliceme` for
 workers) and installs the bundled skill. Both tools are registered **inactive**:
-a plain session never lists Intergent, and
-`/skill:intergent <DESIGN.md>` turns them on for that session (the design path
+a plain session never lists Sliceme, and
+`/skill:sliceme <DESIGN.md>` turns them on for that session (the design path
 must exist). Nothing else is needed: the tools invoke the bundled engine, so
-there is no `pip install` and no `intergent` on `PATH`.
+there is no `pip install` and no `sliceme` on `PATH`.
 
 ## Quick start
 
-In pi, run `/skill:intergent <DESIGN.md>` to start a coordinator session; the
+In pi, run `/skill:sliceme <DESIGN.md>` to start a coordinator session; the
 coordinator then drives the design into landed work with the `campaign` tool,
-and each spawned worker uses the `ig` tool to edit its owned directories and
+and each spawned worker uses the `sliceme` tool to edit its owned directories and
 commit.
 
 ```bash
-pi install ./                    # or git:/npm: intergent
+pi install ./                    # or git:/npm: sliceme
 pi                               # launch a session
 
 # then, in the session:
-#   /skill:intergent DESIGN.md   activate Intergent for this session
+#   /skill:sliceme DESIGN.md   activate Sliceme for this session
 #   campaign start <DESIGN.md>   adopt current branch + planner DAG
 #   campaign ready               current-wave nodes whose dependencies are done
 #   campaign spawn <node>        one-shot worker in its own worktree
@@ -68,15 +68,15 @@ python3 -m unittest discover -s tests -v
 ```
 
 ```
-intergent/          engine: service, store, git/worktrees, ownership, verifier,
+sliceme/          engine: service, store, git/worktrees, ownership, verifier,
                     integrate (landing + wave ordering + simulation), campaign
-bin/intergent       CLI shim (runs without install)
-integrations/pi/    pi package: campaign.ts tool, ig tool, common.ts, agents/
+bin/sliceme       CLI shim (runs without install)
+integrations/pi/    pi package: campaign.ts tool, sliceme tool, common.ts, agents/
 tools/gpu.sh        GPU broker (verifier only)
 tests/              unittest suite
 ```
 
-When adding an engine action, update `intergent/surface.py` (source of truth);
+When adding an engine action, update `sliceme/surface.py` (source of truth);
 the CLI follows, and the pi tools drive the CLI. See
 [docs/reference.md](./docs/reference.md).
 

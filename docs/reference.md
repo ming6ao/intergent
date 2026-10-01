@@ -1,12 +1,12 @@
-# Intergent reference
+# Sliceme reference
 
 Action reference, module map, state layout, verification semantics, tests, and
 deliberate gaps. For the model and workflow, see [guide.md](./guide.md).
 
 ## 1. Actions
 
-The CLI, the pi `ig` tool, and the pi `campaign` tool all derive from one action
-registry (`intergent/surface.py`). Five engine verbs:
+The CLI, the pi `sliceme` tool, and the pi `campaign` tool all derive from one action
+registry (`sliceme/surface.py`). Five engine verbs:
 
 | Action | Purpose |
 |---|---|
@@ -22,13 +22,13 @@ top; those drive the engine and the DAG rather than adding engine actions.
 ### `start`
 
 ```bash
-intergent start [--name N] [--path DIR] [--session S] [--kind session|worker]
+sliceme start [--name N] [--path DIR] [--session S] [--kind session|worker]
                 [--base REF] [--main BRANCH] [--check NAME=COMMAND ...]
                 [--force] [--no-unit]
 ```
 
-Idempotent bootstrap: writes `.intergent/config.json` and `.intergent/state.db`
-(and adds `.intergent/` to the repo-local `.git/info/exclude`) when the plane is
+Idempotent bootstrap: writes `.sliceme/config.json` and `.sliceme/state.db`
+(and adds `.sliceme/` to the repo-local `.git/info/exclude`) when the plane is
 missing, then creates a unit for the directory unless it is already inside one.
 Re-running from a unit worktree is a no-op.
 
@@ -46,7 +46,7 @@ The programmatic plane-only helper is `Service.init_plane(root, ...)`.
 ### `status`
 
 ```bash
-intergent status [--unit U] [--short] [--simulate] [--no-checks] [--health] [--gc]
+sliceme status [--unit U] [--short] [--simulate] [--no-checks] [--health] [--gc]
 ```
 
 `--short` prints only the current unit name. `--health` checks git/config/db.
@@ -60,7 +60,7 @@ per-unit campaign columns (`node`, `log`, `candidate`, `verification`).
 ### `commit`
 
 ```bash
-intergent commit [-m "message"] [--unit U] [--summary S]
+sliceme commit [-m "message"] [--unit U] [--summary S]
 ```
 
 A worker declares nothing at runtime. `commit` runs the **plan-conformance
@@ -75,7 +75,7 @@ Ownership syntax is `dir:PATH` (a bare path is accepted). Non-directory specs
 ### `integrate`
 
 ```bash
-intergent integrate [--node ID] [--acceptance CMD ...] [--gpu none|T1|T2]
+sliceme integrate [--node ID] [--acceptance CMD ...] [--gpu none|T1|T2]
                     [--check-only] [--cleanup none|worktrees|all] [--no-checks]
 ```
 
@@ -99,10 +99,10 @@ orchestrator's verifier uses. `--cleanup` defaults to `none`.
 ### `report`
 
 ```bash
-intergent report [--narrative TEXT] [--design REF]
+sliceme report [--narrative TEXT] [--design REF]
 ```
 
-Writes `.intergent/<branch-key>.report.md`: a deterministic skeleton (design
+Writes `.sliceme/<branch-key>.report.md`: a deterministic skeleton (design
 ref, feature branch, nodes, worker ids, commits, fingerprints/verifications,
 artifact paths) with the coordinator's narrative appended under
 "What changed / risks".
@@ -111,28 +111,28 @@ artifact paths) with the coordinator's narrative appended under
 
 | Module | Responsibility |
 |---|---|
-| `intergent/surface.py` | **single source of truth**: action registry, validation, dispatch |
-| `intergent/cli.py` | generated `argparse` CLI (`intergent`), human + `--json` output |
-| `intergent/service.py` | **single owner of state**: sessions, units, candidates, conformance, integration |
-| `intergent/store.py` | SQLite persistence (WAL) |
-| `intergent/gitutil.py` | Git plumbing (`worktree`, `merge`, `merge-tree`, `commit`, `branch`, `changed_files`) |
-| `intergent/ownership.py` | Directory ownership (normalization, `owns`, subtree conflicts) and the DAG wave projection |
-| `intergent/verifier.py` | Fingerprints (plane and node sources) and the trusted-check runner |
-| `intergent/integrate.py` | Feature-branch landing, node verification recording, candidate wave ordering, combined-tree simulation |
-| `intergent/campaign.py` | `dag.json` / `state.json` layout and readers; deterministic report |
+| `sliceme/surface.py` | **single source of truth**: action registry, validation, dispatch |
+| `sliceme/cli.py` | generated `argparse` CLI (`sliceme`), human + `--json` output |
+| `sliceme/service.py` | **single owner of state**: sessions, units, candidates, conformance, integration |
+| `sliceme/store.py` | SQLite persistence (WAL) |
+| `sliceme/gitutil.py` | Git plumbing (`worktree`, `merge`, `merge-tree`, `commit`, `branch`, `changed_files`) |
+| `sliceme/ownership.py` | Directory ownership (normalization, `owns`, subtree conflicts) and the DAG wave projection |
+| `sliceme/verifier.py` | Fingerprints (plane and node sources) and the trusted-check runner |
+| `sliceme/integrate.py` | Feature-branch landing, node verification recording, candidate wave ordering, combined-tree simulation |
+| `sliceme/campaign.py` | `dag.json` / `state.json` layout and readers; deterministic report |
 
 The engine is dependency-free Python 3.11+. `Service` is the only state owner;
-adapters only parse arguments and render results. `bin/intergent` is a shim so
+adapters only parse arguments and render results. `bin/sliceme` is a shim so
 the CLI runs without installation.
 
 ## 3. State layout
 
-All campaign state lives under `.intergent/`, **prefixed by the feature-branch
+All campaign state lives under `.sliceme/`, **prefixed by the feature-branch
 name** so one campaign's files form a single glob and no two campaigns collide.
 Let `branch-key` replace `/` with `--` (`feat/x` → `feat--x`):
 
 ```text
-.intergent/
+.sliceme/
   config.json                      # plane config
   state.db                         # units, candidates, fingerprints, verifications (SQLite, WAL)
   feat--x.dag.json                 # canonical plan (never committed)

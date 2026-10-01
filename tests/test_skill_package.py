@@ -1,7 +1,7 @@
 """Guards the pi package contract.
 
-Intergent supports exactly one install path: ``pi install`` of this package,
-which registers the ``campaign``/``ig`` tools and ships the bundled skill and
+Sliceme supports exactly one install path: ``pi install`` of this package,
+which registers the ``campaign``/``sliceme`` tools and ships the bundled skill and
 engine. These tests fail if that structure regresses.
 """
 
@@ -16,12 +16,12 @@ README = REPO_ROOT / "README.md"
 SKILL = REPO_ROOT / "SKILL.md"
 PACKAGE = REPO_ROOT / "package.json"
 PI_DIR = REPO_ROOT / "integrations" / "pi"
-PI_EXTENSION = PI_DIR / "intergent.ts"
+PI_EXTENSION = PI_DIR / "sliceme.ts"
 PI_CAMPAIGN = PI_DIR / "campaign.ts"
 PI_COMMON = PI_DIR / "common.ts"
 
 sys.path.insert(0, str(REPO_ROOT))
-from intergent import surface  # noqa: E402
+from sliceme import surface  # noqa: E402
 
 
 def _frontmatter(text: str) -> dict[str, str]:
@@ -42,12 +42,12 @@ class SkillPackageTests(unittest.TestCase):
     def test_root_skill_md_is_valid(self):
         self.assertTrue(SKILL.is_file(), "root SKILL.md is required as the pi package skill")
         data = _frontmatter(SKILL.read_text(encoding="utf-8"))
-        self.assertEqual(data.get("name"), "intergent")
+        self.assertEqual(data.get("name"), "sliceme")
         self.assertTrue(data.get("description"), "description is required frontmatter")
 
     def test_bundled_cli_and_package_exist(self):
-        self.assertTrue((REPO_ROOT / "bin" / "intergent").is_file())
-        self.assertTrue((REPO_ROOT / "intergent" / "cli.py").is_file())
+        self.assertTrue((REPO_ROOT / "bin" / "sliceme").is_file())
+        self.assertTrue((REPO_ROOT / "sliceme" / "cli.py").is_file())
 
     def test_no_skills_sh_install_path(self):
         # pi is the only supported harness; the package installs the skill, so
@@ -62,9 +62,10 @@ class SkillPackageTests(unittest.TestCase):
             self.assertNotIn("npx skills add", path.read_text(encoding="utf-8"))
 
     def test_no_dead_bootstrap_env_or_cli_alias(self):
-        # `INTERGENT_AUTO_BOOTSTRAP` belonged to a removed auto-bootstrap path,
-        # and the `ig` CLI alias is gone (no `bin/ig`, no console scripts);
-        # neither should reappear in the docs.
+        # `SLICEME_AUTO_BOOTSTRAP` belonged to a removed auto-bootstrap path,
+        # and the retired `ig` CLI alias is gone (no `bin/ig`, no console
+        # scripts); neither the dead env nor the pre-rename names should
+        # reappear in the docs.
         docs = (
             README,
             SKILL,
@@ -73,35 +74,38 @@ class SkillPackageTests(unittest.TestCase):
         )
         for path in docs:
             text = path.read_text(encoding="utf-8")
-            self.assertNotIn("INTERGENT_AUTO_BOOTSTRAP", text, path)
+            self.assertNotIn("SLICEME_AUTO_BOOTSTRAP", text, path)
+            self.assertNotIn("INTERGENT", text, path)
+            self.assertNotIn("intergent", text, path)
             self.assertNotIn("alias: ig", text, path)
+            self.assertNotIn("bin/ig", text, path)
 
     def test_root_skill_is_explicit_invocation_only(self):
         # The skill must not auto-load just because a repo has a plane; the
-        # user invokes it with `/skill:intergent`.
+        # user invokes it with `/skill:sliceme`.
         data = _frontmatter(SKILL.read_text(encoding="utf-8"))
         self.assertEqual(data.get("disable-model-invocation"), "true")
-        self.assertNotIn("repository has .intergent/config.json", data.get("description", ""))
+        self.assertNotIn("repository has .sliceme/config.json", data.get("description", ""))
 
-    def test_intergent_tools_are_opt_in(self):
-        # The pi package must not leak Intergent into every session: both tools
-        # register inactive, and only `/skill:intergent <design.md>` turns them
+    def test_sliceme_tools_are_opt_in(self):
+        # The pi package must not leak Sliceme into every session: both tools
+        # register inactive, and only `/skill:sliceme <design.md>` turns them
         # on. Without a design document the invocation is dropped.
         for path in (PI_EXTENSION, PI_CAMPAIGN):
             text = path.read_text(encoding="utf-8")
             self.assertIn("defaultActive: false", text, path)
         campaign = PI_CAMPAIGN.read_text(encoding="utf-8")
         self.assertIn('pi.on("input"', campaign)
-        self.assertIn("/skill:intergent", campaign)
+        self.assertIn("/skill:sliceme", campaign)
         self.assertIn("hasDesignDocument", campaign)
         self.assertIn('action: "handled"', campaign)
 
     def test_pi_extension_is_a_thin_forwarder(self):
         # There is no single-agent bootstrap: the extension only registers the
-        # `ig` tool and forwards to the CLI via the shared helpers.
+        # `sliceme` tool and forwards to the CLI via the shared helpers.
         text = PI_EXTENSION.read_text(encoding="utf-8")
         self.assertIn('from "./common.ts"', text)
-        self.assertIn("runIg(pi, ctx", text)
+        self.assertIn("runSliceme(pi, ctx", text)
         self.assertNotIn("bindingIsStale", text)
         self.assertNotIn("bootstrap(ctx)", text)
         self.assertNotIn("before_agent_start", text)
@@ -112,7 +116,7 @@ class SkillPackageTests(unittest.TestCase):
         self.assertIn("pi-package", manifest.get("keywords", []))
         pi = manifest.get("pi", {})
         extensions = pi.get("extensions", [])
-        self.assertIn("./integrations/pi/intergent.ts", extensions)
+        self.assertIn("./integrations/pi/sliceme.ts", extensions)
         self.assertIn("./integrations/pi/campaign.ts", extensions)
         self.assertIn(".", pi.get("skills", []))
         # The shared helpers ship with the package and are imported by both tools.
@@ -121,21 +125,21 @@ class SkillPackageTests(unittest.TestCase):
 
     def test_subagent_tools_are_scoped(self):
         # runSubagent must pass the agent's `tools:` allowlist to `pi --tools`;
-        # this keeps workers on the `ig` unit tool and away from `campaign`,
-        # and gives the read-only verifier no Intergent tool at all.
+        # this keeps workers on the `sliceme` unit tool and away from `campaign`,
+        # and gives the read-only verifier no Sliceme tool at all.
         common = PI_COMMON.read_text(encoding="utf-8")
         self.assertIn('"--tools"', common)
         self.assertIn("agentFrontmatterValue", common)
         worker = _frontmatter((PI_DIR / "agents" / "worker.md").read_text(encoding="utf-8"))
         worker_tools = [t.strip() for t in worker["tools"].split(",")]
-        self.assertIn("ig", worker_tools)
+        self.assertIn("sliceme", worker_tools)
         self.assertNotIn("campaign", worker_tools)
         verifier = _frontmatter((PI_DIR / "agents" / "verifier.md").read_text(encoding="utf-8"))
-        self.assertNotIn("ig", [t.strip() for t in verifier["tools"].split(",")])
+        self.assertNotIn("sliceme", [t.strip() for t in verifier["tools"].split(",")])
 
     def test_no_console_scripts(self):
         # The engine is internal: it is invoked from the package, never
-        # installed as a user-facing `intergent`/`ig` command.
+        # installed as a user-facing `sliceme`/`sliceme` command.
         pyproject = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
         self.assertNotIn("[project.scripts]", pyproject)
 
@@ -143,7 +147,7 @@ class SkillPackageTests(unittest.TestCase):
         manifest = json.loads(PACKAGE.read_text(encoding="utf-8"))
         files = manifest.get("files", [])
         self.assertIn("bin/", files)
-        self.assertIn("intergent/", files)
+        self.assertIn("sliceme/", files)
         self.assertIn("SKILL.md", files)
 
     def test_retired_actions_are_gone(self):
@@ -162,7 +166,7 @@ class SkillPackageTests(unittest.TestCase):
         self.assertIn("integrate", names)
         self.assertIn("report", names)
         text = PI_EXTENSION.read_text(encoding="utf-8")
-        match = re.search(r"IG_ACTIONS\s*=\s*\[(.*?)\]\s*as const", text, re.DOTALL)
+        match = re.search(r"SLICEME_ACTIONS\s*=\s*\[(.*?)\]\s*as const", text, re.DOTALL)
         self.assertIsNotNone(match)
         self.assertEqual(re.findall(r'"([a-z_]+)"', match.group(1)), names)
         # The skill documents the campaign additions.
@@ -177,7 +181,7 @@ class SkillPackageTests(unittest.TestCase):
         campaign_text = PI_CAMPAIGN.read_text(encoding="utf-8")
         for needle in ("dag_waves", "currentWave", "readyWaveNodes", "advanceWaves"):
             self.assertIn(needle, campaign_text)
-        self.assertTrue((REPO_ROOT / "intergent" / "ownership.py").is_file())
+        self.assertTrue((REPO_ROOT / "sliceme" / "ownership.py").is_file())
         self.assertTrue((REPO_ROOT / "tests" / "test_waves.py").is_file())
 
 

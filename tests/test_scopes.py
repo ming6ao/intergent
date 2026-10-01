@@ -1,14 +1,14 @@
-"""Unit tests for directory ownership (``intergent/ownership.py``)."""
+"""Unit tests for directory ownership (``sliceme/ownership.py``)."""
 
 import unittest
 
-from intergent.ownership import (
+from sliceme.ownership import (
     normalize_dir,
     owns_conflict,
     parse_owns,
     path_within_owns,
 )
-from intergent.util import IntergentError
+from sliceme.util import SlicemeError
 
 
 class NormalizeTests(unittest.TestCase):
@@ -32,7 +32,7 @@ class ParseOwnsTests(unittest.TestCase):
 
     def test_rejects_non_directory_kinds(self):
         for spec in ("file:src/a.py", "symbol:src/a.py#A", "api:GET /x"):
-            with self.assertRaises(IntergentError):
+            with self.assertRaises(SlicemeError):
                 parse_owns([spec])
 
 

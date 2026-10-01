@@ -1,5 +1,5 @@
-# Intergent runtime state (local to this machine)
-.intergent/
+# Sliceme runtime state (local to this machine)
+.sliceme/
 
 # Python
 __pycache__/

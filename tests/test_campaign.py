@@ -7,7 +7,7 @@ These pin the campaign contract:
   aborts conflicts atomically, and refuses the plane's default branch;
 * node acceptance verdicts are fingerprinted with source ``node:<id>`` and
   reused (§6.4);
-* ``intergent report`` is a deterministic skeleton.
+* ``sliceme report`` is a deterministic skeleton.
 """
 
 import json
@@ -16,9 +16,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from intergent import campaign
-from intergent.service import Service
-from intergent.util import IntergentError, config_path, write_json
+from sliceme import campaign
+from sliceme.service import Service
+from sliceme.util import SlicemeError, config_path, write_json
 
 
 def run(*args, cwd):
@@ -102,7 +102,7 @@ class NoUnitBootstrapTests(CampaignCase):
             service.close()
 
     def test_init_rejects_a_missing_branch(self):
-        with self.assertRaises(IntergentError):
+        with self.assertRaises(SlicemeError):
             Service.init(self.root, main_branch="feat/missing", no_unit=True)
         self.assertFalse(self.branch_exists("feat/missing"))
 
@@ -137,10 +137,10 @@ class IntegrateTests(CampaignCase):
         self.assertEqual(run("git", "rev-parse", "feat/x", cwd=self.root).stdout.strip(), head)
         # One --no-ff merge commit per unit on top of the base.
         log = run("git", "log", "--format=%s", "main..feat/x", cwd=self.root).stdout
-        self.assertEqual(log.count("intergent integrate"), 2)
+        self.assertEqual(log.count("sliceme integrate"), 2)
         # Branches are kept for provenance after integration.
-        self.assertTrue(self.branch_exists("ig/w1"))
-        self.assertTrue(self.branch_exists("ig/w2"))
+        self.assertTrue(self.branch_exists("sliceme/w1"))
+        self.assertTrue(self.branch_exists("sliceme/w2"))
 
     def test_integrate_refuses_the_default_branch(self):
         self.svc = Service(self.root)
@@ -150,7 +150,7 @@ class IntegrateTests(CampaignCase):
         Path(self.svc.store.get_unit("alpha")["worktree"], "src/a.py").write_text("a = 9\n")
         self.svc.commit("alpha", "alpha")
         self.svc.finish("alpha")
-        with self.assertRaises(IntergentError) as ctx:
+        with self.assertRaises(SlicemeError) as ctx:
             self.svc.integrate()
         self.assertIn("default branch", str(ctx.exception))
 

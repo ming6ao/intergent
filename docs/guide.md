@@ -1,8 +1,9 @@
-# Intergent guide
+# Sliceme guide
 
-Intergent *(interlock + agent)* coordinates parallel coding agents around one
-campaign: a machine-readable DAG, a `git worktree` per worker, plan-time
-**directory ownership**, and fingerprint-pinned integration onto a feature
+Sliceme *(slice the design into parallel agents)* coordinates parallel coding
+agents around one campaign: a machine-readable DAG, a `git worktree` per worker,
+plan-time **directory ownership**, and fingerprint-pinned integration onto a
+feature
 branch. This guide covers the model, ownership, the orchestration lifecycle, and
 the pi agent integration. The command/action reference lives in
 [reference.md](./reference.md).
@@ -15,7 +16,7 @@ The failure modes are *authoring conflicts* (wasted, contradictory work) and
 *integration conflicts* (stale-tip breakage, CI churn).
 
 Git compares *text*, not *intent*, and landing is per-branch rather than ordered
-by a dependency graph. Intergent adds a deterministic layer over Git:
+by a dependency graph. Sliceme adds a deterministic layer over Git:
 
 - isolates each worker in a worktree;
 - assigns each DAG node disjoint **directories** at plan time;
@@ -40,7 +41,7 @@ LLMs draft the plan; they never decide at runtime whether something blocks.
 | **Campaign** | One feature branch plus a `dag.json` plan and executor `state.json`. |
 | **Coordinator** | The top-level session that owns the plan and drives the campaign. |
 | **Node** | One DAG unit of work with `owns`, `depends_on`, `acceptance`, `gpu`. |
-| **Unit** | An isolated writer: a worktree + branch (`ig/<name>`). |
+| **Unit** | An isolated writer: a worktree + branch (`sliceme/<name>`). |
 | **Ownership** | The repo-relative **directories** a node may change (`dir:` only), compared by subtree overlap. |
 | **Conformance** | Commit-time check that every changed path lies inside the node's owned directories. |
 | **Candidate** | A committed unit awaiting verification and integration. |
@@ -118,7 +119,7 @@ auditable without runtime locking.
 ## 4. The plan: `dag.json` and derived waves
 
 `dag.json` is canonical; there is no `plan.md`. It lives under the git-excluded
-`.intergent/` directory and is never committed.
+`.sliceme/` directory and is never committed.
 
 ```jsonc
 {
@@ -167,7 +168,7 @@ contains the previous wave's code. Batching integration until the end would make
 ## 5. Orchestration
 
 One top-level **coordinator** turns a design into landed work by spawning a
-planner, workers, and a verifier, while the `intergent` engine remains the
+planner, workers, and a verifier, while the `sliceme` engine remains the
 deterministic state, isolation, and integration layer.
 
 ```text
@@ -178,13 +179,13 @@ COORDINATOR  (top-level pi session — the session the user sees)
  │  tools: campaign start | status | ready | spawn | verify | integrate | report
  ├── PLANNER   (subagent, invoked by the coordinator via `start`)
  │               reads the design, writes dag.json (plane state, not committed)
- ├── WORKER_*  (one-shot subagent per ready DAG node, own intergent worktree)
+ ├── WORKER_*  (one-shot subagent per ready DAG node, own sliceme worktree)
  │               edit owned dirs -> acceptance tests -> commit  (never GPU)
  └── VERIFIER  (read-only subagent, invoked per candidate)
                  T0 CPU then tools/gpu.sh; returns a verdict; never edits
 ```
 
-The coordinator is **not** an `intergent` unit: plane bootstrap uses
+The coordinator is **not** an `sliceme` unit: plane bootstrap uses
 `start --no-unit`, so campaign setup leaves no phantom unit in the coordinator's
 checkout.
 
@@ -264,19 +265,19 @@ cost of each spawn.
 ## 6. Agent integration (pi)
 
 pi is the supported agent harness. The repository is a **pi package** that ships
-the `campaign` coordinator tool, the `ig` worker tool, and the bundled skill.
+the `campaign` coordinator tool, the `sliceme` worker tool, and the bundled skill.
 
 ```bash
 pi install ./                                       # local checkout
-# pi install git:github.com/ming6ao/intergent
-# pi install npm:intergent
+# pi install git:github.com/ming6ao/sliceme
+# pi install npm:sliceme
 pi                                                  # launch the coordinator
 ```
 
 Both tools register **inactive**: a plain session never lists them nor receives
-their prompt guidelines, so Intergent is only used when asked for.
-`/skill:intergent <DESIGN.md>` is the single entry point: when the argument is
-an existing design document, the skill turns `campaign` and `ig` on for that
+their prompt guidelines, so Sliceme is only used when asked for.
+`/skill:sliceme <DESIGN.md>` is the single entry point: when the argument is
+an existing design document, the skill turns `campaign` and `sliceme` on for that
 session. There is no single-agent bootstrap — a session is only bound to a unit
 when the campaign `spawn` action (or the user) creates one.
 
@@ -288,12 +289,12 @@ when the campaign `spawn` action (or the user) creates one.
 | **Verifier** | no (read-only) | runs acceptance (T0 then `tools/gpu.sh`), returns a verdict, never edits |
 
 `runSubagent` passes each agent's `tools:` allowlist to `pi --tools`, so a
-worker gets `ig` but never `campaign`, and the verifier gets no Intergent tool
+worker gets `sliceme` but never `campaign`, and the verifier gets no Sliceme tool
 at all.
 
 ### Worker contract
 
-1. `ig` action `status` with `short: true` must succeed — you are in your unit
+1. `sliceme` action `status` with `short: true` must succeed — you are in your unit
    worktree.
 2. Edit only files under the directories your DAG node owns. `commit` enforces
    this: a changed path outside the owned directories is rejected.
@@ -302,7 +303,7 @@ at all.
 
 ### Coordinator
 
-Start the coordinator with `/skill:intergent <DESIGN.md>` in pi, then use the
+Start the coordinator with `/skill:sliceme <DESIGN.md>` in pi, then use the
 `campaign` tool — or drive the CLI directly: `start --no-unit` (which adopts the
 current branch; check out your branch first), then `spawn`/`verify`/`integrate`
 per ready node, a final idempotent `integrate` sweep, and `report`.

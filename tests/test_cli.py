@@ -1,6 +1,6 @@
 """Smoke tests for the CLI adapter.
 
-It is generated from :mod:`intergent.surface`; these tests pin the shared
+It is generated from :mod:`sliceme.surface`; these tests pin the shared
 action surface and the end-to-end flow.
 """
 
@@ -14,10 +14,10 @@ import unittest
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-BIN = REPO_ROOT / "bin" / "intergent"
+BIN = REPO_ROOT / "bin" / "sliceme"
 
 sys.path.insert(0, str(REPO_ROOT))
-from intergent import surface  # noqa: E402
+from sliceme import surface  # noqa: E402
 
 
 def run_cli(args, cwd):
@@ -45,7 +45,7 @@ class CliTests(unittest.TestCase):
 
             out = run_cli(["--json", "start", "--check", "ok=true"], root)
             self.assertEqual(out.returncode, 0, out.stderr)
-            self.assertTrue((root / ".intergent" / "config.json").is_file())
+            self.assertTrue((root / ".sliceme" / "config.json").is_file())
 
             out = run_cli(["--json", "start", "--name", "alpha"], root)
             self.assertEqual(out.returncode, 0, out.stderr)
@@ -70,7 +70,7 @@ class CliTests(unittest.TestCase):
             first = json.loads(out.stdout)
             self.assertTrue(first["initialized"])
             self.assertTrue(first["created"])
-            self.assertTrue((root / ".intergent" / "config.json").is_file())
+            self.assertTrue((root / ".sliceme" / "config.json").is_file())
             worktree = Path(first["worktree"])
             self.assertTrue(worktree.is_dir())
 
@@ -139,12 +139,12 @@ class CliTests(unittest.TestCase):
             # Every state subdirectory is covered by the ignore rule.
             for rel in ("config.json", "state.db", "worktrees", "scratch"):
                 ignored = subprocess.run(
-                    ["git", "check-ignore", f".intergent/{rel}"],
+                    ["git", "check-ignore", f".sliceme/{rel}"],
                     cwd=tmp,
                     capture_output=True,
                     text=True,
                 )
-                self.assertEqual(ignored.returncode, 0, f".intergent/{rel} not ignored")
+                self.assertEqual(ignored.returncode, 0, f".sliceme/{rel} not ignored")
 
             # The unit worktree itself stays clean too.
             wt_status = subprocess.run(
@@ -254,7 +254,7 @@ class CliTests(unittest.TestCase):
         """The CLI subcommands are exactly the registry (plus aliases)."""
         import argparse
 
-        from intergent.cli import build_parser
+        from sliceme.cli import build_parser
 
         sub = next(
             a for a in build_parser()._actions if isinstance(a, argparse._SubParsersAction)
@@ -265,10 +265,10 @@ class CliTests(unittest.TestCase):
 
     def test_cli_and_agent_surfaces_share_actions(self):
         """The pi extension's action list must match surface.ACTIONS."""
-        ext = REPO_ROOT / "integrations" / "pi" / "intergent.ts"
+        ext = REPO_ROOT / "integrations" / "pi" / "sliceme.ts"
         text = ext.read_text(encoding="utf-8")
-        match = re.search(r"IG_ACTIONS\s*=\s*\[(.*?)\]\s*as const", text, re.DOTALL)
-        self.assertIsNotNone(match, "IG_ACTIONS not found in pi extension")
+        match = re.search(r"SLICEME_ACTIONS\s*=\s*\[(.*?)\]\s*as const", text, re.DOTALL)
+        self.assertIsNotNone(match, "SLICEME_ACTIONS not found in pi extension")
         names = re.findall(r'"([a-z_]+)"', match.group(1))
         self.assertEqual(names, [a.name for a in surface.ACTIONS])
 
