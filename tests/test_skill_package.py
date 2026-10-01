@@ -135,7 +135,21 @@ class SkillPackageTests(unittest.TestCase):
         self.assertIn("sliceme", worker_tools)
         self.assertNotIn("campaign", worker_tools)
         verifier = _frontmatter((PI_DIR / "agents" / "verifier.md").read_text(encoding="utf-8"))
-        self.assertNotIn("sliceme", [t.strip() for t in verifier["tools"].split(",")])
+        verifier_tools = [t.strip() for t in verifier["tools"].split(",")]
+        self.assertNotIn("sliceme", verifier_tools)
+        self.assertNotIn("bash", verifier_tools, "the verifier must not run commands")
+
+    def test_campaign_executor_and_gate_wiring(self):
+        # The coordinator drives the single executor and the sandbox gate, and
+        # the verifier judges recorded evidence rather than running a suite.
+        campaign = PI_CAMPAIGN.read_text(encoding="utf-8")
+        self.assertIn('"exec"', campaign)
+        self.assertIn("sandboxGate", campaign)
+        self.assertIn('["exec", "--validate"]', campaign)
+        self.assertIn("EXEC_KEYS", campaign)
+        verifier = (PI_DIR / "agents" / "verifier.md").read_text(encoding="utf-8")
+        self.assertNotIn("tools/gpu.sh", verifier)
+        self.assertIn("executor", verifier)
 
     def test_no_console_scripts(self):
         # The engine is internal: it is invoked from the package, never

@@ -119,7 +119,7 @@ default branch).
 | `commit` | commit the worktree, enforce plan conformance, and register the candidate |
 | `integrate` | merge a verified candidate onto the feature branch; `node`, `acceptance`, `gpu`, `check_only`, `cleanup` |
 | `report` | write the deterministic campaign report; `narrative` appends the coordinator's summary |
-| `exec` | the sandboxed executor queue: `submit`, `run`, `wait`, `cancel` check jobs; `source`, `commit`, `command`, `sandbox`, `gpu` |
+| `exec` | the sandboxed executor: `--validate` (sandbox gate), `--open`/`--record --wave N` (shared wave worktree), `--submit`/`--run`/`--wait`/`--cancel` check jobs |
 
 ## Worker workflow
 
@@ -130,6 +130,12 @@ sliceme action: status, short: true
 # ... edit only files under your node's owned directories ...
 sliceme action: commit, message: "add scope check to Login", summary: "scope check"
 ```
+
+Under **wave scope** (one shared worktree per wave) workers are pure editors:
+they edit only their owned directories and stop — the coordinator runs
+`exec --record --wave N` to enforce conformance, create per-node commits, and
+run the checks through the single executor. A worker never runs the suite in
+the shared tree, never runs `git`, and never touches the GPU.
 
 Ownership syntax is `dir:PATH` (a bare path is also accepted), always a
 directory at the deepest level that contains the paths the node touches:

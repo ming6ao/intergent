@@ -10,9 +10,9 @@ content fingerprint, and lands verified candidates one DAG node at a time on a
 campaign feature branch. It is a dependency-free Python 3.11+ engine
 ([`sliceme/`](./sliceme)) plus a pi coordinator tool.
 
-- **Isolation:** one `git worktree` + branch per worker unit (today); the
-  scheduler's wave is the planned isolation unit, since same-wave nodes own
-  disjoint directories.
+- **Isolation:** one `git worktree` + branch per wave (or per worker; node
+  scope remains the default) — same-wave nodes own disjoint directories, so the
+  wave can share one checkout.
 - **Ownership:** nodes own directories at plan time; overlapping subtrees are
   serialized into waves, and `commit` rejects paths outside the owned dirs.
 - **Verification:** plane checks and per-node acceptance are pinned to a

@@ -60,6 +60,32 @@ export const CAMPAIGN_ACTIONS = [
 	"verify",
 	"integrate",
 	"report",
+	"exec",
+] as const;
+
+/** Parameter names the `exec` action forwards to the engine verb. */
+const EXEC_KEYS = [
+	"validate",
+	"gpu_required",
+	"open",
+	"record",
+	"run",
+	"submit",
+	"wait",
+	"cancel",
+	"job",
+	"source",
+	"commit",
+	"command",
+	"sandbox",
+	"gpu",
+	"priority",
+	"timeout",
+	"wave",
+	"requester",
+	"limit",
+	"message",
+	"summary",
 ] as const;
 
 interface CampaignNode {
@@ -698,14 +724,42 @@ export default function campaignExtension(pi: ExtensionAPI) {
 		const spec = (dag.nodes ?? []).find((n) => n.id === node);
 		if (!spec) throw new Error(`verify: unknown node '${node}'`);
 		const unit = String(state.nodes[node]?.unit ?? node);
+		const unitBranch = String(state.nodes[node]?.branch ?? unit);
 
-		// Read-only verifier: T0 CPU, then tools/gpu.sh for GPU acceptance.
+		// The executor is the single runner: enqueue the node's acceptance, drain
+		// the queue, and wait for the recorded result. The verifier then judges
+		// that evidence instead of running anything itself.
+		const submitArgs = [
+			"exec",
+			"--submit",
+			"--source",
+			`node:${node}`,
+			"--commit",
+			unitBranch,
+			"--gpu",
+			spec.gpu ?? "none",
+		];
+		for (const cmd of spec.acceptance ?? []) submitArgs.push("--command", cmd);
+		const submitted = await sliceme(ctx, submitArgs, signal);
+		await sliceme(ctx, ["exec", "--run"], signal);
+		const job = (
+			await sliceme(
+				ctx,
+				["exec", "--wait", "--job", String(submitted.json?.job?.id), "--timeout", "3600"],
+				signal,
+			)
+		).json?.job;
+
+		const evidence =
+			`Executor status: ${job?.status ?? "unknown"}\n` +
+			`Executor fingerprint: ${job?.fingerprint ?? "-"}\n` +
+			`${job?.output ?? submitted.text}`;
 		const task =
-			`Independently verify DAG node "${node}". Do not edit any file. Run the acceptance ` +
-			`commands: ${(spec.acceptance ?? []).join(" ; ")}. If and only if the node's gpu tier is ` +
-			`not "none" (it is "${spec.gpu ?? "none"}"), wrap GPU commands with ` +
-			`\`tools/gpu.sh --tier <tier> -- <command>\`. Report a single line starting with ` +
-			`"VERDICT: PASS" or "VERDICT: FAIL", then the evidence.`;
+			`Independently verify DAG node "${node}" from the executor's recorded evidence ` +
+			`only. You are read-only: do not run commands and do not edit any file. Acceptance ` +
+			`vector: ${(spec.acceptance ?? []).join(" ; ")}. GPU tier: ${spec.gpu ?? "none"}.\n\n` +
+			`${evidence}\n\nReport a single line starting with "VERDICT: PASS" or ` +
+			`"VERDICT: FAIL", then your reasoning grounded in the evidence.`;
 		const result = await runSubagent({
 			agent: "verifier",
 			task,
@@ -714,29 +768,32 @@ export default function campaignExtension(pi: ExtensionAPI) {
 			signal,
 		});
 
-		// Record the verdict in sliceme (§6.4) so re-integration can reuse it.
-		const acceptanceArgs: string[] = [];
-		for (const cmd of spec.acceptance ?? []) acceptanceArgs.push("--acceptance", cmd);
-		const recorded = await sliceme(
-			ctx,
-			["integrate", "--node", unit, "--check-only", "--gpu", spec.gpu ?? "none", ...acceptanceArgs],
-			signal,
-		);
 		const passed =
+			job?.status === "passed" &&
 			result.exitCode === 0 &&
-			/VERDICT:\s*PASS/i.test(result.output) &&
-			(recorded.json?.results ?? []).every((r: any) => r.status === "passed");
+			/VERDICT:\s*PASS/i.test(result.output);
 		state.nodes[node] = {
 			...(state.nodes[node] ?? {}),
 			status: passed ? "pending" : "failed",
 			verdict: passed ? "pass" : "fail",
-			...(passed ? {} : { lastError: result.output }),
+			job: job?.id ?? null,
+			...(passed ? {} : { lastError: result.output || job?.output }),
 		};
 		writeJson(stateFile, state);
-		logEvent(ctx.cwd, branch, "node.verdict", { node, passed, gpu: spec.gpu ?? "none" });
+		logEvent(ctx.cwd, branch, "node.verdict", {
+			node,
+			passed,
+			gpu: spec.gpu ?? "none",
+			job: job?.id ?? null,
+		});
 		return {
-			content: [{ type: "text" as const, text: `${node}: ${passed ? "PASS" : "FAIL"}\n${result.output}` }],
-			details: { node, passed, recorded: recorded.json },
+			content: [
+				{
+					type: "text" as const,
+					text: `${node}: ${passed ? "PASS" : "FAIL"} (job ${job?.id ?? "?"})\n${result.output}`,
+				},
+			],
+			details: { node, passed, job: job?.id ?? null, executor: job },
 			isError: !passed,
 		};
 	}
@@ -834,7 +891,10 @@ export default function campaignExtension(pi: ExtensionAPI) {
 			"If a worker's commit is rejected for touching paths outside its owned dirs, widen " +
 				"that node's owns (or add a depends_on edge) in dag.json; the next " +
 				"status/ready/spawn replans the waves.",
-			"Only the verifier may use the GPU (tools/gpu.sh); workers never touch it.",
+			"Only the single executor runs checks (and only it may use the GPU); verifiers " +
+				"judge the executor's recorded evidence. The sandbox gate must pass before verifying.",
+			"Use `exec` for the sandbox gate (--validate), the shared wave worktree " +
+				"(--open/--record --wave N), and the check queue (--submit/--run/--wait).",
 			"Integrate each node after its verifier passes; cleanup is offered once per wave.",
 		],
 		// Inert until the `sliceme` skill activates it, so a plain session never
@@ -850,6 +910,43 @@ export default function campaignExtension(pi: ExtensionAPI) {
 			replan: Type.Optional(Type.Boolean({ description: "start: re-run the planner" })),
 			node: Type.Optional(Type.String({ description: "node id for spawn/verify/integrate" })),
 			narrative: Type.Optional(Type.String({ description: "report: what-changed/risks text" })),
+			validate: Type.Optional(
+				Type.Boolean({ description: "exec: validate the project sandbox gate" }),
+			),
+			gpu_required: Type.Optional(
+				Type.Boolean({ description: "exec: with validate, require a GPU runner" }),
+			),
+			open: Type.Optional(
+				Type.Boolean({ description: "exec: create the single worktree for --wave" }),
+			),
+			record: Type.Optional(
+				Type.Boolean({ description: "exec: record a wave (conformance + per-node commits)" }),
+			),
+			run: Type.Optional(Type.Boolean({ description: "exec: drain the executor queue" })),
+			submit: Type.Optional(Type.Boolean({ description: "exec: enqueue a check job" })),
+			wait: Type.Optional(Type.Boolean({ description: "exec: wait for a job" })),
+			cancel: Type.Optional(Type.Boolean({ description: "exec: cancel a queued job" })),
+			job: Type.Optional(Type.String({ description: "exec: job id" })),
+			source: Type.Optional(Type.String({ description: "exec: fingerprint source" })),
+			commit: Type.Optional(Type.String({ description: "exec: commit/ref to run at" })),
+			command: Type.Optional(
+				Type.Array(Type.String(), { description: "exec: check command (repeatable)" }),
+			),
+			sandbox: Type.Optional(
+				StringEnum(["none", "bwrap", "unshare"] as const, {
+					description: "exec: sandbox mode override",
+				}),
+			),
+			gpu: Type.Optional(
+				StringEnum(["none", "T1", "T2"] as const, { description: "exec: GPU tier" }),
+			),
+			priority: Type.Optional(Type.Number({ description: "exec: higher runs first" })),
+			timeout: Type.Optional(Type.Number({ description: "exec: timeout seconds" })),
+			wave: Type.Optional(Type.Number({ description: "exec: wave index" })),
+			requester: Type.Optional(Type.String({ description: "exec: verifier id" })),
+			limit: Type.Optional(Type.Number({ description: "exec: max jobs to drain" })),
+			message: Type.Optional(Type.String({ description: "exec record: commit message" })),
+			summary: Type.Optional(Type.String({ description: "exec record: candidate summary" })),
 		}),
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			switch (params.action as (typeof CAMPAIGN_ACTIONS)[number]) {
@@ -894,6 +991,23 @@ export default function campaignExtension(pi: ExtensionAPI) {
 					const args = ["report"];
 					if (params.narrative) args.push("--narrative", String(params.narrative));
 					if (dag.design) args.push("--design", dag.design);
+					const { json, text } = await sliceme(ctx, args, signal);
+					return { content: [{ type: "text" as const, text }], details: json ?? {} };
+				}
+				case "exec": {
+					const args = ["exec"];
+					for (const key of EXEC_KEYS) {
+						const value = (params as Record<string, unknown>)[key];
+						if (value === undefined || value === null) continue;
+						const flag = `--${key.replace(/_/g, "-")}`;
+						if (typeof value === "boolean") {
+							if (value) args.push(flag);
+						} else if (Array.isArray(value)) {
+							for (const item of value) args.push(flag, String(item));
+						} else {
+							args.push(flag, String(value));
+						}
+					}
 					const { json, text } = await sliceme(ctx, args, signal);
 					return { content: [{ type: "text" as const, text }], details: json ?? {} };
 				}
