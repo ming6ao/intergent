@@ -13,6 +13,12 @@ package, or `INTERGENT_BIN`), so the engine stays a separate process and no
 frontmatter to `pi --tools`, so a worker sees only `ig` — never `campaign` — and
 the read-only verifier sees neither.
 
+Both tools register **inactive**. A plain session never lists them and never
+receives their prompt guidelines, so Intergent is only used when asked for.
+`/skill:intergent <design.md>` is the single entry point: when the argument is
+an existing design document, the skill turns `campaign` and `ig` on for that
+session; without one the command is dropped with a warning.
+
 Install the package, not the files:
 
 ```bash
@@ -22,9 +28,10 @@ pi install ./
 # pi install npm:intergent
 ```
 
-Then launch the coordinator with `pi` and use the `campaign` tool. There is
-**no single-agent bootstrap**: a session is only bound
-to a unit when the campaign `spawn` action (or the user) creates one.
+Then launch the coordinator with `pi` and run
+`/skill:intergent <design.md>`. There is **no single-agent bootstrap**: a
+session is only bound to a unit when the campaign `spawn` action (or the user)
+creates one, and the tools stay inert until the skill is explicitly invoked.
 
 The skill ships with the package; there is no separate skill install.
 

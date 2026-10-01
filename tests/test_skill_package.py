@@ -81,6 +81,19 @@ class SkillPackageTests(unittest.TestCase):
         self.assertEqual(data.get("disable-model-invocation"), "true")
         self.assertNotIn("repository has .intergent/config.json", data.get("description", ""))
 
+    def test_intergent_tools_are_opt_in(self):
+        # The pi package must not leak Intergent into every session: both tools
+        # register inactive, and only `/skill:intergent <design.md>` turns them
+        # on. Without a design document the invocation is dropped.
+        for path in (PI_EXTENSION, PI_CAMPAIGN):
+            text = path.read_text(encoding="utf-8")
+            self.assertIn("defaultActive: false", text, path)
+        campaign = PI_CAMPAIGN.read_text(encoding="utf-8")
+        self.assertIn('pi.on("input"', campaign)
+        self.assertIn("/skill:intergent", campaign)
+        self.assertIn("hasDesignDocument", campaign)
+        self.assertIn('action: "handled"', campaign)
+
     def test_pi_extension_is_a_thin_forwarder(self):
         # There is no single-agent bootstrap: the extension only registers the
         # `ig` tool and forwards to the CLI via the shared helpers.

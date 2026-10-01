@@ -12,6 +12,10 @@
  * unit when something explicitly creates one (the `campaign` tool's `spawn`,
  * or a human running `intergent start`).  `ig` resolves the unit from `ctx.cwd`,
  * so a worker launched inside its unit worktree needs no `--unit`.
+ *
+ * The tool is registered `defaultActive: false`, so a plain session never sees
+ * it.  The `intergent` skill turns it on for the session; workers get it back
+ * through their `tools:` allowlist (`pi --tools ig`).
  */
 
 import { StringEnum } from "@earendil-works/pi-ai";
@@ -62,6 +66,10 @@ export default function intergentExtension(pi: ExtensionAPI) {
 			"If `declare` returns `queued`, do not edit: report the blocker and stop.",
 			"Finish with `ig` action `commit`. Never run `integrate` or `git merge` yourself.",
 		],
+		// Inert until the `intergent` skill activates it: a plain session must not
+		// advertise (or inject guidelines for) the unit lifecycle. Workers get it
+		// back through their `tools:` allowlist (`pi --tools ig`).
+		defaultActive: false,
 		parameters: Type.Object({
 			action: StringEnum(IG_TOOL_ACTIONS),
 			unit: Type.Optional(Type.String({ description: "unit (defaults to this worktree)" })),

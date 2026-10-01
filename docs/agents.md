@@ -30,7 +30,9 @@ pi                                                  # launch the coordinator
 ```
 
 See [`integrations/pi/`](../integrations/pi/README.md). The skill ships with
-the package; there is no separate skill install.
+the package; there is no separate skill install. Both tools register inactive,
+so a plain session never lists Intergent; `/skill:intergent <DESIGN.md>`
+activates them for the session (the path must be an existing design document).
 
 ## Agent roles
 
@@ -54,7 +56,8 @@ the package; there is no separate skill install.
 
 ### Coordinator
 
-Use the `campaign` tool in pi, or the CLI: `start --no-unit --main <feature>
+Start the coordinator with `/skill:intergent <DESIGN.md>` in pi, then use the
+`campaign` tool — or drive the CLI directly: `start --no-unit --main <feature>
 --base <base>`, then `spawn`/`verify`/`integrate` per ready node, a final
 idempotent `integrate` sweep, and `report`. See
 [Orchestration](./orchestration.md).

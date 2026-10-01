@@ -31,8 +31,11 @@ COORDINATOR (this session)
 - Everything is reconstructable from `.intergent/` + git after a crash.
 
 The pi package provides two tools: `campaign` for the coordinator and `ig` for
-workers. `runSubagent` applies each subagent's `tools:` allowlist, so a worker
-gets `ig` but never `campaign`, and the verifier gets neither.
+workers. Both register **inactive**, so a plain session never lists them or
+their prompt guidelines; `/skill:intergent <design.md>` activates them for the
+session when the argument is an existing design document. `runSubagent` applies
+each subagent's `tools:` allowlist, so a worker gets `ig` but never `campaign`,
+and the verifier gets neither.
 
 ## Hard rules
 

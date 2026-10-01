@@ -25,6 +25,11 @@
  * orchestrator crash kills them, and on resume any `running` node is reset to
  * `pending`.  Only the verifier is given the GPU broker (`tools/gpu.sh`).
  *
+ * Both Intergent tools are registered `defaultActive: false`: a plain session
+ * never advertises them.  The `intergent` skill activates them for the session
+ * only when invoked as `/skill:intergent <design.md>` with an existing design
+ * document.
+ *
  * Install as part of the `intergent` pi package (`pi install ./` or
  * `pi install npm:intergent`); shared helpers live in `./common.ts`.
  */
@@ -130,6 +135,40 @@ function summarise(dag: Dag, state: CampaignState): string {
 }
 
 export default function campaignExtension(pi: ExtensionAPI) {
+	// Intergent is opt-in. The `campaign`/`ig` tools are registered inactive, so
+	// a plain session neither lists them nor appends their prompt guidelines.
+	// `/skill:intergent <design.md>` is the only thing that turns them on for
+	// the session. A design document is required: without one the input is
+	// dropped with a warning rather than starting a campaign.
+	const SKILL_INVOCATION = /^\/skill:intergent(?:\s+([\s\S]*))?$/;
+
+	function hasDesignDocument(args: string, cwd: string): boolean {
+		for (const raw of args.split(/\s+/)) {
+			if (!raw || raw.startsWith("-")) continue;
+			const candidate = raw.replace(/^['"]|['"]$/g, "");
+			if (fs.existsSync(path.resolve(cwd, candidate))) return true;
+		}
+		return false;
+	}
+
+	pi.on("input", (event, ctx) => {
+		const match = SKILL_INVOCATION.exec(event.text.trim());
+		if (!match) return;
+		if (!hasDesignDocument(match[1] ?? "", ctx.cwd)) {
+			if (ctx.hasUI) {
+				ctx.ui.notify(
+					"intergent: pass a design document, e.g. /skill:intergent docs/design.md",
+					"warning",
+				);
+			}
+			return { action: "handled" as const };
+		}
+		const active = new Set(pi.getActiveTools());
+		active.add("campaign");
+		active.add("ig");
+		pi.setActiveTools([...active]);
+	});
+
 	const ig = (ctx: ExtensionContext, args: string[], signal?: AbortSignal) =>
 		runIg(pi, ctx, args, signal);
 
@@ -476,6 +515,9 @@ export default function campaignExtension(pi: ExtensionAPI) {
 			"Only the verifier may use the GPU (tools/gpu.sh); workers never touch it.",
 			"Integrate a node immediately after its verifier passes, before spawning dependents.",
 		],
+		// Inert until the `intergent` skill activates it, so a plain session never
+		// advertises the campaign workflow or injects its guidelines.
+		defaultActive: false,
 		parameters: Type.Object({
 			action: StringEnum(CAMPAIGN_ACTIONS),
 			design: Type.Optional(Type.String({ description: "start: design document path" })),

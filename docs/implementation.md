@@ -217,8 +217,11 @@ The pi package registers two tools:
   `integrate`, `report`.
 
 Both are thin forwarders over the CLI (`runIg`), so the engine is never imported
-into the agent runtime and no `PATH` install is needed. `runSubagent` passes each
-agent's `tools:` allowlist to `pi --tools`: a worker gets `ig` but never
+into the agent runtime and no `PATH` install is needed. Both register
+`defaultActive: false`, so a plain session neither declares them nor injects
+their prompt guidelines; `/skill:intergent <DESIGN.md>` activates them for the
+session when the path names an existing design document. `runSubagent` passes
+each agent's `tools:` allowlist to `pi --tools`: a worker gets `ig` but never
 `campaign`, and the verifier gets neither. The engine's action registry remains
 `intergent/surface.py`. See [Agent integration](./agents.md).
 

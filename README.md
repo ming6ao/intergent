@@ -25,21 +25,24 @@ pi                               # launch a coordinator session
 ```
 
 `pi install` registers both tools (`campaign` for the coordinator, `ig` for
-workers) and installs the bundled skill. Nothing else is needed: the tools
-invoke the bundled engine, so there is no `pip install` and no `intergent` on
-`PATH`.
+workers) and installs the bundled skill. Both tools are registered **inactive**:
+a plain session never lists Intergent, and
+`/skill:intergent <DESIGN.md>` turns them on for that session (the design path
+must exist). Nothing else is needed: the tools invoke the bundled engine, so
+there is no `pip install` and no `intergent` on `PATH`.
 
 ## Quick start
 
-In pi, the coordinator drives a design into landed work with the `campaign`
-tool; each spawned worker uses the `ig` tool to declare scopes, edit, and
-commit.
+In pi, run `/skill:intergent <DESIGN.md>` to start a coordinator session; the
+coordinator then drives the design into landed work with the `campaign` tool,
+and each spawned worker uses the `ig` tool to declare scopes, edit, and commit.
 
 ```bash
 pi install ./                    # or git:/npm: intergent
-pi                               # launch a coordinator session
+pi                               # launch a session
 
 # then, in the session:
+#   /skill:intergent DESIGN.md   activate Intergent for this session
 #   campaign start <DESIGN.md>   feature branch + planner DAG
 #   campaign ready               nodes whose dependencies are done
 #   campaign spawn <node>        one-shot worker in its own worktree
