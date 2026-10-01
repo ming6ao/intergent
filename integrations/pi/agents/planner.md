@@ -30,8 +30,15 @@ plan.
   node owns the shared directory. Do not let ownership conflicts be the common
   path.
 - Every node owns narrow directories and lists concrete `acceptance` commands.
-- `gpu` is `none`, `T1`, or `T2`; only the verifier may use it, so a GPU
-  acceptance command must call `tools/gpu.sh --tier <T> -- <command>`.
+- `gpu` is `none`, `T1`, or `T2`; only the executor runs checks, and the
+  executor composes the GPU broker, so acceptance commands stay plain.
+- **Sandbox.** The target repository owns how to run tests in isolation. Look
+  for `sliceme.sandbox.json`, `.sliceme-sandbox.json`, or
+  `tools/sliceme-sandbox.json` (never under `.sliceme/`, which is git-excluded).
+  If one exists, record `"sandbox": {"path": "<relative path>"}` in the DAG.
+  If the project clearly needs isolation (Dockerfile, devcontainer, CI) but
+  ships no manifest, set `"sandbox_required": true`; the coordinator then
+  refuses to verify until a human adds one. Never invent a sandbox command.
 - A barrier is an explicit node that every member of the prior group depends on,
   or a `depends_on` edge; `phase` is a display label only.
 
@@ -47,6 +54,8 @@ It must be valid JSON with this shape:
   "base": "main",
   "design": "DESIGN.md",
   "concurrency": 4,
+  "sandbox": { "path": "sliceme.sandbox.json" },
+  "sandbox_required": false,
   "nodes": [
     {
       "id": "w1",

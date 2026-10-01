@@ -13,7 +13,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from . import campaign, gitutil, integrate
+from . import campaign, gitutil, integrate, sandbox
 from .ownership import (
     DEFAULT_WAVE_SIZE,
     parse_owns,
@@ -413,6 +413,25 @@ class Service:
         dag = campaign.load_dag(self.root, branch) if branch else None
         return Executor(self.root, self.store, self.config, dag=dag)
 
+    def sandbox_info(self, *, gpu_required: bool = False) -> dict[str, Any]:
+        """Resolve and validate the project sandbox gate (never raises)."""
+        branch = self.config.get("main_branch")
+        dag = campaign.load_dag(self.root, branch) if branch else None
+        required = sandbox.is_required(dag, self.config)
+        try:
+            profile = sandbox.require_sandbox(
+                dag, self.config, root=self.root, gpu_required=gpu_required
+            )
+        except SlicemeError as exc:
+            return {"ok": False, "required": required, "error": str(exc)}
+        return {
+            "ok": True,
+            "required": required,
+            "manifest": profile.manifest,
+            "digest": profile.digest(),
+            "sandbox": profile.to_dict(),
+        }
+
     def status(self) -> dict[str, Any]:
         branch = self.config.get("main_branch")
         units = [self._project_unit(u, branch) for u in self.list_units()]
@@ -435,6 +454,7 @@ class Service:
             "dag_waves": dag_waves,
             "dag_waves_error": dag_waves_error,
             "executor": self.store.job_counts(),
+            "sandbox": self.sandbox_info(),
         }
 
     def _dag_waves(self, branch: str | None) -> tuple[list[dict[str, Any]], str | None]:

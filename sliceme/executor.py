@@ -29,6 +29,7 @@ from typing import Any, Iterator
 
 from . import gitutil
 from .sandbox import Sandbox, coerce_sandbox, resolve_sandbox
+from .sandbox import require_sandbox as _require_sandbox
 from .store import Store
 from .util import SlicemeError, now, state_dir
 from .verifier import acceptance_checks, compute_fingerprint, run_checks
@@ -82,7 +83,19 @@ class Executor:
 
     # -- configuration --------------------------------------------------
     def sandbox(self, override: str | None = None) -> Sandbox:
-        return resolve_sandbox(self.dag, self.config, override=override)
+        return resolve_sandbox(self.dag, self.config, root=self.root, override=override)
+
+    def require_sandbox(
+        self, *, gpu_required: bool = False, override: str | None = None
+    ) -> Sandbox:
+        """Resolve and validate the sandbox gate (fail closed when required)."""
+        return _require_sandbox(
+            self.dag,
+            self.config,
+            root=self.root,
+            gpu_required=gpu_required,
+            override=override,
+        )
 
     # -- queue ----------------------------------------------------------
     def submit(
@@ -109,7 +122,7 @@ class Executor:
         if not commands:
             raise SlicemeError("exec submit requires at least one --command")
 
-        profile = coerce_sandbox(sandbox) if sandbox is not None else self.sandbox()
+        profile = self.require_sandbox(gpu_required=(gpu != "none"), override=sandbox)
         commit_sha = gitutil.rev_parse(self.root, commit)
         checks = acceptance_checks(list(commands), timeout=int(timeout))
         fingerprint = compute_fingerprint(
@@ -162,6 +175,7 @@ class Executor:
                 str(job["commit_ref"]),
                 checks=checks,
                 sandbox=profile,
+                tier=str(job.get("gpu") or "none"),
             )
             self.store.update_job(
                 job_id,

@@ -111,7 +111,7 @@ artifact paths) with the coordinator's narrative appended under
 ### `exec`
 
 ```bash
-sliceme exec [--submit] [--run] [--wait] [--cancel]
+sliceme exec [--submit] [--validate] [--gpu-required] [--run] [--wait] [--cancel]
                [--job ID] [--source SRC] [--commit REF] [--command CMD]...
                [--sandbox none|bwrap|unshare] [--gpu none|T1|T2]
                [--priority N] [--timeout SECONDS] [--wave N]
@@ -121,6 +121,8 @@ sliceme exec [--submit] [--run] [--wait] [--cancel]
 The single serialized executor (``sliceme/executor.py``).  Multiple verifiers
 delegate to it instead of each running the acceptance suite.
 
+- `--validate`: resolve and validate the project sandbox gate (manifest and,
+  with `--gpu-required`, a GPU runner); exits non-zero when the gate fails.
 - `--submit`: enqueue a check job for `--source` (e.g. `node:w1`, `wave:0`),
   `--commit`, and one or more `--command`.  A job whose
   `(tree, commands, toolchain, policy, sandbox, source)` fingerprint already
@@ -136,6 +138,23 @@ resolved sandbox (§4).  The result (status, exit code, output, duration,
 fingerprint) is stored in the `jobs` table.  `--run` first recovers any
 `running` job whose lease expired.
 
+### Sandbox manifests
+
+The target repository provides how to run checks in isolation as a tracked
+manifest at the repo root: `sliceme.sandbox.json`, `.sliceme-sandbox.json`, or
+`tools/sliceme-sandbox.json` (never under `.sliceme/`, which is git-excluded).
+Schema: `version`, `command` (prefix receiving `/bin/sh -lc "<cmd>"`),
+`network`, `readonly_repo`, `writable`, `setup`, and `gpu`
+(`{command, tiers}`).
+
+Resolution: `--sandbox` > `dag.json.sandbox` > `policy.sandbox` > discovered
+manifest > `none`.  The planner records `"sandbox": {"path": ...}` in
+`dag.json`; the coordinator runs `exec --validate` before verifying and records
+the `sandbox_digest` in `state.json` and events.  `policy.require_sandbox` (or
+`dag.json.sandbox_required`) fails closed when no profile exists.  A manifest
+`digest` recorded in `dag.json` is re-checked, so a post-plan manifest change is
+rejected.
+
 ## 2. Module map
 
 | Module | Responsibility |
@@ -147,7 +166,7 @@ fingerprint) is stored in the `jobs` table.  `--run` first recovers any
 | `sliceme/gitutil.py` | Git plumbing (`worktree`, `merge`, `merge-tree`, `commit`, `branch`, `changed_files`) |
 | `sliceme/ownership.py` | Directory ownership (normalization, `owns`, subtree conflicts) and the DAG wave projection |
 | `sliceme/verifier.py` | Fingerprints (plane and node sources) and the sandboxed trusted-check runner |
-| `sliceme/sandbox.py` | Isolation profiles (`none`/`bwrap`/`unshare`), resolution, and command wrapping |
+| `sliceme/sandbox.py` | Isolation profiles + project manifests (`none`/`bwrap`/`unshare`/`command`), the gate, and command wrapping |
 | `sliceme/executor.py` | The single sandboxed executor queue (submit/run/wait/cancel, dedupe, leases) |
 | `sliceme/integrate.py` | Feature-branch landing, node verification recording, candidate wave ordering, combined-tree simulation |
 | `sliceme/campaign.py` | `dag.json` / `state.json` layout and readers; deterministic report |
@@ -223,6 +242,7 @@ reporting) plus CLI and packaging smoke tests.
 | `tests/test_waves.py` | DAG wave projection, dependency barriers, caps, validation |
 | `tests/test_campaign.py` | feature-branch integration, node verification, report, DAG/state layout |
 | `tests/test_executor.py` | executor queue, sandbox profiles/wrapping, fingerprint invalidation |
+| `tests/test_sandbox_gate.py` | manifest discovery/validation, fail-closed gate, GPU runner, setup |
 | `tests/test_e2e.py` | end-to-end conformance and integration flows |
 | `tests/test_cli.py` | CLI surface and lifecycle |
 | `tests/test_skill_package.py` | pi package contract, tool/action lockstep, docs |
@@ -236,8 +256,8 @@ reporting) plus CLI and packaging smoke tests.
   (WAL).
 - One campaign per plane; RPC-steerable workers and multiple concurrent
   campaigns are out of scope.
-- `jj` workspaces, shared dependency caches, and project-provided sandbox
-  manifests are not implemented yet.  The sandbox *abstraction* and the
-  single-executor queue land in Phase 1; the project manifest and the
-  planner/coordinator gate land in Phase 2 (see `docs/guide.md` §6).
+- `jj` workspaces and shared dependency caches are not implemented.  The
+  sandbox abstraction, project manifest, and coordinator gate are implemented
+  (Phase 1–2, see `docs/guide.md` §6); the one-worktree-per-wave recorder and
+  the `campaign exec` orchestration are still to come (Phase 3–4).
 - Promotion from the feature branch to the default branch is a human `git` step.

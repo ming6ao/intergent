@@ -206,12 +206,21 @@ def run_checks(
     only: list[str] | None = None,
     checks: list[CheckSpec] | None = None,
     sandbox: "Sandbox | None" = None,
+    tier: str = "none",
 ) -> tuple[str, list[CheckResult], float]:
     resolved = checks if checks is not None else checks_from_config(config)
     if only:
         wanted = {name.casefold() for name in only}
         resolved = [c for c in resolved if c.name.casefold() in wanted]
     checks = resolved
+    setup_specs = (
+        [
+            CheckSpec(name=f"setup[{i}]", command=cmd, required=True, timeout=900)
+            for i, cmd in enumerate(sandbox.setup)
+        ]
+        if sandbox is not None
+        else []
+    )
     tmp_created = False
     if worktree is None:
         worktree = scratch_dir(root) / f"verify-{os.getpid()}-{int(time.time() * 1000)}"
@@ -220,8 +229,15 @@ def run_checks(
     results: list[CheckResult] = []
     started = time.time()
     try:
+        # Setup runs once per snapshot, before acceptance, and is never GPU-wrapped.
+        for check in setup_specs:
+            result = _run_one(worktree, check, sandbox=sandbox)
+            results.append(result)
+            if result.status != "passed":
+                status = "error" if result.status == "error" else "failed"
+                return status, results, time.time() - started
         for check in checks:
-            results.append(_run_one(worktree, check, sandbox=sandbox))
+            results.append(_run_one(worktree, check, sandbox=sandbox, tier=tier))
     finally:
         if tmp_created:
             _cleanup_worktree(root, worktree)
@@ -236,11 +252,15 @@ def run_checks(
 
 
 def _run_one(
-    worktree: Path, check: CheckSpec, *, sandbox: "Sandbox | None" = None
+    worktree: Path,
+    check: CheckSpec,
+    *,
+    sandbox: "Sandbox | None" = None,
+    tier: str = "none",
 ) -> CheckResult:
     started = time.time()
     command = (
-        wrap_command(check.command, sandbox, worktree=str(worktree))
+        wrap_command(check.command, sandbox, worktree=str(worktree), tier=tier)
         if sandbox is not None
         else check.command
     )

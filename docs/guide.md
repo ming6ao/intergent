@@ -301,36 +301,42 @@ Semantics:
 Jobs are recorded in the `jobs` table (`docs/reference.md` §3) with their
 command vector, sandbox digest, fingerprint, exit code, output, and timing.
 
-### 6.2 Sandbox profiles (Phase 1) and project manifests (Phase 2)
+### 6.2 Sandbox profiles and project manifests (Phase 1–2)
 
-`sliceme/sandbox.py` defines a `Sandbox`: mode (`none`, `bwrap`, `unshare`),
-network, read-only host, and extra writable paths. `Sandbox.digest()` is folded
-into the verification fingerprint, so tightening isolation invalidates cached
-verdicts.
+`sliceme/sandbox.py` defines a `Sandbox`: a built-in mode (`none`, `bwrap`,
+`unshare`) or a project `command` prefix, plus network/read-only/writable
+policy, `setup` commands, and an optional `gpu` runner. `Sandbox.digest()` is
+folded into the verification fingerprint, so tightening isolation or changing
+`setup` invalidates cached verdicts.
 
 Resolution precedence: explicit `--sandbox` > `dag.json.sandbox` >
-`policy.sandbox` > `none`. `none` is unsandboxed and must be explicit; a
-requested backend that is not installed fails closed.
+`policy.sandbox` > discovered project manifest > `none`. `none` is unsandboxed;
+`policy.require_sandbox` (or `dag.json.sandbox_required`) makes the gate fail
+closed when no profile exists.
 
-The **target repository owns how to run tests in isolation**. Phase 2 adds a
-tracked manifest (`sliceme.sandbox.json`, not under `.sliceme/`, which is
-git-excluded):
+The **target repository owns how to run tests in isolation** through a tracked
+manifest (`sliceme.sandbox.json`, `.sliceme-sandbox.json`, or
+`tools/sliceme-sandbox.json` -- **not** under `.sliceme/`, which is git-excluded):
 
 ```jsonc
 {
   "version": 1,
-  "command": ["tools/run-in-sandbox.sh", "--"],
+  "command": ["tools/run-in-sandbox.sh", "--"],   // receives /bin/sh -lc "<cmd>"
   "network": false,
   "readonly_repo": true,
   "writable": ["/tmp", ".cache"],
-  "setup": ["tools/setup-deps.sh"],
+  "setup": ["tools/setup-deps.sh"],               // once per snapshot, before acceptance
   "gpu": { "command": ["sliceme-gpu", "--tier", "{tier}", "--"] }
 }
 ```
 
-The **planner** locates the manifest and records `{path, digest, gpu_required}`
-in `dag.json`; the **coordinator** validates the gate before opening a wave or
-running the executor, so the sandbox is present before any verifier runs.
+The **planner** locates the manifest and records `"sandbox": {"path": ...}` in
+`dag.json` (or `"sandbox_required": true` when the project needs isolation but
+ships no manifest).  The **coordinator** validates the gate with
+`sliceme exec --validate` before spawning or verifying, records the resolved
+`sandbox_digest` in `state.json` and the campaign event log, and refuses to
+continue on failure -- so the sandbox is present before any verifier runs.  A
+manifest that changes after the plan is pinned is rejected by digest.
 
 ### 6.3 GPU broker ownership
 

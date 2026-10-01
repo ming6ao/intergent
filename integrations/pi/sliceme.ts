@@ -116,6 +116,12 @@ export default function slicemeExtension(pi: ExtensionAPI) {
 			short: Type.Optional(Type.Boolean({ description: "status: print only the unit name" })),
 			no_checks: Type.Optional(Type.Boolean({ description: "skip verification" })),
 			submit: Type.Optional(Type.Boolean({ description: "exec: enqueue a check job" })),
+			validate: Type.Optional(
+				Type.Boolean({ description: "exec: resolve and validate the sandbox gate" }),
+			),
+			gpu_required: Type.Optional(
+				Type.Boolean({ description: "exec: with validate, require a GPU runner" }),
+			),
 			run: Type.Optional(Type.Boolean({ description: "exec: drain the queue" })),
 			wait: Type.Optional(Type.Boolean({ description: "exec: wait for a job" })),
 			cancel: Type.Optional(Type.Boolean({ description: "exec: cancel a queued job" })),

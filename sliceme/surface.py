@@ -107,6 +107,8 @@ ACTIONS: tuple[Action, ...] = (
         summary="single sandboxed verification executor: submit/run/wait/cancel check jobs",
         params=(
             Param("submit", "boolean", "enqueue a check job"),
+            Param("validate", "boolean", "resolve and validate the project sandbox gate"),
+            Param("gpu_required", "boolean", "with --validate: require a GPU runner"),
             Param("run", "boolean", "drain the queue with the single executor"),
             Param("wait", "boolean", "wait for a job to finish (requires --job)"),
             Param("cancel", "boolean", "cancel a queued job (requires --job)"),
@@ -248,6 +250,11 @@ def _dispatch_report(service: "Service", p: dict[str, Any]) -> Any:
 
 def _dispatch_exec(service: "Service", p: dict[str, Any]) -> Any:
     executor = service.executor()
+    if p.get("validate"):
+        info = service.sandbox_info(gpu_required=bool(p.get("gpu_required")))
+        if not info.get("ok"):
+            raise SlicemeError(str(info.get("error") or "sandbox gate failed"))
+        return info
     if p.get("cancel"):
         if not p.get("job"):
             raise SlicemeError("exec --cancel requires --job")

@@ -44,6 +44,10 @@ COORDINATOR (this session)
   SQLite-backed queue. It runs each job in a **sandbox** resolved by
   `sliceme/sandbox.py`; the sandbox digest is part of the verification
   fingerprint, so tightening isolation invalidates cached verdicts.
+- The **target repository** provides *how to run tests in isolation* as a
+  tracked `sliceme.sandbox.json` (never under `.sliceme/`). The planner records
+  its path in `dag.json`; the coordinator runs `exec --validate` before
+  verifying and refuses to continue when a required sandbox is missing.
 - `tools/gpu.sh` is **sliceme's** broker, shipped with the package and invoked
   by resolved path; a project may override the GPU invocation through its
   sandbox manifest. The target repository owns *how to run tests in isolation*,

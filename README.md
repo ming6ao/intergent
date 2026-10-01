@@ -18,7 +18,9 @@ campaign feature branch. It is a dependency-free Python 3.11+ engine
 - **Verification:** plane checks and per-node acceptance are pinned to a
   fingerprint and reused across re-integration.
 - **Executor:** one serialized, sandboxed runner drains a check queue so
-  multiple verifiers delegate instead of each spawning its own test run.
+  multiple verifiers delegate instead of each spawning its own test run; the
+  target repo's `sliceme.sandbox.json` defines how to isolate tests and is
+  gated by the planner/coordinator before any verifier runs.
 - **Integration:** ordered `--no-ff` merges onto the feature branch; a safety
   rail refuses the default branch.
 

@@ -391,6 +391,36 @@ export default function campaignExtension(pi: ExtensionAPI) {
 	// Actions
 	// ------------------------------------------------------------------
 
+	/**
+	 * Resolve and validate the project sandbox gate through the engine, recording
+	 * the digest in campaign state + events.  Returns an error message on failure
+	 * (the caller refuses to continue) or ``null`` on success.
+	 */
+	async function sandboxGate(
+		ctx: ExtensionContext,
+		branch: string,
+		state: any,
+		stateFile: string,
+		signal?: AbortSignal,
+	): Promise<string | null> {
+		let gate: any;
+		try {
+			gate = (await sliceme(ctx, ["exec", "--validate"], signal)).json;
+		} catch (error) {
+			return String((error as Error)?.message ?? error);
+		}
+		state.sandbox_digest = gate?.digest ?? null;
+		state.sandbox_manifest = gate?.manifest ?? null;
+		state.sandbox_required = Boolean(gate?.required);
+		writeJson(stateFile, state);
+		logEvent(ctx.cwd, branch, "sandbox.gate", {
+			required: state.sandbox_required,
+			digest: state.sandbox_digest,
+			manifest: state.sandbox_manifest,
+		});
+		return null;
+	}
+
 	async function startCampaign(
 		ctx: ExtensionContext,
 		params: any,
@@ -466,6 +496,18 @@ export default function campaignExtension(pi: ExtensionAPI) {
 			state.base = existing.base ?? base;
 			writeJson(stateFile, state);
 			await ensureWaves(ctx, branch, existing, state);
+			const resumeGateError = await sandboxGate(ctx, branch, state, stateFile, signal);
+			if (resumeGateError) {
+				return {
+					content: [
+						{
+							type: "text" as const,
+							text: `campaign: sandbox gate failed: ${resumeGateError}`,
+						},
+					],
+					isError: true,
+				};
+			}
 			logEvent(ctx.cwd, branch, "campaign.resumed", {
 				running_reset: nodeIds(existing).filter((id) => state.nodes[id]?.status === "pending"),
 			});
@@ -489,7 +531,13 @@ export default function campaignExtension(pi: ExtensionAPI) {
 			`"phase" is a display label only; ` +
 			`route shared build files (BUILD, Cargo.toml, lockfiles) to an explicit aggregation ` +
 			`node every touched component depends_on; each node lists its acceptance commands; ` +
-			`gpu is "none","T1","T2" and only the verifier may use it. Feature branch: ${branch}. ` +
+			`gpu is "none","T1","T2" and only the verifier may use it. ` +
+			`Project sandbox: look for sliceme.sandbox.json, .sliceme-sandbox.json, or ` +
+			`tools/sliceme-sandbox.json. If one exists, add "sandbox":{"path":"<relative ` +
+			`path>"} to the DAG. If the project clearly needs isolation (Dockerfile, ` +
+			`devcontainer, CI) but has no manifest, set "sandbox_required": true; the ` +
+			`campaign then fails until a human adds a manifest. Never invent a sandbox. ` +
+			`Feature branch: ${branch}. ` +
 			`Base: ${base}. Design: ${design}.`;
 		const planner = await runSubagent({
 			agent: "planner",
@@ -517,6 +565,18 @@ export default function campaignExtension(pi: ExtensionAPI) {
 		for (const node of dag.nodes) state.nodes[node.id] = { status: "pending", attempts: 0 };
 		writeJson(stateFile, state);
 		await ensureWaves(ctx, branch, dag, state);
+		const gateError = await sandboxGate(ctx, branch, state, stateFile, signal);
+		if (gateError) {
+			return {
+				content: [
+					{
+						type: "text" as const,
+						text: `campaign: sandbox gate failed: ${gateError}`,
+					},
+				],
+				isError: true,
+			};
+		}
 		logEvent(ctx.cwd, branch, params.replan ? "dag.replanned" : "dag.created", {
 			nodes: nodeIds(dag),
 		});
