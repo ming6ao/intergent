@@ -1,7 +1,7 @@
 """Guards the repository packaging contract: the Agent Skill and the pi package.
 
 The repo is installable both with
-``npx skills add ming6ao/intergent -g -y -a claude-code`` (root ``SKILL.md`` +
+``npx skills add ming6ao/intergent -g -y -a pi`` (root ``SKILL.md`` +
 bundled CLI) and with ``pi install ./`` (a pi package with a ``package.json``
 manifest). These tests fail if either structure regresses.
 """

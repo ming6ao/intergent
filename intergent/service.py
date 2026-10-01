@@ -1,6 +1,6 @@
 """Service layer: the single owner of local-plane state.
 
-Every adapter (CLI, MCP, supervisor) calls these functions.  This mirrors the
+Every adapter (CLI, pi extension) calls these functions.  This mirrors the
 "one engine, many adapters / no adapter owns state" rule in
 ``docs/architecture.md``.  Business rules live here; persistence lives in
 ``store``; git mutation lives in ``gitutil``.
@@ -287,7 +287,7 @@ class Service:
     def current_unit(self, path: str | os.PathLike[str] | None = None) -> dict[str, Any]:
         """Resolve the unit whose worktree contains *path* (default cwd).
 
-        Lets an agent launched inside its own worktree call the CLI/MCP without
+        Lets an agent launched inside its own worktree call the CLI without
         passing ``--unit``. Falls back to matching the checked-out branch.
         """
         resolved = Path(path or os.getcwd()).resolve()

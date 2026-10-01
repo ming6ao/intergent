@@ -122,5 +122,5 @@ Scope syntax is `kind:key[=operation]`, e.g. `file:src/api/routes.py`,
 Operations `add`/`extend`/`modify` are additive; `replace`/`remove`/`rename`/
 `migrate` are destructive and queue behind a holder.
 
-Full specification: [docs/orchestration.md](./docs/orchestration.md). CLI/MCP
+Full specification: [docs/orchestration.md](./docs/orchestration.md). CLI
 reference: [docs/implementation.md](./docs/implementation.md).

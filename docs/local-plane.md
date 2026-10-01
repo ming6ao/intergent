@@ -98,9 +98,9 @@ intergent status --simulate
 ## 6. Reference implementation
 
 This plane is implemented under [`intergent/`](../intergent) with the CLI
-`intergent` / `ig` and an MCP stdio server (`intergent mcp`). The service layer
-(`intergent/service.py`) is the single owner of state; the CLI and MCP are thin
-adapters, and SQLite (WAL) is the local store. Key mappings:
+`intergent` / `ig`. The service layer (`intergent/service.py`) is the single
+owner of state; the CLI and the pi extension are thin adapters, and SQLite (WAL)
+is the local store. Key mappings:
 
 | Design concept | Implementation |
 |---|---|

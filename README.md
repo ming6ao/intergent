@@ -53,16 +53,14 @@ In pi the coordinator drives the same steps with the `campaign` tool
 [docs/orchestration.md](./docs/orchestration.md).
 
 Six actions cover the whole lifecycle: `start`, `status`, `declare`, `commit`,
-`integrate`, `report` (plus `mcp`). `start --no-unit --main <feature> --base
-<base>` bootstraps a campaign; `declare` also does `--dry-run` checks and
+`integrate`, `report`. `start --no-unit --main <feature> --base <base>`
+bootstraps a campaign; `declare` also does `--dry-run` checks and
 `--renew`/`--release`; `integrate` takes `--node`, `--acceptance`, `--gpu`,
 `--check-only`, and `--cleanup`; `status --health/--simulate/--gc` diagnoses.
-Agents get exactly **one** tool (MCP and pi) whose `action` is one of these
+The pi extension exposes exactly **one** tool whose `action` is one of these
 verbs. See [docs/implementation.md](./docs/implementation.md).
 
-Agents may instead drive the same service over MCP: `./bin/intergent mcp`.
-
-### Run a campaign inside pi or Claude Code
+### Run a campaign inside pi
 
 - **pi** — the repository is a pi package shipping the `ig` and `campaign`
   tools plus the skill:
@@ -72,11 +70,8 @@ Agents may instead drive the same service over MCP: `./bin/intergent mcp`.
   INTERGENT_AUTO_BOOTSTRAP=0 pi                  # launch the coordinator
   ```
 
-- **Claude Code** (MCP): `cp integrations/claude/.mcp.json /path/to/repo/` then
-  install the skill with `npx skills add ming6ao/intergent -g -y -a claude-code`.
-  See [integrations/claude/](./integrations/claude/README.md).
-- **pi install** / **bundled skill**: [integrations/pi/](./integrations/pi/README.md),
-  [`SKILL.md`](./SKILL.md).
+- **Bundled skill**: [`SKILL.md`](./SKILL.md) and
+  [integrations/pi/](./integrations/pi/README.md).
 - Full guide: [docs/agents.md](./docs/agents.md).
 
 Workers `declare`, edit, and `commit`; the coordinator runs the read-only
@@ -86,7 +81,7 @@ branch to the default branch stays a human `git` step.
 ### Install as an agent skill
 
 ```bash
-npx skills add ming6ao/intergent -g -y -a pi -a claude-code
+npx skills add ming6ao/intergent -g -y -a pi
 ```
 
 This repository **is** an Agent Skill: the root [`SKILL.md`](./SKILL.md) bundles

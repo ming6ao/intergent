@@ -16,8 +16,8 @@ ships the native tools, the CLI, and the skill ([`SKILL.md`](../SKILL.md)).
 | [Architecture](./architecture.md) | Modules, adapters, and the campaign topology |
 | [Conflict engine](./conflict-engine.md) | Scopes, operations, rules, severity |
 | [Local plane](./local-plane.md) | Workspaces, scope lock queue, verification |
-| [Local implementation](./implementation.md) | CLI/MCP reference, semantics, data model, tests |
-| [Agent integration](./agents.md) | Run Intergent inside pi, Claude Code, or any CLI/MCP agent |
+| [Local implementation](./implementation.md) | CLI reference, semantics, data model, tests |
+| [Agent integration](./agents.md) | Run Intergent inside pi |
 | [Orchestration](./orchestration.md) | Coordinator, planner/worker/verifier subagents, `dag.json` |
 
 ## Naming

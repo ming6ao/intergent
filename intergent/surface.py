@@ -1,6 +1,6 @@
 """The one action surface, shared by every adapter.
 
-The CLI, the MCP server, and the pi extension all derive their verbs/tools from
+The CLI and the pi extension both derive their verbs/tools from
 :data:`ACTIONS`, so a surface can never exist in one adapter and not another.
 :func:`dispatch` is the single implementation every adapter calls; adapters only
 parse arguments and render results.

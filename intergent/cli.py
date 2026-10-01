@@ -1,9 +1,9 @@
 """Command line interface (``intergent`` / ``ig``).
 
-The CLI is a thin, *generated* adapter over :mod:`intergent.surface`.  It owns
-no verbs of its own apart from ``mcp``: every action is built from
-:data:`intergent.surface.ACTIONS`, so the CLI can never drift from the agent
-tool surface.  See ``docs/architecture.md`` ("one engine, many adapters").
+The CLI is a thin, *generated* adapter over :mod:`intergent.surface`.  Every
+action is built from :data:`intergent.surface.ACTIONS`, so the CLI can never
+drift from the pi tool surface.  See ``docs/architecture.md`` ("one engine,
+many adapters").
 """
 
 from __future__ import annotations
@@ -94,7 +94,6 @@ def build_parser() -> argparse.ArgumentParser:
     for action in surface.ACTIONS:
         _add_action(sub, action)
 
-    sub.add_parser("mcp", help="run the MCP stdio server for agents")
     return parser
 
 
@@ -145,10 +144,6 @@ def main(argv: list[str] | None = None) -> int:
 
 def _dispatch(args: argparse.Namespace, as_json: bool) -> int:
     action = args.action
-    if action == "mcp":
-        from .mcp import serve
-
-        return serve(Service(_root(args)))
 
     # `start` bootstraps the plane, so no Service exists yet.
     if surface.resolve_action(action).name == "start":

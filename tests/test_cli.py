@@ -1,6 +1,6 @@
-"""Smoke tests for the CLI adapter and MCP stdio server.
+"""Smoke tests for the CLI adapter.
 
-Both are generated from :mod:`intergent.surface`; these tests pin the shared
+It is generated from :mod:`intergent.surface`; these tests pin the shared
 action surface and the end-to-end flow.
 """
 
@@ -20,7 +20,7 @@ sys.path.insert(0, str(REPO_ROOT))
 from intergent import surface  # noqa: E402
 
 
-def run_cli(args, cwd, *, input_text=None):
+def run_cli(args, cwd):
     env = os.environ.copy()
     env["PYTHONPATH"] = str(REPO_ROOT)
     return subprocess.run(
@@ -28,7 +28,6 @@ def run_cli(args, cwd, *, input_text=None):
         cwd=str(cwd),
         capture_output=True,
         text=True,
-        input=input_text,
         env=env,
     )
 
@@ -219,88 +218,6 @@ class CliTests(unittest.TestCase):
                 "changed\n",
             )
 
-    def test_mcp_exposes_one_action_tool(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            subprocess.run(["git", "init", "-q", "-b", "main"], cwd=tmp, check=True)
-            subprocess.run(["git", "config", "user.email", "t@e.com"], cwd=tmp, check=True)
-            subprocess.run(["git", "config", "user.name", "T"], cwd=tmp, check=True)
-            (root / "a.txt").write_text("hi\n")
-            subprocess.run(["git", "add", "-A"], cwd=tmp, check=True)
-            subprocess.run(["git", "commit", "-qm", "init"], cwd=tmp, check=True)
-            run_cli(["--json", "start"], root)
-
-            messages = "\n".join(
-                [
-                    json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
-                    json.dumps({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}),
-                ]
-            ) + "\n"
-            out = run_cli(["mcp"], root, input_text=messages)
-            self.assertEqual(out.returncode, 0, out.stderr)
-            lines = [json.loads(line) for line in out.stdout.splitlines() if line.strip()]
-            self.assertEqual(lines[0]["result"]["serverInfo"]["name"], "intergent")
-            tools = lines[1]["result"]["tools"]
-            self.assertEqual([t["name"] for t in tools], ["ig"])
-            schema = tools[0]["inputSchema"]
-            self.assertEqual(
-                schema["properties"]["action"]["enum"],
-                [a.name for a in surface.ACTIONS],
-            )
-            # Retired single-agent actions never reach the agent.
-            self.assertNotIn("review", schema["properties"]["action"]["enum"])
-            self.assertNotIn("handoff", schema["properties"]["action"]["enum"])
-            self.assertNotIn("approve", schema["properties"])
-
-    def test_mcp_call_and_unknown_action_rejected(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            subprocess.run(["git", "init", "-q", "-b", "main"], cwd=tmp, check=True)
-            subprocess.run(["git", "config", "user.email", "t@e.com"], cwd=tmp, check=True)
-            subprocess.run(["git", "config", "user.name", "T"], cwd=tmp, check=True)
-            (root / "a.txt").write_text("hi\n")
-            subprocess.run(["git", "add", "-A"], cwd=tmp, check=True)
-            subprocess.run(["git", "commit", "-qm", "init"], cwd=tmp, check=True)
-            run_cli(["--json", "start"], root)
-            out = run_cli(["--json", "start", "--name", "alpha"], root)
-            worktree = Path(json.loads(out.stdout)["worktree"])
-            (worktree / "a.txt").write_text("changed\n")
-
-            def call(msg_id, name, arguments):
-                return json.dumps(
-                    {
-                        "jsonrpc": "2.0",
-                        "id": msg_id,
-                        "method": "tools/call",
-                        "params": {"name": name, "arguments": arguments},
-                    }
-                )
-
-            messages = "\n".join(
-                [
-                    json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
-                    call(2, "ig", {"action": "declare", "unit": "alpha", "operation": "modify", "scopes": ["file:a.txt"]}),
-                    call(3, "ig", {"action": "commit", "unit": "alpha", "message": "change", "summary": "s"}),
-                    call(4, "ig", {"action": "status"}),
-                    call(5, "ig", {"action": "status", "simulate": True, "no_checks": True}),
-                    call(6, "review", {"approve": True}),
-                ]
-            ) + "\n"
-            out = run_cli(["mcp"], root, input_text=messages)
-            self.assertEqual(out.returncode, 0, out.stderr)
-            lines = [json.loads(line) for line in out.stdout.splitlines() if line.strip()]
-            payload = [json.loads(lines[i]["result"]["content"][0]["text"]) for i in (1, 2, 3, 4)]
-
-            self.assertFalse(lines[1]["result"]["isError"])
-            # commit commits and registers the candidate in one call.
-            self.assertIn("commit", payload[1])
-            self.assertIn("candidate", payload[1])
-            self.assertTrue(payload[2]["candidates"])
-            self.assertIn("waves", payload[3])
-            # `review` is retired and is refused as an unknown action.
-            self.assertTrue(lines[5]["result"]["isError"])
-            self.assertIn("unknown action", lines[5]["result"]["content"][0]["text"])
-
     def test_campaign_no_unit_integrate_and_report(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -365,7 +282,7 @@ class CliTests(unittest.TestCase):
             self.assertIn("landed both", report["content"])
 
     def test_cli_surface_matches_registry(self):
-        """The CLI subcommands are exactly the registry (plus `mcp` and aliases)."""
+        """The CLI subcommands are exactly the registry (plus aliases)."""
         import argparse
 
         from intergent.cli import build_parser
@@ -373,7 +290,7 @@ class CliTests(unittest.TestCase):
         sub = next(
             a for a in build_parser()._actions if isinstance(a, argparse._SubParsersAction)
         )
-        expected = {a.name for a in surface.ACTIONS} | {"mcp"}
+        expected = {a.name for a in surface.ACTIONS}
         expected |= {alias for a in surface.ACTIONS for alias in a.aliases}
         self.assertEqual(set(sub.choices), expected)
 

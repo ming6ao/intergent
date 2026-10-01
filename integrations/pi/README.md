@@ -1,6 +1,6 @@
 # Intergent + pi
 
-pi has **no built-in MCP**. The intergent pi package ships two native tools:
+The intergent pi package ships two native tools:
 
 | Tool | Who uses it |
 |---|---|
@@ -23,6 +23,3 @@ to a unit when the campaign `spawn` action (or the user) creates one.
 
 See the root [`SKILL.md`](../../SKILL.md) for the workflow and
 [`docs/orchestration.md`](../../docs/orchestration.md) for the specification.
-The same skill works unchanged in Claude Code, Codex, Cursor, and other harnesses
-that implement the Agent Skills standard; Claude Code can use MCP instead
-(`integrations/claude/.mcp.json`).

@@ -6,9 +6,9 @@
 
 ## 1. Summary
 
-Multiple coding agents (Claude Code, pi, Codex, Cursor, custom) working the same
-repository collide in ways Git is blind to: they edit different files that depend
-on each other, or plan contradictory changes. The failure modes are *authoring
+Multiple coding agents of one campaign working the same repository collide in
+ways Git is blind to: they edit different files that depend on each other, or
+plan contradictory changes. The failure modes are *authoring
 conflicts* (wasted, contradictory work) and *integration conflicts* (stale-tip
 breakage, CI churn).
 

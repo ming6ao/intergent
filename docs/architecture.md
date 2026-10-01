@@ -1,13 +1,13 @@
 # Architecture
 
 Intergent is **one engine, many adapters**: isolation, leases, verification, and
-integration live in a single service layer; the CLI, MCP server, and pi
-extensions only parse arguments and render results. No adapter owns state.
+integration live in a single service layer; the CLI and the pi extension only
+parse arguments and render results. No adapter owns state.
 
 ## Campaign topology
 
 ```text
-COORDINATOR (top-level session)
+COORDINATOR (top-level pi session)
  ├── PLANNER   reads the design, writes dag.json
  ├── WORKER_*  one-shot per ready DAG node
  │               unit worktree + scope leases
@@ -30,7 +30,6 @@ contains its dependencies' code. See [Orchestration](./orchestration.md).
 |---|---|
 | `intergent/surface.py` | **single source of truth**: action registry, validation, dispatch |
 | `intergent/cli.py` | generated `argparse` CLI (`intergent` / `ig`), human + `--json` output |
-| `intergent/mcp.py` | MCP stdio server exposing one `ig` action tool |
 | `intergent/service.py` | **single owner of state**: sessions, units, intents, leases, candidates, integration |
 | `intergent/store.py` | SQLite persistence (WAL) |
 | `intergent/gitutil.py` | Git plumbing (worktree, merge, merge-tree, commit, branch) |
@@ -44,20 +43,19 @@ contains its dependencies' code. See [Orchestration](./orchestration.md).
 | `intergent/campaign.py` | `dag.json` / `state.json` layout and readers |
 | `intergent/report.py` | Deterministic campaign report skeleton |
 
-The MCP server is a thin adapter over `surface.dispatch`, never the state owner.
 State lives in the service + SQLite so it survives terminal sessions.
 
 ### Why the CLI still exists
 
-Bootstrap (`start`) happens before MCP exists; CI cannot speak MCP; humans need
-status/recovery; not every client supports MCP. The CLI renders the same action
-registry as MCP, so the two cannot drift.
+Bootstrap (`start`) happens before the pi tool is bound; CI runs the CLI; humans
+need status and recovery. The CLI renders the same action registry the pi `ig`
+tool exposes, so the two cannot drift.
 
 ## Interfaces
 
-### MCP tools (agent hot loop)
+### pi `ig` tool (agent hot loop)
 
-One tool, `ig`, parameterized by an `action` enum:
+One tool, parameterized by an `action` enum:
 
 ```
 start   status   declare   commit   integrate   report
@@ -69,7 +67,7 @@ generated from `intergent/surface.py`. Every action is agent-callable.
 ### CLI
 
 ```bash
-intergent start | status | declare | commit | integrate | report | mcp
+intergent start | status | declare | commit | integrate | report
 ```
 
 Flags carry the long tail: `start --no-unit --main <feature> --base <base>`;

@@ -11,7 +11,6 @@ The implementation lives in [`intergent/`](../intergent) with a test suite in
 ```
 CLI:     ./bin/intergent   (or: python -m intergent)
 Alias:   ig
-MCP:     intergent mcp     (stdio, newline-delimited JSON-RPC)
 State:   .intergent/state.db  (SQLite, WAL)
 Config:  .intergent/config.json
 ```
@@ -22,7 +21,6 @@ Config:  .intergent/config.json
 |---|---|
 | `intergent/cli.py` | generated `argparse` CLI (`intergent` / `ig`), human + `--json` output |
 | `intergent/surface.py` | **single source of truth**: action registry, validation, dispatch |
-| `intergent/mcp.py` | MCP stdio server exposing one `ig` action tool |
 | `intergent/service.py` | **single owner of state**: sessions, units, intents, leases, candidates, integration |
 | `intergent/store.py` | SQLite persistence (WAL) |
 | `intergent/gitutil.py` | Git plumbing (`worktree`, `merge-tree`, `merge`, `commit`, `branch`) |
@@ -63,15 +61,14 @@ its dependencies' code.
 
 ## 3. Action reference
 
-Six actions. The CLI renders them as subcommands, MCP as one `ig` tool with an
-`action` enum, and the pi extension as one `ig` tool — all from `surface.py`.
+Six actions. The CLI renders them as subcommands and the pi extension as one
+`ig` tool with an `action` enum — all from `surface.py`.
 
 ### Bootstrap
 
 ```bash
 intergent start [--agent NAME] [--name N] [--path DIR] [--main main] [--base main]
                 [--check NAME=COMMAND ...] [--lease-ttl 1800] [--force] [--no-unit]
-intergent mcp
 ```
 
 `start` (alias `init`) is idempotent and the single bootstrap entry point: it
@@ -210,14 +207,14 @@ branch one `--no-ff` merge at a time, verifying the combined tree after each
 merge. `commitops.py` holds the shared primitives (worktree lookup, merge order,
 `landed` marking, conflict summary).
 
-## 5. MCP tool surface
+## 5. pi tool surface
 
-The server exposes exactly one tool, `ig`, with an `action` enum
-(`start`, `status`, `declare`, `commit`, `integrate`, `report`). The tool schema
-— enum, properties, types, choices — is generated from `surface.py`, and the
-same module implements dispatch, so the MCP and CLI surfaces cannot drift.
-`unit` is optional when the server runs inside a unit worktree. Every action is
-agent-callable. For pi and generic agents see [Agent integration](./agents.md).
+The pi extension exposes one tool, `ig`, with an `action` enum
+(`start`, `status`, `declare`, `commit`, `integrate`, `report`). The schema is
+generated from `surface.py`, and the same module implements dispatch, so the pi
+and CLI surfaces cannot drift. `unit` is optional on hot-loop calls; the tool
+resolves it from its cwd. Every action is agent-callable. See
+[Agent integration](./agents.md).
 
 ## 6. Tests
 
@@ -228,15 +225,15 @@ python3 -m unittest discover -s tests -v
 The suite covers scope canonicalization/hierarchy, the lock matrix and closure,
 conflict rules, and end-to-end flows (campaign integration and idempotency,
 conflict atomicity, node verification caching, queueing and promotion, expired
-leases, failing checks, simulation, cleanup, reporting) plus CLI, MCP, and
-packaging smoke tests.
+leases, failing checks, simulation, cleanup, reporting) plus CLI and packaging
+smoke tests.
 
 ## 7. Deliberate gaps
 
 - Symbol/AST extraction is not yet wired to `tree-sitter`; declared scopes and
   `git merge-tree` are the detectors. Dependency edges beyond declared intent
   are not inferred.
-- No long-lived daemon or unix socket yet: the CLI/MCP call the SQLite service
+- No long-lived daemon or unix socket yet: the CLI calls the SQLite service
   directly (WAL). Lease expiry is reaped lazily on the next call.
 - `jj` workspaces, sandboxing, and shared dependency caches are not implemented.
 
