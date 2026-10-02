@@ -59,11 +59,21 @@ class Service:
         root: Path,
         *,
         main_branch: str | None = None,
+        target_branch: str | None = None,
+        target_mode: str | None = None,
+        worktree_branch: str | None = None,
         base: str | None = None,
         checks: list[dict[str, Any]] | None = None,
         force: bool = False,
     ) -> dict[str, Any]:
-        """Create the on-disk plane (config + state db) for a git repo."""
+        """Create the on-disk plane (config + state db) for a git repo.
+
+        ``target_branch`` is the feature branch delivery finally lands on.
+        ``target_mode`` is one of ``current``, ``existing``, or ``new``; ``new``
+        creates the branch from ``base``.  Delivery refuses to commit to
+        ``main``, ``master``, or the recorded default branch, so a plane that
+        targets one can be created but never delivered.
+        """
         from .util import ensure_parent, state_dir
 
         if not gitutil.is_git_repo(root):
@@ -74,26 +84,29 @@ class Service:
             raise SlicemeError(
                 "already initialised (.sliceme/config.json exists); use --force to reset config"
             )
-        detected = gitutil.current_branch(root)
-        main_branch = main_branch or detected
-        if not main_branch:
-            raise SlicemeError(
-                "not on a branch; create or check out the campaign branch before start"
-            )
-        if not gitutil.branch_exists(root, main_branch):
-            # `start` adopts the branch that is checked out and never creates
-            # one.  A missing integration branch means the caller passed
-            # `--main` explicitly (or HEAD is unborn): fail loudly instead of
-            # silently branching off history the user did not choose.
-            raise SlicemeError(
-                f"branch '{main_branch}' does not exist; sliceme adopts the current "
-                "branch and never creates one"
-            )
-        base = base or main_branch
-        default_branch = integrate.found_default_branch(root, exclude=main_branch)
+        target = _resolve_target_branch(
+            root,
+            target_branch=target_branch or main_branch,
+            target_mode=target_mode,
+            base=base,
+        )
+        default_branch = integrate.found_default_branch(root)
+        base = base or target
+        try:
+            gitutil.rev_parse(root, base)
+        except SlicemeError:
+            raise SlicemeError(f"base branch/ref '{base}' does not exist") from None
+        worktree_branch = worktree_branch or _default_worktree_branch(root, target)
+        if integrate.is_default_branch(
+            root, worktree_branch, {"default_branch": default_branch}
+        ):
+            raise SlicemeError("the campaign worktree branch cannot be the default branch")
         config = {
             "version": 1,
-            "main_branch": main_branch,
+            "target_branch": target,
+            # Deprecated mirror kept for one release; read target_branch first.
+            "main_branch": target,
+            "worktree_branch": worktree_branch,
             "base": base,
             "default_branch": default_branch,
             "checks": checks or [],
@@ -110,26 +123,37 @@ class Service:
 
     @classmethod
     def _retarget_plane(
-        cls, root: Path, *, main_branch: str, base: str | None = None
+        cls,
+        root: Path,
+        *,
+        main_branch: str | None = None,
+        target_branch: str | None = None,
+        target_mode: str | None = None,
+        worktree_branch: str | None = None,
+        base: str | None = None,
     ) -> None:
-        """Point an existing plane's integration branch at **an existing** branch.
+        """Point an existing plane's target branch at an existing branch.
 
-        Used by ``start --main`` so a campaign adopts the checked-out branch even
-        when the plane already exists.  It never creates a branch: a missing one
-        is an error.
+        Used by ``start --target`` so a campaign adopts the chosen branch even
+        when the plane already exists.  It never creates a branch unless
+        ``target_mode`` is ``new``: a missing one is an error.
         """
-        if not gitutil.branch_exists(root, main_branch):
-            raise SlicemeError(
-                f"branch '{main_branch}' does not exist; sliceme adopts the current "
-                "branch and never creates one"
-            )
+        target = _resolve_target_branch(
+            root,
+            target_branch=target_branch or main_branch,
+            target_mode=target_mode,
+            base=base,
+        )
         cfg = read_json(config_path(root))
         if cfg is None:
             raise SlicemeError("missing .sliceme/config.json")
-        if cfg.get("main_branch") == main_branch:
-            return
-        cfg["main_branch"] = main_branch
-        cfg["base"] = base or main_branch
+        default_branch = cfg.get("default_branch") or integrate.found_default_branch(root)
+        cfg["target_branch"] = target
+        cfg["main_branch"] = target
+        cfg["default_branch"] = default_branch
+        cfg["base"] = base or target
+        if worktree_branch:
+            cfg["worktree_branch"] = worktree_branch
         write_json(config_path(root), cfg)
 
     @classmethod
@@ -142,6 +166,9 @@ class Service:
         base: str | None = None,
         kind: str = "worker",
         main_branch: str | None = None,
+        target_branch: str | None = None,
+        target_mode: str | None = None,
+        worktree_branch: str | None = None,
         checks: list[dict[str, Any]] | None = None,
         force: bool = False,
         no_unit: bool = False,
@@ -172,17 +199,26 @@ class Service:
             cls.init_plane(
                 root,
                 main_branch=main_branch,
+                target_branch=target_branch,
+                target_mode=target_mode,
+                worktree_branch=worktree_branch,
                 base=base,
                 checks=checks,
                 force=force,
             )
             initialized = True
-        elif main_branch:
-            # An existing plane keeps its identity; re-point its integration
-            # branch only when the caller names one explicitly.  `campaign
-            # start` uses this to adopt the checked-out branch, and — like
-            # `init_plane` — it never creates a branch.
-            cls._retarget_plane(root, main_branch=main_branch, base=base)
+        elif main_branch or target_branch or target_mode:
+            # An existing plane keeps its identity; re-point its target branch
+            # only when the caller names one explicitly.  `campaign start`
+            # uses this to adopt the chosen branch.
+            cls._retarget_plane(
+                root,
+                main_branch=main_branch,
+                target_branch=target_branch,
+                target_mode=target_mode,
+                worktree_branch=worktree_branch,
+                base=base,
+            )
 
         # Keep the exclude entry fresh even when the plane already existed and
         # the repo's .git/info/exclude was reset (e.g. re-cloned metadata).
@@ -370,36 +406,60 @@ class Service:
         return self.store.get_candidate(cid)  # type: ignore[return-value]
 
     # ------------------------------------------------------------------
-    # Wave scope: one worktree per wave, recorded by the single executor
+    # Campaign scope: one worktree for the whole campaign
     # ------------------------------------------------------------------
-    def create_wave_workspace(
-        self, wave_index: int, *, base: str | None = None, session: str | None = None
+    def create_campaign_workspace(
+        self, *, base: str | None = None, session: str | None = None
     ) -> dict[str, Any]:
-        """Create (or reuse) the single branch + worktree for a wave.
+        """Create (or reuse) the single campaign worktree.
 
-        Same-wave nodes own disjoint directory subtrees, so one shared checkout
-        is safe; the recorder maps each changed path back to its node.
+        Every wave commits onto this one branch.  It is never recreated and
+        never rebased, so files written by an earlier wave are still present
+        when the next wave runs.
         """
-        name = f"wave-{int(wave_index)}"
+        name = "campaign"
         existing = self.store.get_unit(name)
-        if existing is not None and Path(existing["worktree"]).exists():
-            return existing
+        if existing is not None:
+            worktree = Path(existing["worktree"])
+            if worktree.exists():
+                return existing
+            return self._recreate_campaign_worktree(existing, base=base)
         config = self.config
-        base_ref = base or config.get("base") or config.get("main_branch") or "main"
+        base_ref = (
+            base
+            or config.get("base")
+            or config.get("target_branch")
+            or config.get("main_branch")
+            or "main"
+        )
         base_commit = gitutil.rev_parse(self.root, base_ref)
+        branch = str(config.get("worktree_branch") or "").strip()
+        if not branch:
+            branch = _default_worktree_branch(self.root, base_ref)
+            config["worktree_branch"] = branch
+            write_json(config_path(self.root), config)
+        if integrate.is_default_branch(self.root, branch, config):
+            raise SlicemeError(
+                f"refusing to use the default branch '{branch}' as the campaign worktree"
+            )
         session_name = session or name
         sess = self.store.get_session(session_name)
         if sess is None:
             sess = self.create_session(session_name)
         session_id = int(sess["id"])
-        branch = _unique_branch(self.root, session_name, name)
-        worktree = _unique_worktree(worktrees_dir(self.root), session_name, name)
-        gitutil.add_worktree(self.root, worktree, branch=branch, base=base_commit)
+        worktree = worktrees_dir(self.root) / "campaign"
+        gitutil.cleanup_worktree(self.root, worktree)
+        if gitutil.branch_exists(self.root, branch):
+            gitutil.add_worktree(
+                self.root, worktree, branch=branch, base=branch, new_branch=False
+            )
+        else:
+            gitutil.add_worktree(self.root, worktree, branch=branch, base=base_commit)
         try:
             unit_id = self.store.create_unit(
                 session_id=session_id,
                 name=name,
-                kind="wave",
+                kind="campaign",
                 worktree=str(worktree),
                 branch=branch,
                 base_commit=base_commit,
@@ -410,8 +470,38 @@ class Service:
         self.store.conn.commit()
         return self.store.get_unit(unit_id)  # type: ignore[return-value]
 
+    def _recreate_campaign_worktree(
+        self, existing: dict[str, Any], *, base: str | None = None
+    ) -> dict[str, Any]:
+        """Recreate a campaign worktree whose directory was deleted by hand."""
+        worktree = Path(existing["worktree"])
+        branch = str(existing["branch"])
+        gitutil.cleanup_worktree(self.root, worktree)
+        if gitutil.branch_exists(self.root, branch):
+            gitutil.add_worktree(
+                self.root, worktree, branch=branch, base=branch, new_branch=False
+            )
+        else:
+            base_ref = (
+                base
+                or existing.get("base_commit")
+                or self.config.get("base")
+                or self.config.get("target_branch")
+                or "main"
+            )
+            gitutil.add_worktree(
+                self.root, worktree, branch=branch, base=gitutil.rev_parse(self.root, base_ref)
+            )
+        return self.store.get_unit("campaign")  # type: ignore[return-value]
+
+    def create_wave_workspace(
+        self, wave_index: int, *, base: str | None = None, session: str | None = None
+    ) -> dict[str, Any]:
+        """Compatibility alias: every wave shares the one campaign worktree."""
+        return self.create_campaign_workspace(base=base, session=session)
+
     def wave_unit(self, wave_index: int) -> dict[str, Any] | None:
-        return self.store.get_unit(f"wave-{int(wave_index)}")
+        return self.store.get_unit("campaign")
 
     def record_wave(
         self,
@@ -461,7 +551,10 @@ class Service:
             raise SlicemeError(f"wave worktree missing: {worktree}")
         base = unit.get("base_commit") or gitutil.rev_parse(self.root, unit["branch"])
         gitutil.git(worktree, "add", "-A", check=False)
-        entries = _changed_entries(worktree, base)
+        # Diff against the current HEAD, not the fork point, so an earlier
+        # wave's committed changes are not re-attributed to this wave.  The
+        # campaign worktree accumulates commits across waves.
+        entries = _changed_entries(worktree)
         owners = {str(node["id"]): node_owns(node) for node in members}
         assignment: dict[str, list[str]] = {node_id: [] for node_id in owners}
         violations: list[str] = []
@@ -584,7 +677,7 @@ class Service:
         }
 
     def status(self) -> dict[str, Any]:
-        branch = self.config.get("main_branch")
+        branch = self.config.get("target_branch") or self.config.get("main_branch")
         units = [self._project_unit(u, branch) for u in self.list_units()]
         candidates = self.store.list_candidates()
         waves = integrate.plan_waves(
@@ -597,6 +690,8 @@ class Service:
         return {
             "root": str(self.root),
             "main_branch": branch,
+            "target_branch": branch,
+            "worktree_branch": self.config.get("worktree_branch"),
             "feature_branch": branch,
             "default_branch": self.config.get("default_branch") or integrate.found_default_branch(self.root),
             "units": units,
@@ -690,6 +785,47 @@ class Service:
             "artifacts_removed": artifacts_removed,
         }
 
+    def deliver(
+        self,
+        *,
+        target: str | None = None,
+        source: str | None = None,
+        no_ff: bool = True,
+        cleanup: str = "none",
+        run_checks_flag: bool = True,
+    ) -> dict[str, Any]:
+        """Merge the campaign worktree into the target branch (agent-callable).
+
+        This is the single, end-of-campaign merge.  The target branch is never
+        the default branch and there is no override.
+        """
+        if cleanup not in {"none", "worktrees", "all"}:
+            raise SlicemeError("cleanup must be one of: none, worktrees, all")
+        results = integrate.deliver(
+            self.store,
+            self.root,
+            self.config,
+            target=target,
+            source=source,
+            no_ff=no_ff,
+            run_checks_flag=run_checks_flag,
+        )
+        cleanup_result: dict[str, Any] | None = None
+        artifacts_removed: list[str] = []
+        if cleanup in {"worktrees", "all"}:
+            cleanup_result = self.gc()
+        if cleanup == "all":
+            artifacts_removed = self.remove_campaign_artifacts(keep_report=True)
+        return {
+            "target_branch": target
+            or self.config.get("target_branch")
+            or self.config.get("main_branch"),
+            "source": source or self.config.get("worktree_branch"),
+            "results": [r.to_dict() for r in results],
+            "cleanup": cleanup_result,
+            "artifacts_removed": artifacts_removed,
+        }
+
     def report(
         self, *, narrative: str | None = None, design: str | None = None
     ) -> dict[str, Any]:
@@ -778,11 +914,17 @@ def _describe_violation(
     return f"{status} {path} is claimed by {new_owners}"
 
 
-def _changed_entries(worktree: Path, base: str) -> list[tuple[str, str, str | None]]:
-    """Staged changes as ``(status, path, old_path)``, rename-aware."""
-    result = gitutil.git(
-        worktree, "diff", "--cached", "--name-status", "-M", base, check=False
-    )
+def _changed_entries(
+    worktree: Path, base: str | None = None
+) -> list[tuple[str, str, str | None]]:
+    """Staged changes as ``(status, path, old_path)``, rename-aware.
+
+    With no *base* the diff is against ``HEAD`` (the last recorded wave).
+    """
+    args = ["diff", "--cached", "--name-status", "-M"]
+    if base:
+        args.append(base)
+    result = gitutil.git(worktree, *args, check=False)
     if not result.ok:
         return []
     entries: list[tuple[str, str, str | None]] = []
@@ -796,6 +938,53 @@ def _changed_entries(worktree: Path, base: str) -> list[tuple[str, str, str | No
         else:
             entries.append((status, parts[1], None))
     return entries
+
+
+def _resolve_target_branch(
+    root: Path,
+    *,
+    target_branch: str | None,
+    target_mode: str | None,
+    base: str | None,
+) -> str:
+    """Resolve the campaign target branch from the user's choice.
+
+    ``current`` adopts the checked-out branch; ``existing`` requires the named
+    branch to exist; ``new`` creates it from *base* (default ``HEAD``).  A bare
+    target name with no mode is treated as an existing branch.
+    """
+    mode = (target_mode or "").strip().lower()
+    if mode not in {"", "current", "existing", "new"}:
+        raise SlicemeError("target_mode must be one of: current, existing, new")
+    if mode == "new":
+        if not target_branch:
+            raise SlicemeError("target_mode 'new' requires a target branch name")
+        if gitutil.branch_exists(root, target_branch):
+            raise SlicemeError(f"branch '{target_branch}' already exists")
+        from_commit = base or gitutil.rev_parse(root, "HEAD")
+        gitutil.create_branch(root, target_branch, from_commit)
+        return target_branch
+    if target_branch:
+        if not gitutil.branch_exists(root, target_branch):
+            raise SlicemeError(f"branch '{target_branch}' does not exist")
+        return target_branch
+    current = gitutil.current_branch(root)
+    if not current:
+        raise SlicemeError(
+            "not on a branch; create or check out the campaign branch before start"
+        )
+    return current
+
+
+def _default_worktree_branch(root: Path, target: str) -> str:
+    """A stable, unique accumulation branch for the campaign worktree."""
+    base = f"sliceme/{slugify(target or 'campaign', 32)}"
+    branch = base
+    counter = 2
+    while gitutil.branch_exists(root, branch):
+        branch = f"{base}-{counter}"
+        counter += 1
+    return branch
 
 
 def _session_unit_slugs(session: str, name: str) -> tuple[str, str]:

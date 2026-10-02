@@ -1,7 +1,7 @@
 {
   "name": "sliceme",
   "version": "0.3.0",
-  "description": "Coordination for parallel coding agents: campaign DAG, git worktrees, plan-time directory ownership, verified integration.",
+  "description": "Coordination for parallel coding agents: campaign DAG, git worktrees, plan-time directory ownership, approved delivery.",
   "license": "Apache-2.0",
   "author": "sliceme",
   "homepage": "https://github.com/ming6ao/sliceme#readme",

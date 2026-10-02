@@ -12,20 +12,21 @@ derive from one action registry (`sliceme/surface.py`). Six engine verbs:
 |---|---|
 | `start` (alias `init`) | Bootstrap the plane and a unit for the current directory (idempotent). |
 | `status` | Units, candidates, waves, health, simulation. |
-| `commit` | Commit the worktree, enforce plan conformance, register the candidate. |
-| `integrate` | Merge verified candidates onto the feature branch; `check_only` records a verdict. |
+| `commit` | Commit a unit worktree, enforce plan conformance, register the candidate. |
+| `deliver` | Merge the campaign worktree into the target feature branch after approval. |
 | `report` | Write the deterministic campaign report plus an optional narrative. |
 | `exec` | The single sandboxed executor queue: `submit`/`run`/`wait`/`cancel` check jobs. |
 
 The pi `sliceme` coordinator tool adds orchestration verbs (`ready`, `spawn`,
-`verify`) on top; those drive the engine and the DAG rather than adding engine
-actions.
+`record`, `verify`, `deliver`) on top; those drive the engine and the DAG rather
+than adding engine actions.
 
 ### `start`
 
 ```bash
 sliceme start [--name N] [--path DIR] [--session S] [--kind session|worker]
-                [--base REF] [--main BRANCH] [--check NAME=COMMAND ...]
+                [--base REF] [--target BRANCH] [--target-mode current|existing|new]
+                [--worktree-branch BRANCH] [--main BRANCH] [--check NAME=COMMAND ...]
                 [--force] [--no-unit]
 ```
 
@@ -34,9 +35,16 @@ Idempotent bootstrap: writes `.sliceme/config.json` and `.sliceme/state.db`
 missing, then creates a unit for the directory unless it is already inside one.
 Re-running from a unit worktree is a no-op.
 
-- `--main BRANCH` names the integration/feature branch and **must already
-  exist**; `start` adopts the current branch and never creates one.
-- `--base REF` records the fork point (default: the integration branch).
+- `--target BRANCH` with `--target-mode current|existing|new` chooses the
+  campaign's **target (feature) branch** once and records it. `current` adopts
+  the checked-out branch, `existing` requires the named branch, and `new`
+  creates it from `--base`.
+- The target is **never** `main`, `master`, or the repository default branch;
+  `deliver` refuses it. There is no override.
+- `--worktree-branch BRANCH` names the separate campaign accumulation branch
+  (default derived, for example `sliceme/<target-slug>`).
+- `--main BRANCH` is a deprecated alias for `--target`.
+- `--base REF` records the fork point (default: the target branch).
 - `--no-unit` initialises the plane without creating a unit, for a coordinator's
   checkout.
 - `--check NAME=COMMAND` registers a trusted plane check (repeatable).
@@ -74,29 +82,30 @@ subtrees. A rejection means the planner under-declared: the coordinator widens
 Ownership syntax is `dir:PATH` (a bare path is accepted). Non-directory specs
 (`file:`, `symbol:`, …) are rejected when the DAG is projected.
 
-### `integrate`
+### `deliver`
 
 ```bash
-sliceme integrate [--node ID] [--acceptance CMD ...] [--gpu none|T1|T2]
-                    [--check-only] [--cleanup none|worktrees|all] [--no-checks]
+sliceme deliver [--target BRANCH] [--source BRANCH] [--ff]
+                   [--cleanup none|worktrees|all] [--no-checks]
 ```
 
-- Orders prepared candidates with the wave planner.
-- Merges each unit branch onto the plane's `main_branch` (the feature branch)
-  with `git merge --no-ff`; branches are kept for provenance.
-- Runs the plane's trusted checks on the combined tree (fingerprint-cached).
-- Marks candidates and units `landed`.
+- Merges the campaign worktree branch (`--source`, default the recorded
+  `worktree_branch`) into the target branch (`--target`, default the recorded
+  target) with `git merge --no-ff`.
+- Runs the plane's trusted checks on the merged tree; combined checks that fail
+  reset the target branch to its pre-merge tip.
+- Marks prepared candidates and their unit `landed` without rewriting their
+  recorded commits.
 
-It is idempotent; a merge conflict aborts the merge and returns structured
-findings without leaving the feature branch half-merged; combined checks that
-fail reset the branch to its pre-merge tip. A safety rail **refuses** to
-integrate onto the plane's recorded **default branch**, so promoting a feature
+It is idempotent: a target that already contains the worktree branch is a
+no-op. A merge conflict aborts the merge and returns structured findings
+without leaving the target half-merged. When no campaign worktree branch
+exists, `deliver` falls back to ordered per-candidate merges (the generic
+non-campaign plane).
+
+**The target is never the repository default branch** — `main`, `master`, and
+the recorded default are refused with **no override**. Promotion from a feature
 branch to the default branch stays a human `git` step.
-
-`--node ID` lands only that candidate. `--acceptance CMD` runs the node's
-acceptance commands (repeatable). `--check-only` records a node's acceptance
-verdict (fingerprint source `node:<id>`) without merging. `--cleanup` defaults
-to `none`.
 
 ### `report`
 
@@ -124,12 +133,15 @@ delegate to it instead of each running the acceptance suite.
 
 - `--validate`: resolve and validate the project sandbox gate (manifest and,
   with `--gpu-required`, a GPU runner); exits non-zero when the gate fails.
-- `--open --wave N`: create the single branch + worktree for wave `N`
-  (`sliceme/wave-<N>`), idempotently.
-- `--record --wave N`: stage the shared wave worktree, enforce
-  conformance-by-ownership, and create one commit + prepared candidate per
-  node.  Rejects unowned, ambiguous, or cross-node-rename changes.  Holds the
-  executor lock, so it is serialized with check runs.
+- `--open`: create (or reuse) the single **campaign worktree** and branch
+  (`worktree_branch`, for example `sliceme/<target-slug>`), idempotently. The
+  same worktree is used for every wave; it is never recreated between waves.
+- `--record --wave N`: stage the campaign worktree, enforce
+  conformance-by-ownership for wave `N`, and create one commit + prepared
+  candidate per node.  Rejects unowned, ambiguous, or cross-node-rename changes.
+  It diffs against the current `HEAD`, so an earlier wave's committed changes
+  are not re-attributed.  Holds the executor lock, so it is serialized with
+  check runs.
 - `--submit`: enqueue a check job for `--source` (e.g. `node:w1`, `wave:0`),
   `--commit`, and one or more `--command`.  A job whose
   `(tree, commands, toolchain, policy, sandbox, source)` fingerprint already
@@ -168,14 +180,14 @@ rejected.
 |---|---|
 | `sliceme/surface.py` | **single source of truth**: action registry, validation, dispatch |
 | `sliceme/cli.py` | generated `argparse` CLI (`sliceme`), human + `--json` output |
-| `sliceme/service.py` | **single owner of state**: sessions, units, candidates, conformance, integration, and the shared wave workspace/recorder |
+| `sliceme/service.py` | **single owner of state**: sessions, units, candidates, conformance, campaign worktree + recorder, and delivery |
 | `sliceme/store.py` | SQLite persistence (WAL) |
 | `sliceme/gitutil.py` | Git plumbing (`worktree`, `merge`, `merge-tree`, `commit`, `branch`, `changed_files`) |
 | `sliceme/ownership.py` | Directory ownership (normalization, `owns`, subtree conflicts) and the DAG wave projection |
 | `sliceme/verifier.py` | Fingerprints (plane and node sources) and the sandboxed trusted-check runner |
 | `sliceme/sandbox.py` | Isolation profiles + project manifests (`none`/`bwrap`/`unshare`/`command`), the gate, and command wrapping |
 | `sliceme/executor.py` | The single sandboxed executor queue (submit/run/wait/cancel, dedupe, leases) |
-| `sliceme/integrate.py` | Feature-branch landing, node-aware candidate wave ordering, combined-tree simulation |
+| `sliceme/integrate.py` | Target selection and guards, final delivery, node-aware candidate ordering, combined-tree simulation |
 | `sliceme/campaign.py` | `dag.json` / `state.json` layout and readers; deterministic report |
 
 The engine is dependency-free Python 3.11+. `Service` is the only state owner;
@@ -190,20 +202,21 @@ Let `branch-key` replace `/` with `--` (`feat/x` → `feat--x`):
 
 ```text
 .sliceme/
-  config.json                      # plane config
+  config.json                      # plane config (target_branch, worktree_branch, default_branch, checks, policy)
   state.db                         # units, candidates, fingerprints, verifications, jobs (SQLite, WAL)
   executor.lock                    # exclusive lock held by the single executor runner
   feat--x.dag.json                 # canonical plan (never committed)
   feat--x.state.json               # executor progress (node -> status)
   feat--x.report.md                # final report (kept on cleanup)
   feat--x.worker_<id>.log          # one log per worker id
-  worktrees/                       # one git worktree per unit (or one shared worktree per wave)
+  worktrees/                       # the single campaign worktree (+ transient unit worktrees)
   scratch/                         # detached simulation worktrees (transient)
 ```
 
 `state.json` holds only what git and `state.db` cannot express quickly: per-node
-`pending|running|done|failed`, the last verdict, and attempt counts. On conflict,
-git and `state.db` are authoritative; `state.json` is a rebuildable cache.
+`pending|running|recorded|done|failed`, the last verdict, and attempt counts. On
+conflict, git and `state.db` are authoritative; `state.json` is a rebuildable
+cache.
 
 SQLite tables: `sessions`, `units`, `candidates`, `fingerprints`,
 `verifications`, `jobs`.
@@ -228,7 +241,7 @@ SQLite tables: `sessions`, `units`, `candidates`, `fingerprints`,
 Checks run in a clean detached scratch worktree at the commit and, when a
 sandbox is configured, wrapped accordingly. A passing verification for an
 unchanged fingerprint is reused from cache; verification never mutates the
-candidate or the feature branch. Agent-reported tests are provenance only,
+candidate or the target branch. Agent-reported tests are provenance only,
 never acceptance.
 
 ## 5. Tests
@@ -239,19 +252,21 @@ python3 -m unittest discover -s tests -v
 
 The suite covers directory normalization and subtree conflicts, DAG wave
 projection, commit-time plan conformance, the executor queue and sandbox
-profiles, shared wave recording, and end-to-end flows (campaign integration and
-idempotency, conflict atomicity, node verification caching, failing checks,
-simulation, cleanup, reporting) plus CLI and packaging smoke tests.
+profiles, campaign worktree recording, target-branch selection and refusal, and
+end-to-end flows (delivery, idempotency, conflict atomicity, node verification
+caching, failing checks, simulation, cleanup, reporting) plus CLI and packaging
+smoke tests.
 
 | File | Covers |
 |---|---|
 | `tests/test_scopes.py` | ownership normalization, `owns`, subtree conflicts, conformance path check |
 | `tests/test_waves.py` | DAG wave projection, dependency barriers, caps, validation |
-| `tests/test_campaign.py` | feature-branch integration, node verification, report, DAG/state layout |
+| `tests/test_campaign.py` | plane bootstrap and retargeting, node verification, report, DAG/state layout |
 | `tests/test_executor.py` | executor queue, sandbox profiles/wrapping, fingerprint invalidation |
 | `tests/test_sandbox_gate.py` | manifest discovery/validation, fail-closed gate, GPU runner, setup |
-| `tests/test_wave_scope.py` | shared wave worktree, conformance-by-ownership, per-node commits, wave integration |
-| `tests/test_e2e.py` | end-to-end conformance and integration flows |
+| `tests/test_wave_scope.py` | campaign worktree reuse, conformance-by-ownership, per-node commits, delivery, default-branch refusal |
+| `tests/test_target_branch.py` | current/existing/new target modes, persistence, default-branch refusal |
+| `tests/test_e2e.py` | end-to-end conformance and delivery flows |
 | `tests/test_cli.py` | CLI surface and lifecycle |
 | `tests/test_pi_package.py` | pi package contract, tool/action lockstep, command gate, docs |
 
@@ -264,7 +279,8 @@ simulation, cleanup, reporting) plus CLI and packaging smoke tests.
   (WAL).
 - One campaign per plane; RPC-steerable workers and multiple concurrent
   campaigns are out of scope.
-- `jj` workspaces and shared dependency caches are not implemented.  The
-  coordinator still spawns per-node units by default; wave scope
-  (`exec --open/--record`) is engine-level and not yet wired into `spawn`.
-- Promotion from the feature branch to the default branch is a human `git` step.
+- `jj` workspaces and shared dependency caches are not implemented.  Campaign
+  workers are pure editors in the single campaign worktree (`exec --open` /
+  `exec --record --wave N`).
+- Promotion from the target feature branch to the default branch is a human
+  `git` step.

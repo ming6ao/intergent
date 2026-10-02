@@ -32,7 +32,7 @@ export const SLICEME_ACTIONS = [
 	"start",
 	"status",
 	"commit",
-	"integrate",
+	"deliver",
 	"report",
 	"exec",
 ] as const;
@@ -62,13 +62,13 @@ export default function unitExtension(pi: ExtensionAPI) {
 		label: "Sliceme unit",
 		description:
 			"Sliceme unit lifecycle for campaign workers: edit only the directories your " +
-			"node owns, then `commit`. The coordinator owns the campaign and lands work with " +
-			"`integrate`; there is no single-agent handoff and no declare step.",
+			"node owns, then `commit`. The coordinator owns the campaign and delivers work " +
+			"with `deliver` only after every wave is approved.",
 		promptSnippet: "Drive the Sliceme unit lifecycle (edit owned dirs → commit)",
 		promptGuidelines: [
 			"Edit only files inside the directories your DAG node owns; `commit` rejects paths outside them.",
 			"Use `sliceme-unit` action `status` with `short: true` to confirm you are inside your unit worktree.",
-			"Finish with `sliceme-unit` action `commit`. Never run `integrate` or `git merge` yourself.",
+			"Never run `deliver` or `git merge` yourself; the coordinator owns delivery.",
 		],
 		// Inactive until `/sliceme` activates it; workers are scoped to it through
 		// their `tools:` allowlist (`pi --tools sliceme-unit`).
@@ -88,22 +88,28 @@ export default function unitExtension(pi: ExtensionAPI) {
 				}),
 			),
 			base: Type.Optional(Type.String({ description: "start: base branch/ref" })),
-			node: Type.Optional(
-				Type.String({ description: "integrate: only the candidate for this node/unit id" }),
+			target: Type.Optional(
+				Type.String({
+					description: "start/deliver: target (feature) branch; never main or master",
+				}),
+			),
+			target_mode: Type.Optional(
+				StringEnum(["current", "existing", "new"] as const, {
+					description: "start: how to resolve the target branch",
+				}),
+			),
+			source: Type.Optional(
+				Type.String({
+					description: "deliver: campaign worktree branch; exec: fingerprint source",
+				}),
+			),
+			ff: Type.Optional(
+				Type.Boolean({ description: "deliver: allow a fast-forward instead of a merge commit" }),
 			),
 			cleanup: Type.Optional(
 				StringEnum(["none", "worktrees", "all"] as const, {
-					description: "integrate: post-merge cleanup (default none)",
+					description: "deliver: post-merge cleanup (default none)",
 				}),
-			),
-			acceptance: Type.Optional(
-				Type.Array(Type.String(), { description: "integrate: node acceptance command" }),
-			),
-			gpu: Type.Optional(
-				StringEnum(["none", "T1", "T2"] as const, { description: "integrate: verifier GPU tier" }),
-			),
-			check_only: Type.Optional(
-				Type.Boolean({ description: "integrate: record the verdict without merging" }),
 			),
 			narrative: Type.Optional(
 				Type.String({ description: "report: what-changed/risks narrative" }),
@@ -113,7 +119,9 @@ export default function unitExtension(pi: ExtensionAPI) {
 			health: Type.Optional(Type.Boolean({ description: "status: check plane health" })),
 			gc: Type.Optional(Type.Boolean({ description: "status: prune landed worktrees" })),
 			short: Type.Optional(Type.Boolean({ description: "status: print only the unit name" })),
-			no_checks: Type.Optional(Type.Boolean({ description: "skip verification" })),
+			no_checks: Type.Optional(
+				Type.Boolean({ description: "skip verification or delivery checks" }),
+			),
 			submit: Type.Optional(Type.Boolean({ description: "exec: enqueue a check job" })),
 			validate: Type.Optional(
 				Type.Boolean({ description: "exec: resolve and validate the sandbox gate" }),
@@ -131,9 +139,6 @@ export default function unitExtension(pi: ExtensionAPI) {
 			wait: Type.Optional(Type.Boolean({ description: "exec: wait for a job" })),
 			cancel: Type.Optional(Type.Boolean({ description: "exec: cancel a queued job" })),
 			job: Type.Optional(Type.String({ description: "exec: job id" })),
-			source: Type.Optional(
-				Type.String({ description: "exec: fingerprint source, e.g. node:w1 or wave:0" }),
-			),
 			commit: Type.Optional(Type.String({ description: "exec: commit/ref to run checks at" })),
 			command: Type.Optional(
 				Type.Array(Type.String(), { description: "exec: check command (repeatable)" }),
@@ -142,6 +147,9 @@ export default function unitExtension(pi: ExtensionAPI) {
 				StringEnum(["none", "bwrap", "unshare"] as const, {
 					description: "exec: sandbox mode",
 				}),
+			),
+			gpu: Type.Optional(
+				StringEnum(["none", "T1", "T2"] as const, { description: "exec: GPU tier" }),
 			),
 			priority: Type.Optional(Type.Number({ description: "exec: higher runs first" })),
 			timeout: Type.Optional(Type.Number({ description: "exec: per-command timeout seconds" })),

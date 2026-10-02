@@ -74,11 +74,12 @@ Then, inside the session:
 
 ```text
 /sliceme DESIGN.md                # activate the tools and start a campaign
-sliceme start DESIGN.md           # adopt the current branch + run the planner
-sliceme ready                     # current-wave nodes whose deps are integrated
-sliceme spawn <node>              # one-shot worker
+sliceme start DESIGN.md           # choose target branch + run the planner
+sliceme ready                     # current-wave nodes whose deps are done
+sliceme spawn <node>              # one-shot pure editor in the campaign worktree
+sliceme record                    # commit the current wave onto the campaign worktree
 sliceme verify <node>             # executor runs checks; a read-only verifier judges
-sliceme integrate <node>          # land the verified node
+sliceme deliver                   # after all waves: approve, then merge to the target
 sliceme report --narrative "..."  # deterministic report + your summary
 ```
 

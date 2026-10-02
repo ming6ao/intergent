@@ -55,7 +55,10 @@ ACTIONS: tuple[Action, ...] = (
             Param("kind", "string", "unit kind", choices=("session", "worker")),
             Param("base", "string", "base branch/ref for new worktrees"),
             Param("task", "string", "task description stored on the session"),
-            Param("main_branch", "string", "integration branch to adopt (default: current; must exist)", flag="main"),
+            Param("target", "string", "target (feature) branch delivery lands on; never main/master", flag="target"),
+            Param("target_mode", "string", "how to resolve --target", choices=("current", "existing", "new")),
+            Param("worktree_branch", "string", "campaign accumulation branch (default derived)"),
+            Param("main_branch", "string", "deprecated alias for --target", flag="main"),
             Param("checks", "list", "trusted check NAME=COMMAND (repeatable)", flag="check"),
             Param("force", "boolean", "overwrite an existing config"),
             Param("no_unit", "boolean", "initialise the plane without creating a unit for cwd"),
@@ -83,14 +86,13 @@ ACTIONS: tuple[Action, ...] = (
         ),
     ),
     Action(
-        name="integrate",
-        summary="merge verified candidates onto the campaign feature branch",
+        name="deliver",
+        summary="merge the campaign worktree into the target feature branch (after approval)",
         params=(
-            Param("node", "string", "only the candidate for this node/unit id"),
-            Param("cleanup", "string", "cleanup after integrating", choices=("none", "worktrees", "all")),
-            Param("acceptance", "list", "node acceptance command (repeatable)", flag="acceptance"),
-            Param("gpu", "string", "GPU tier reserved by the verifier", choices=("none", "T1", "T2")),
-            Param("check_only", "boolean", "record the verdict without merging (orchestrator verify)"),
+            Param("target", "string", "target branch to merge into (default: recorded target)"),
+            Param("source", "string", "campaign worktree branch (default: recorded worktree branch)"),
+            Param("ff", "boolean", "allow a fast-forward instead of a merge commit"),
+            Param("cleanup", "string", "cleanup after delivery", choices=("none", "worktrees", "all")),
             Param("no_checks", "boolean", "skip the plane's trusted checks"),
         ),
     ),
@@ -177,6 +179,9 @@ def start(params: dict[str, Any], *, cwd: str | Path | None = None) -> dict[str,
         base=params.get("base"),
         kind=params.get("kind") or "worker",
         main_branch=params.get("main_branch"),
+        target_branch=params.get("target"),
+        target_mode=params.get("target_mode"),
+        worktree_branch=params.get("worktree_branch"),
         checks=parse_checks(params.get("checks") or []),
         force=bool(params.get("force")),
         no_unit=bool(params.get("no_unit")),
@@ -237,12 +242,11 @@ def _dispatch_commit(service: "Service", p: dict[str, Any]) -> Any:
     return {"commit": commit, "candidate": candidate}
 
 
-def _dispatch_integrate(service: "Service", p: dict[str, Any]) -> Any:
-    return service.integrate(
-        node=p.get("node"),
-        acceptance=list(p.get("acceptance") or []),
-        gpu=p.get("gpu") or "none",
-        check_only=bool(p.get("check_only")),
+def _dispatch_deliver(service: "Service", p: dict[str, Any]) -> Any:
+    return service.deliver(
+        target=p.get("target"),
+        source=p.get("source"),
+        no_ff=not bool(p.get("ff")),
         cleanup=p.get("cleanup") or "none",
         run_checks_flag=not p.get("no_checks"),
     )
@@ -260,9 +264,7 @@ def _dispatch_exec(service: "Service", p: dict[str, Any]) -> Any:
             raise SlicemeError(str(info.get("error") or "sandbox gate failed"))
         return info
     if p.get("open"):
-        if p.get("wave") is None:
-            raise SlicemeError("exec --open requires --wave")
-        return {"unit": service.create_wave_workspace(int(p["wave"]))}
+        return {"unit": service.create_campaign_workspace()}
     if p.get("record"):
         if p.get("wave") is None:
             raise SlicemeError("exec --record requires --wave")
@@ -301,7 +303,7 @@ def _dispatch_exec(service: "Service", p: dict[str, Any]) -> Any:
 _HANDLERS = {
     "status": _dispatch_status,
     "commit": _dispatch_commit,
-    "integrate": _dispatch_integrate,
+    "deliver": _dispatch_deliver,
     "report": _dispatch_report,
     "exec": _dispatch_exec,
 }

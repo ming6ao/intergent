@@ -9,13 +9,19 @@
  *
  * One tool, `sliceme`, wraps the CLI's orchestration verbs:
  *
- *   start <design>   adopt current branch + no-unit plane + planner -> dag.json
+ *   start <design>   choose target branch + no-unit plane + planner -> dag.json
  *   status           merge `sliceme status --json` with live child state
  *   ready            nodes whose every dependency is done
- *   spawn <node>     create the unit, launch a one-shot worker, tee its log
- *   verify <node>    verifier on the latest prepared candidate; record a verdict
- *   integrate <node> land the verified candidate onto the feature branch
+ *   spawn <node>     launch a one-shot worker (pure editor) in the campaign worktree
+ *   record           commit the current wave onto the campaign worktree
+ *   verify <node>    verifier on the node's recorded commit; record a verdict
+ *   deliver          after every wave: ask approval, then merge to the target branch
  *   report           `sliceme report` plus the coordinator's narrative
+ *
+ * All waves commit onto one campaign worktree branch; nothing is merged to the
+ * target branch until every wave is done and the user approves `deliver`.
+ * Workers edit the shared worktree and never run git.  The target branch is
+ * never the default branch and there is no override.
  *
  * Workers are scoped to the `sliceme-unit` tool (`unit.ts`) and run inside
  * their unit worktree; `runSubagent` enforces the agent `tools:` allowlist, so
@@ -57,8 +63,9 @@ export const CAMPAIGN_ACTIONS = [
 	"status",
 	"ready",
 	"spawn",
+	"record",
 	"verify",
-	"integrate",
+	"deliver",
 	"report",
 	"exec",
 ] as const;
@@ -110,13 +117,15 @@ interface Dag {
 }
 
 interface NodeState {
-	status: "pending" | "running" | "done" | "failed" | "stopped";
+	status: "pending" | "running" | "recorded" | "done" | "failed" | "stopped";
 	attempts?: number;
 	verdict?: string;
 	lastError?: string;
 	unit?: string;
 	branch?: string;
 	worktree?: string;
+	commit?: string;
+	candidate?: number;
 	wave?: number;
 }
 
@@ -131,7 +140,10 @@ interface WaveState {
 interface CampaignState {
 	campaign?: string;
 	feature_branch?: string;
+	target_branch?: string;
+	worktree_branch?: string;
 	base?: string;
+	delivered?: boolean;
 	wave_size?: number;
 	current_wave?: number;
 	dag_fingerprint?: string;
@@ -177,7 +189,7 @@ function currentWave(state: CampaignState): WaveState | undefined {
 	return (state.waves ?? []).find((w) => w.index === index);
 }
 
-/** Nodes in the current wave whose dependencies are all integrated. */
+/** Nodes in the current wave whose dependencies are all done. */
 function readyWaveNodes(dag: Dag, state: CampaignState): string[] {
 	const wave = currentWave(state);
 	if (!wave) return [];
@@ -221,7 +233,7 @@ function reconcileWaves(state: CampaignState, dagWaves: any[]): void {
 	state.current_wave = firstNonDoneWave(state);
 }
 
-/** Mark any wave whose members are all integrated as done. */
+/** Mark any wave whose members are all done as done. */
 function advanceWaves(state: CampaignState): WaveState[] {
 	const completed: WaveState[] = [];
 	for (const wave of state.waves ?? []) {
@@ -240,7 +252,9 @@ function advanceWaves(state: CampaignState): WaveState[] {
 function summarise(dag: Dag, state: CampaignState): string {
 	const lines = [
 		`campaign: ${dag.campaign ?? "(unnamed)"}`,
-		`feature:  ${dag.feature_branch ?? "(unset)"}  base: ${dag.base ?? "(unset)"}`,
+		`target:   ${state.target_branch ?? dag.feature_branch ?? "(unset)"}` +
+			`  worktree: ${state.worktree_branch ?? "(unset)"}` +
+			`  base: ${dag.base ?? state.base ?? "(unset)"}`,
 		`design:   ${dag.design ?? "(unspecified)"}`,
 		`nodes:    ${nodeIds(dag).length}  wave size: ${
 			state.wave_size ?? dag.concurrency ?? "?"
@@ -437,6 +451,71 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
 		return null;
 	}
 
+	/**
+	 * Ask the user which branch is the campaign target (feature) branch:
+	 * the current branch, a named existing branch, or a new branch.  The default
+	 * branch can never be chosen and there is no override.  In non-interactive
+	 * modes, fall back to the `target` / `target_mode` tool parameters.
+	 */
+	async function chooseTargetBranch(
+		ctx: ExtensionContext,
+		params: any,
+	): Promise<{ name: string; mode: "current" | "existing" | "new" }> {
+		if (params.target) {
+			const mode = (params.target_mode as "current" | "existing" | "new") ?? "existing";
+			return { name: String(params.target), mode };
+		}
+		const current = await currentBranch(ctx);
+		if (!ctx.hasUI) return { name: current, mode: "current" };
+		const defaultBr = await defaultBranch(ctx, current);
+		const choice = await ctx.ui.select(
+			`Which branch should Sliceme use as the target (feature) branch?\n` +
+				`Current: ${current}\n` +
+				`The target can never be the default branch '${defaultBr}', main, or master.`,
+			["current branch", "existing branch", "new branch"],
+		);
+		if (!choice) throw new Error("sliceme: target branch selection cancelled");
+		if (choice === "current branch") return { name: current, mode: "current" };
+		const isNew = choice === "new branch";
+		const answer = await ctx.ui.input(
+			isNew ? "New feature branch name" : "Existing feature branch name",
+		);
+		const name = (answer ?? "").trim();
+		if (!name) throw new Error("sliceme: a target branch name is required");
+		return { name, mode: isNew ? "new" : "existing" };
+	}
+
+	/** Ensure the single campaign worktree exists and return its details. */
+	async function ensureCampaignWorktree(
+		ctx: ExtensionContext,
+		signal?: AbortSignal,
+	): Promise<any> {
+		const opened = await sliceme(ctx, ["exec", "--open"], signal);
+		const unit = opened.json?.unit ?? {};
+		if (!unit.worktree) throw new Error("sliceme: could not create the campaign worktree");
+		return unit;
+	}
+
+	/**
+	 * Read the recorded target/worktree branch from an existing plane, if any.
+	 * Lets a resume reuse the branch chosen at the start of the campaign instead
+	 * of asking again.
+	 */
+	async function existingPlane(
+		ctx: ExtensionContext,
+	): Promise<{ target?: string; worktree?: string } | null> {
+		if (!fs.existsSync(path.join(stateDir(ctx.cwd), "config.json"))) return null;
+		try {
+			const { json } = await sliceme(ctx, ["status"]);
+			return {
+				target: json?.target_branch ?? json?.main_branch,
+				worktree: json?.worktree_branch,
+			};
+		} catch {
+			return null;
+		}
+	}
+
 	async function startCampaign(
 		ctx: ExtensionContext,
 		params: any,
@@ -445,92 +524,113 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
 		const design = String(params.design ?? "DESIGN.md");
 		const campaign = String(params.campaign ?? path.basename(ctx.cwd));
 
-		// `start` adopts the branch that is already checked out; it never
-		// creates a feature branch.  The branch key selects the plane files.
-		const branch = await currentBranch(ctx);
+		// The user chooses the target branch once; it is remembered for the whole
+		// campaign.  Work accumulates on a separate campaign worktree branch and is
+		// only merged to the target after all waves finish and the user approves.
+		// A resume reuses the recorded target instead of asking again.
+		const prior = await existingPlane(ctx);
+		const resuming = Boolean(
+			prior?.target &&
+				!params.replan &&
+				fs.existsSync(statePath(ctx.cwd, String(prior.target))),
+		);
+		const chosen =
+			!params.target && resuming
+				? { name: String(prior!.target), mode: "current" as const }
+				: await chooseTargetBranch(ctx, params);
+		const branch = chosen.name;
 		const defaultBr = await defaultBranch(ctx, branch);
-		const existing = fs.existsSync(dagPath(ctx.cwd, branch))
-			? readJson<Dag>(dagPath(ctx.cwd, branch), {})
-			: undefined;
-		const base = params.base ? String(params.base) : String(existing?.base ?? branch);
-		const notice =
-			`sliceme: using current branch '${branch}' as the feature branch ` +
-			`(no branch created).`;
-		if (ctx.hasUI) ctx.ui.notify(notice, "info");
-
-		// `integrate` refuses to land on the recorded default branch, so a
-		// campaign can never be delivered from there.  Fail before the plane is
-		// written.
-		if (branch === defaultBr) {
+		if (branch === defaultBr || branch === "main" || branch === "master") {
 			return {
 				content: [
 					{
 						type: "text" as const,
 						text:
-							`sliceme: '${branch}' is the repository default branch. ` +
-							`Create or check out a feature branch first; sliceme adopts the ` +
-							`current branch and never creates one.`,
+							`sliceme: '${branch}' is a default branch. Sliceme never commits to ` +
+							`main, master, or the repository default branch. Choose a feature ` +
+							`branch instead.`,
 					},
 				],
 				isError: true,
 			};
 		}
+		const notice =
+			`sliceme: target (feature) branch '${branch}' (${chosen.mode}); ` +
+			`commits accumulate on a separate campaign worktree branch.`;
+		if (ctx.hasUI) ctx.ui.notify(notice, "info");
 
-		// 1. Plane with no coordinator unit; the engine adopts the current branch
-		// as the integration/feature branch (and re-points an existing plane).
-		await sliceme(ctx, ["start", "--no-unit", "--main", branch], signal);
+		// 1. Plane with no coordinator unit; the engine records the chosen target
+		// branch (and re-points an existing plane).  A new target is created here.
+		await sliceme(
+			ctx,
+			["start", "--no-unit", "--target", branch, "--target-mode", chosen.mode],
+			signal,
+		);
+		const plane = (await sliceme(ctx, ["status"], signal)).json;
+		const worktreeBranch = String(plane?.worktree_branch ?? "");
+		await ensureCampaignWorktree(ctx, signal);
 
 		const dagFile = dagPath(ctx.cwd, branch);
 		const stateFile = statePath(ctx.cwd, branch);
 
 		// 2a. Resume: rebuild node status from git/state.db, which always win
 		// over state.json. A node left `running` by a crash is reset.
-		if (existing?.nodes?.length && !params.replan) {
-			const state: any = readJson(stateFile, { nodes: {} });
-			const status = (await sliceme(ctx, ["status"], signal)).json;
-			const units = new Map<string, any>((status?.units ?? []).map((u: any) => [u.name, u]));
-			const candidates = status?.candidates ?? [];
-			for (const node of nodeIds(existing)) {
-				const entry = state.nodes[node] ?? { status: "pending", attempts: 0 };
-				const unit = units.get(node);
-				if (unit) {
-					entry.unit = node;
-					entry.branch = unit.branch;
-					entry.worktree = unit.worktree;
+		if (fs.existsSync(dagFile) && !params.replan) {
+			const existing = readJson<Dag>(dagFile, { nodes: [] });
+			if (existing?.nodes?.length) {
+				const state: any = readJson(stateFile, { nodes: {} });
+				const status = (await sliceme(ctx, ["status"], signal)).json;
+				const candidates = status?.candidates ?? [];
+				for (const node of nodeIds(existing)) {
+					const entry = state.nodes[node] ?? { status: "pending", attempts: 0 };
+					const candidate = candidates
+						.filter((c: any) => c.node === node)
+						.pop();
+					if (candidate) {
+						entry.candidate = candidate.id;
+						entry.commit = candidate.head_commit;
+						entry.branch = candidate.branch;
+					}
+					if (candidate?.status === "landed") {
+						entry.status = "done";
+					} else if (
+						entry.status === "running" ||
+						entry.status === "recorded"
+					) {
+						entry.status = "pending";
+						entry.attempts = (entry.attempts ?? 0) + 1;
+					}
+					state.nodes[node] = entry;
 				}
-				const candidate = candidates.find((c: any) => c.unit_name === (entry.unit ?? node));
-				if (candidate?.status === "landed") {
-					entry.status = "done";
-				} else if (entry.status === "running") {
-					entry.status = "pending";
-					entry.attempts = (entry.attempts ?? 0) + 1;
+				state.campaign = existing.campaign ?? campaign;
+				state.feature_branch = branch;
+				state.target_branch = branch;
+				state.worktree_branch = worktreeBranch;
+				state.base = existing.base ?? params.base ?? branch;
+				writeJson(stateFile, state);
+				await ensureWaves(ctx, branch, existing, state);
+				const resumeGateError = await sandboxGate(ctx, branch, state, stateFile, signal);
+				if (resumeGateError) {
+					return {
+						content: [
+							{
+								type: "text" as const,
+								text: `sliceme: sandbox gate failed: ${resumeGateError}`,
+							},
+						],
+						isError: true,
+					};
 				}
-				state.nodes[node] = entry;
-			}
-			state.campaign = existing.campaign ?? campaign;
-			state.feature_branch = branch;
-			state.base = existing.base ?? base;
-			writeJson(stateFile, state);
-			await ensureWaves(ctx, branch, existing, state);
-			const resumeGateError = await sandboxGate(ctx, branch, state, stateFile, signal);
-			if (resumeGateError) {
+				logEvent(ctx.cwd, branch, "campaign.resumed", {
+					running_reset: nodeIds(existing).filter(
+						(id) => state.nodes[id]?.status === "pending",
+					),
+				});
 				return {
-					content: [
-						{
-							type: "text" as const,
-							text: `sliceme: sandbox gate failed: ${resumeGateError}`,
-						},
-					],
-					isError: true,
+					content: [{ type: "text" as const, text: `${notice}\n\n${summarise(existing, state)}` }],
+					details: { dag: existing, state, resumed: true, feature_branch: branch },
 				};
 			}
-			logEvent(ctx.cwd, branch, "campaign.resumed", {
-				running_reset: nodeIds(existing).filter((id) => state.nodes[id]?.status === "pending"),
-			});
-			return {
-				content: [{ type: "text" as const, text: `${notice}\n\n${summarise(existing, state)}` }],
-				details: { dag: existing, state, resumed: true, feature_branch: branch },
-			};
 		}
 
 		// 2b. Planner writes dag.json (plane state, never committed).
@@ -553,8 +653,7 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
 			`path>"} to the DAG. If the project clearly needs isolation (Dockerfile, ` +
 			`devcontainer, CI) but has no manifest, set "sandbox_required": true; the ` +
 			`campaign then fails until a human adds a manifest. Never invent a sandbox. ` +
-			`Feature branch: ${branch}. ` +
-			`Base: ${base}. Design: ${design}.`;
+			`Feature/target branch: ${branch}. Base: ${params.base ?? branch}. Design: ${design}.`;
 		const planner = await runSubagent({
 			agent: "planner",
 			task,
@@ -577,7 +676,14 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
 				isError: true,
 			};
 		}
-		const state: any = { campaign, feature_branch: branch, base, nodes: {} };
+		const state: any = {
+			campaign,
+			feature_branch: branch,
+			target_branch: branch,
+			worktree_branch: worktreeBranch,
+			base: params.base ?? branch,
+			nodes: {},
+		};
 		for (const node of dag.nodes) state.nodes[node.id] = { status: "pending", attempts: 0 };
 		writeJson(stateFile, state);
 		await ensureWaves(ctx, branch, dag, state);
@@ -639,38 +745,25 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
 			throw new Error(`spawn: node '${node}' is not ready in wave ${wave.index}`);
 		}
 
-		// A re-spawn uses a fresh unit name so the previous attempt cannot
-		// collide.  There is no release action any more, so a best-effort gc
-		// prunes any landed worktrees.
+		// Workers are pure editors in the one shared campaign worktree: they never
+		// create a unit and never run git.  A re-spawn re-runs the worker against
+		// the same worktree; the previous wave's files are already present.
 		const attempt = attempts + 1;
-		const unitName = attempt === 1 ? node : `${node}-a${attempt}`;
-		try {
-			await sliceme(ctx, ["status", "--gc"]);
-		} catch {
-			/* nothing to prune */
+		const unit = await ensureCampaignWorktree(ctx, signal);
+		const worktree = String(unit.worktree);
+		if (path.resolve(worktree) === path.resolve(ctx.cwd)) {
+			throw new Error("spawn: campaign worktree must differ from the coordinator checkout");
 		}
-
-		const created = await sliceme(
-			ctx,
-			["start", "--name", unitName, "--base", branch, "--kind", "worker"],
-			signal,
-		);
-		const worktree = created.json?.worktree;
-		if (!worktree) throw new Error(`spawn: could not create a unit for '${node}'`);
-		if (path.resolve(String(worktree)) === path.resolve(ctx.cwd)) {
-			throw new Error("spawn: worker worktree must differ from the coordinator checkout");
-		}
-		const unit = String(created.json?.unit ?? unitName);
 
 		state.nodes[node] = {
 			...(state.nodes[node] ?? {}),
 			status: "running",
-			unit,
+			unit: String(unit.name ?? "campaign"),
 			worktree,
-			branch: created.json?.branch,
+			branch: String(unit.branch ?? state.worktree_branch ?? ""),
 		};
 		writeJson(stateFile, state);
-		logEvent(ctx.cwd, branch, "node.spawn", { node, unit, attempt });
+		logEvent(ctx.cwd, branch, "node.spawn", { node, unit: unit.name, attempt });
 
 		const previousEvidence = state.nodes[node]?.lastError
 			? `\nA previous attempt failed with this verifier evidence:\n${state.nodes[node].lastError}`
@@ -678,15 +771,15 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
 		const task =
 			`You are a one-shot worker for DAG node "${node}" (${spec.label ?? ""}). ` +
 			`Goal: ${spec.goal ?? ""}. You own these directories: ${(spec.owns ?? []).join(", ")}. ` +
-			`Run these acceptance commands before committing: ${(spec.acceptance ?? []).join(" ; ")}. ` +
-			`You MUST use the \`sliceme\` tool: edit ONLY files inside your owned directories, then ` +
-			`commit. A commit that touches anything else is rejected. Never use the GPU and ` +
-			`never touch another node.` +
+			`Edit ONLY files inside your owned directories and then stop. Do NOT run git, do ` +
+			`not commit, and do not run the test suite: the coordinator records the wave and ` +
+			`the single executor runs the checks. Never use the GPU and never touch another ` +
+			`node.` +
 			previousEvidence;
 		const result = await runSubagent({
 			agent: "worker",
 			task,
-			cwd: String(worktree),
+			cwd: worktree,
 			log: logPath(ctx.cwd, branch, node),
 			signal,
 		});
@@ -695,9 +788,59 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
 		writeJson(stateFile, state);
 		return {
 			content: [{ type: "text" as const, text: `worker ${node} exited ${result.exitCode}` }],
-			details: { node, unit, exitCode: result.exitCode, output: result.output },
+			details: { node, unit: unit.name, exitCode: result.exitCode, output: result.output },
 			isError: result.exitCode !== 0,
 		};
+	}
+
+	/**
+	 * Record the current wave: commit each node's changed paths on the campaign
+	 * worktree, enforce ownership conformance, and register a candidates per node.
+	 * No feature-branch mutation happens here.
+	 */
+	async function recordWave(
+		ctx: ExtensionContext,
+		params: any,
+		signal?: AbortSignal,
+	): Promise<any> {
+		const branch = await featureBranch(ctx);
+		const stateFile = statePath(ctx.cwd, branch);
+		const dag = readJson<Dag>(dagPath(ctx.cwd, branch), { nodes: [] });
+		const state: any = readJson(stateFile, { nodes: {} });
+		await ensureWaves(ctx, branch, dag, state);
+		const wave = currentWave(state);
+		if (!wave) throw new Error("record: no open wave to record");
+		const recorded = await sliceme(
+			ctx,
+			["exec", "--record", "--wave", String(wave.index)],
+			signal,
+		);
+		const candidates: any[] = recorded.json?.candidates ?? [];
+		const byNode = new Map<string, any>(
+			candidates.map((c: any) => [String(c.node), c]),
+		);
+		for (const id of wave.members) {
+			const candidate = byNode.get(id);
+			if (!candidate) continue;
+			state.nodes[id] = {
+				...(state.nodes[id] ?? {}),
+				status: "recorded",
+				candidate: candidate.id,
+				commit: candidate.head_commit,
+				branch: candidate.branch,
+				unit: String(recorded.json?.unit ?? "campaign"),
+				worktree: recorded.json?.worktree,
+			};
+		}
+		writeJson(stateFile, state);
+		logEvent(ctx.cwd, branch, "wave.recorded", {
+			wave: wave.index,
+			candidates: candidates.map((c: any) => ({ node: c.node, commit: c.head_commit })),
+		});
+		const summary = candidates.length
+			? `wave ${wave.index} recorded: ${candidates.map((c: any) => c.node).join(", ")}`
+			: `wave ${wave.index} recorded no changes`;
+		return { content: [{ type: "text" as const, text: summary }], details: recorded.json ?? {} };
 	}
 
 	async function verifyNode(
@@ -713,19 +856,23 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
 		const state: any = readJson(stateFile, { nodes: {} });
 		const spec = (dag.nodes ?? []).find((n) => n.id === node);
 		if (!spec) throw new Error(`verify: unknown node '${node}'`);
-		const unit = String(state.nodes[node]?.unit ?? node);
-		const unitBranch = String(state.nodes[node]?.branch ?? unit);
+		const commit = String(
+			state.nodes[node]?.commit ?? state.nodes[node]?.branch ?? "",
+		);
+		if (!commit) {
+			throw new Error(`verify: node '${node}' has no recorded commit; run record first`);
+		}
 
-		// The executor is the single runner: enqueue the node's acceptance, drain
-		// the queue, and wait for the recorded result. The verifier then judges
-		// that evidence instead of running anything itself.
+		// The executor is the single runner: enqueue the node's acceptance at its
+		// recorded commit, drain the queue, and wait for the result. The verifier
+		// then judges that evidence instead of running anything itself.
 		const submitArgs = [
 			"exec",
 			"--submit",
 			"--source",
 			`node:${node}`,
 			"--commit",
-			unitBranch,
+			commit,
 			"--gpu",
 			spec.gpu ?? "none",
 		];
@@ -764,18 +911,27 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
 			/VERDICT:\s*PASS/i.test(result.output);
 		state.nodes[node] = {
 			...(state.nodes[node] ?? {}),
-			status: passed ? "pending" : "failed",
+			status: passed ? "done" : "failed",
 			verdict: passed ? "pass" : "fail",
 			job: job?.id ?? null,
 			...(passed ? {} : { lastError: result.output || job?.output }),
 		};
+		const completed = advanceWaves(state);
 		writeJson(stateFile, state);
 		logEvent(ctx.cwd, branch, "node.verdict", {
 			node,
 			passed,
 			gpu: spec.gpu ?? "none",
 			job: job?.id ?? null,
+			completed_waves: completed.map((w) => w.index),
 		});
+
+		// Nothing is merged per wave.  Only when every wave is done do we ask the
+		// user once for approval to merge the campaign worktree into the target.
+		let delivery: any = null;
+		if (passed && allWavesDone(state)) {
+			delivery = await offerDelivery(ctx, branch, state, stateFile, signal);
+		}
 		return {
 			content: [
 				{
@@ -783,109 +939,118 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
 					text: `${node}: ${passed ? "PASS" : "FAIL"} (job ${job?.id ?? "?"})\n${result.output}`,
 				},
 			],
-			details: { node, passed, job: job?.id ?? null, executor: job },
+			details: { node, passed, job: job?.id ?? null, executor: job, delivery: delivery?.json ?? null },
 			isError: !passed,
 		};
 	}
 
-	async function integrateNode(
+	function allWavesDone(state: CampaignState): boolean {
+		const waves = state.waves ?? [];
+		return waves.length > 0 && waves.every((w) => w.status === "done");
+	}
+
+	/**
+	 * The one approval gate: when every wave is done, ask the user whether to merge
+	 * the campaign worktree into the target branch, then run `deliver`.  In
+	 * non-interactive modes this records `ready_to_deliver` for a later `deliver`.
+	 */
+	async function offerDelivery(
+		ctx: ExtensionContext,
+		branch: string,
+		state: any,
+		stateFile: string,
+		signal?: AbortSignal,
+	): Promise<any> {
+		if (state.delivered) return null;
+		const target = String(state.target_branch ?? branch);
+		const source = String(state.worktree_branch ?? "");
+		if (!ctx.hasUI) {
+			state.ready_to_deliver = true;
+			writeJson(stateFile, state);
+			return null;
+		}
+		const ok = await ctx.ui.confirm(
+			`All waves are done. Merge the campaign worktree into '${target}'?`,
+			`Source branch: ${source || "(campaign worktree)"}. This runs the trusted checks ` +
+				`and merges with --no-ff. The target is never the default branch.`,
+		);
+		if (!ok) {
+			state.ready_to_deliver = true;
+			writeJson(stateFile, state);
+			return null;
+		}
+		const delivered = await sliceme(ctx, ["deliver", "--target", target], signal);
+		const failed = (delivered.json?.results ?? []).some((r: any) => r.status === "failed");
+		state.ready_to_deliver = false;
+		if (!failed) state.delivered = true;
+		writeJson(stateFile, state);
+		logEvent(ctx.cwd, branch, failed ? "campaign.deliver_failed" : "campaign.delivered", {
+			target,
+			source,
+			results: delivered.json?.results ?? [],
+		});
+		return delivered;
+	}
+
+	async function deliverCampaign(
 		ctx: ExtensionContext,
 		params: any,
 		signal?: AbortSignal,
 	): Promise<any> {
-		const node = String(params.node ?? "");
 		const branch = await featureBranch(ctx);
 		const stateFile = statePath(ctx.cwd, branch);
 		const state: any = readJson(stateFile, { nodes: {} });
-		const dag = readJson<Dag>(dagPath(ctx.cwd, branch), { nodes: [] });
-		await ensureWaves(ctx, branch, dag, state);
-		const unit = node ? String(state.nodes[node]?.unit ?? node) : "";
-		const args = unit
-			? ["integrate", "--node", unit, "--cleanup", "none"]
-			: ["integrate", "--cleanup", "none"];
-		const { json: integrated, text } = await sliceme(ctx, args, signal);
-		const results = integrated?.results ?? [];
-		const failed = results.some((r: any) => r.status === "failed");
-		let completed: WaveState[] = [];
-		if (results.length) {
-			const landedUnits: string[] = results
-				.filter((r: any) => r.status === "landed")
-				.map((r: any) => r.unit);
-			// A sweep (no --node) lands any straggler; mark matching nodes done.
-			for (const id of Object.keys(state.nodes)) {
-				if (landedUnits.includes(state.nodes[id].unit ?? id)) state.nodes[id].status = "done";
-			}
-			if (node) {
-				state.nodes[node] = {
-					...(state.nodes[node] ?? {}),
-					status: failed ? "failed" : "done",
-				};
-			}
-			completed = advanceWaves(state);
-			writeJson(stateFile, state);
-			logEvent(ctx.cwd, branch, failed ? "node.integrate_failed" : "node.integrated", {
-				node: node || "(sweep)",
-				unit,
-				results,
-				completed_waves: completed.map((w) => w.index),
-			});
+		const delivered = await offerDelivery(ctx, branch, state, stateFile, signal);
+		if (!delivered) {
+			return {
+				content: [
+					{
+						type: "text" as const,
+						text: state.delivered
+							? "campaign already delivered"
+							: "delivery not approved (or awaiting approval)",
+					},
+				],
+				details: { delivered: Boolean(state.delivered) },
+			};
 		}
-
-		// Cleanup is destructive and grouped by wave: when the last member of a
-		// wave lands, ask once for that whole wave (§7).
-		if (!failed && ctx.hasUI) {
-			for (const wave of completed) {
-				if (wave.cleanup_done) continue;
-				const ok = await ctx.ui.confirm(
-					`Wave ${wave.index} integrated onto ${branch}.`,
-					`Remove the landed worktrees, branches, and logs for wave ${wave.index} ` +
-						`(${wave.members.join(", ")}) now?`,
-				);
-				if (!ok) continue;
-				await sliceme(ctx, ["integrate", "--cleanup", "worktrees"], signal);
-				for (const id of wave.members) {
-					try {
-						fs.rmSync(logPath(ctx.cwd, branch, id));
-					} catch {
-						/* the log may not exist */
-					}
-				}
-				wave.cleanup_done = true;
-				writeJson(stateFile, state);
-				logEvent(ctx.cwd, branch, "wave.cleaned", {
-					wave: wave.index,
-					members: wave.members,
-				});
-			}
-		}
-		return { content: [{ type: "text" as const, text }], details: integrated ?? {}, isError: failed };
+		return {
+			content: [{ type: "text" as const, text: delivered.text }],
+			details: delivered.json ?? {},
+		};
 	}
 
 	pi.registerTool({
 		name: "sliceme",
 		label: "Sliceme",
 		description:
-			"Coordinate a design into landed work: start (adopt current branch + planner), " +
-			"status, ready, spawn (one-shot worker), verify (executor runs; verifier judges), " +
-			"integrate (land a verified node), report, exec (sandbox gate, wave worktree, " +
-			"check queue). The dag.json plan is the only schedule; waves are a projection of it.",
-		promptSnippet: "Drive an Sliceme campaign (start → spawn → verify → integrate)",
+			"Coordinate a design into landed work: start (choose target branch + planner), " +
+			"status, ready, spawn (one-shot editor in the campaign worktree), record (commit the " +
+			"wave), verify (executor runs; verifier judges), deliver (merge to the target after " +
+			"approval), report, exec (sandbox gate, campaign worktree, check queue). The dag.json " +
+			"plan is the only schedule; waves are a projection of it.",
+		promptSnippet: "Drive an Sliceme campaign (start → spawn → record → verify → deliver)",
 		promptGuidelines: [
+			"The target (feature) branch is chosen once at start and is never main, master, or " +
+				"the repository default branch. There is no override; refuse and re-choose instead.",
 			"The DAG in dag.json is the only authored schedule; waves are its deterministic " +
 				"projection (owns + depends_on, capped by concurrency).",
-			"Spawn nodes only from the current wave; a later wave starts after the previous " +
-				"wave is fully integrated (its units fork from the updated feature branch).",
+			"Workers are pure editors in the one shared campaign worktree: they never run git.",
+			"Spawn nodes only from the current wave; a later wave starts after the previous wave " +
+				"is fully recorded and verified. Never recreate the worktree or rebase between waves.",
 			"Spawn every ready node in the current wave together (issue the spawn calls in " +
 				"one turn so they run in parallel); never exceed the wave cap.",
-			"A node is ready only once every dependency is integrated (done), never merely verified.",
-			"If a worker's commit is rejected for touching paths outside its owned dirs, widen " +
-				"that node's owns (or add a depends_on edge) in dag.json; the next " +
-				"status/ready/spawn replans the waves.",
+			"After all workers in the current wave finish editing, call `record` to commit the " +
+				"wave onto the campaign worktree (per-node commits, ownership conformance).",
+			"A node is ready only once every dependency is done, never merely verified.",
+			"If a wave record is rejected for a path outside every node's owned dirs, widen that " +
+				"node's owns (or add a depends_on edge) in dag.json; the next status/ready/spawn replans.",
 			"Only the single executor runs checks (and only it may use the GPU); verifiers " +
 				"judge the executor's recorded evidence. The sandbox gate must pass before verifying.",
-			"Use `exec` for the sandbox gate (--validate), the shared wave worktree " +
-				"(--open/--record --wave N), and the check queue (--submit/--run/--wait).",
-			"Integrate each node after its verifier passes; cleanup is offered once per wave.",
+			"Use `exec` for the sandbox gate (--validate), the campaign worktree (--open), and " +
+				"the check queue (--submit/--run/--wait).",
+			"Do NOT merge to the target per wave. Only when every wave is done does `deliver` " +
+				"ask the user once for approval, then merge the campaign worktree with --no-ff.",
 		],
 		// Inactive until `/sliceme` activates it, so a plain session never
 		// advertises the campaign workflow or injects its guidelines.
@@ -895,10 +1060,20 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
 			design: Type.Optional(Type.String({ description: "start: design document path" })),
 			campaign: Type.Optional(Type.String({ description: "start: campaign name" })),
 			base: Type.Optional(
-				Type.String({ description: "start: base branch/ref (default: feature branch)" }),
+				Type.String({ description: "start: base branch/ref (default: target branch)" }),
+			),
+			target: Type.Optional(
+				Type.String({
+					description: "start/deliver: target (feature) branch; never main or master",
+				}),
+			),
+			target_mode: Type.Optional(
+				StringEnum(["current", "existing", "new"] as const, {
+					description: "start: how to resolve the target branch",
+				}),
 			),
 			replan: Type.Optional(Type.Boolean({ description: "start: re-run the planner" })),
-			node: Type.Optional(Type.String({ description: "node id for spawn/verify/integrate" })),
+			node: Type.Optional(Type.String({ description: "node id for spawn/verify" })),
 			narrative: Type.Optional(Type.String({ description: "report: what-changed/risks text" })),
 			validate: Type.Optional(
 				Type.Boolean({ description: "exec: validate the project sandbox gate" }),
@@ -907,7 +1082,7 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
 				Type.Boolean({ description: "exec: with validate, require a GPU runner" }),
 			),
 			open: Type.Optional(
-				Type.Boolean({ description: "exec: create the single worktree for --wave" }),
+				Type.Boolean({ description: "exec: create/reuse the campaign worktree" }),
 			),
 			record: Type.Optional(
 				Type.Boolean({ description: "exec: record a wave (conformance + per-node commits)" }),
@@ -917,7 +1092,9 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
 			wait: Type.Optional(Type.Boolean({ description: "exec: wait for a job" })),
 			cancel: Type.Optional(Type.Boolean({ description: "exec: cancel a queued job" })),
 			job: Type.Optional(Type.String({ description: "exec: job id" })),
-			source: Type.Optional(Type.String({ description: "exec: fingerprint source" })),
+			source: Type.Optional(
+				Type.String({ description: "exec: fingerprint source; deliver: worktree branch" }),
+			),
 			commit: Type.Optional(Type.String({ description: "exec: commit/ref to run at" })),
 			command: Type.Optional(
 				Type.Array(Type.String(), { description: "exec: check command (repeatable)" }),
@@ -929,6 +1106,9 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
 			),
 			gpu: Type.Optional(
 				StringEnum(["none", "T1", "T2"] as const, { description: "exec: GPU tier" }),
+			),
+			ff: Type.Optional(
+				Type.Boolean({ description: "deliver: allow a fast-forward instead of a merge commit" }),
 			),
 			priority: Type.Optional(Type.Number({ description: "exec: higher runs first" })),
 			timeout: Type.Optional(Type.Number({ description: "exec: timeout seconds" })),
@@ -971,10 +1151,12 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
 				}
 				case "spawn":
 					return spawnNode(ctx, params, signal);
+				case "record":
+					return recordWave(ctx, params, signal);
 				case "verify":
 					return verifyNode(ctx, params, signal);
-				case "integrate":
-					return integrateNode(ctx, params, signal);
+				case "deliver":
+					return deliverCampaign(ctx, params, signal);
 				case "report": {
 					const branch = await featureBranch(ctx);
 					const { dag } = load(ctx, branch);

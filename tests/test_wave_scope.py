@@ -73,7 +73,7 @@ class WaveScopeCase(unittest.TestCase):
 class RecordTests(WaveScopeCase):
     def test_shared_worktree_records_per_node_commits(self):
         unit = self.svc.create_wave_workspace(0, base="feat/x")
-        self.assertEqual(unit["name"], "wave-0")
+        self.assertEqual(unit["name"], "campaign")
         worktree = unit["worktree"]
         self.edit(worktree, "src/a/x.py", "a = 2\n")
         self.edit(worktree, "src/b/y.py", "b = 2\n")
@@ -82,7 +82,7 @@ class RecordTests(WaveScopeCase):
         nodes = [c["node"] for c in result["candidates"]]
         self.assertEqual(nodes, ["w1", "w2"])
         self.assertTrue(all(c["branch"] == unit["branch"] for c in result["candidates"]))
-        # One commit per node on the shared branch.
+        # One commit per node on the shared campaign branch.
         log = run("git", "log", "--format=%s", f"feat/x..{unit['branch']}", cwd=self.root)
         self.assertEqual(log.stdout.count("w1:"), 1)
         self.assertEqual(log.stdout.count("w2:"), 1)
@@ -114,31 +114,99 @@ class RecordTests(WaveScopeCase):
 
 
 class WaveIntegrationTests(WaveScopeCase):
-    def test_wave_branch_integrates_as_one_unit(self):
+    def test_campaign_worktree_delivers_as_one_unit(self):
         unit = self.svc.create_wave_workspace(0, base="feat/x")
         self.edit(unit["worktree"], "src/a/x.py", "a = 2\n")
         self.edit(unit["worktree"], "src/b/y.py", "b = 2\n")
         self.svc.record_wave(0)
-        merged = self.svc.integrate()
-        statuses = [r["status"] for r in merged["results"]]
-        self.assertIn("landed", statuses)
+        # Nothing lands on the target branch until delivery.
+        self.assertEqual(self.file_on("feat/x", "src/a/x.py"), "a = 1\n")
+        delivered = self.svc.deliver()
+        statuses = [r["status"] for r in delivered["results"]]
+        self.assertEqual(statuses, ["landed"])
         self.assertEqual(self.file_on("feat/x", "src/a/x.py"), "a = 2\n")
         self.assertEqual(self.file_on("feat/x", "src/b/y.py"), "b = 2\n")
+        # The default is a --no-ff merge commit (two parents).
+        parents = run("git", "rev-list", "--parents", "-n", "1", "feat/x", cwd=self.root)
+        self.assertEqual(len(parents.stdout.split()), 3)
 
-    def test_later_wave_forks_from_the_updated_feature(self):
+    def test_later_wave_reuses_the_same_worktree(self):
         first = self.svc.create_wave_workspace(0, base="feat/x")
         self.edit(first["worktree"], "src/a/x.py", "a = 2\n")
         self.edit(first["worktree"], "src/b/y.py", "b = 2\n")
         self.svc.record_wave(0)
-        self.svc.integrate()
 
+        # The next wave reuses the same worktree; the previous wave's files are
+        # still present, so no rebase or recreation is needed.
         second = self.svc.create_wave_workspace(1, base="feat/x")
+        self.assertEqual(second["id"], first["id"])
+        self.assertEqual((Path(second["worktree"]) / "src/a/x.py").read_text(), "a = 2\n")
         self.edit(second["worktree"], "src/c/z.py", "c = 2\n")
         self.svc.record_wave(1)
-        self.svc.integrate()
 
+        # Still nothing on the target until delivery.
+        self.assertEqual(self.file_on("feat/x", "src/a/x.py"), "a = 1\n")
+        self.svc.deliver()
         self.assertEqual(self.file_on("feat/x", "src/a/x.py"), "a = 2\n")
         self.assertEqual(self.file_on("feat/x", "src/c/z.py"), "c = 2\n")
+
+    def test_deliver_refuses_the_default_branch(self):
+        from sliceme.util import config_path
+
+        # Point a plane at main and confirm delivery is refused with no override.
+        self.svc.close()
+        run("git", "checkout", "-q", "main", cwd=self.root)
+        import shutil
+
+        shutil.rmtree(self.root / ".sliceme", ignore_errors=True)
+        Service.init_plane(self.root, checks=self.checks)
+        self.svc = Service(self.root)
+        self.assertEqual(self.svc.config["target_branch"], "main")
+        with self.assertRaises(SlicemeError) as ctx:
+            self.svc.deliver()
+        self.assertIn("default branch", str(ctx.exception))
+
+    def test_deliver_conflict_leaves_target_untouched(self):
+        unit = self.svc.create_wave_workspace(0, base="feat/x")
+        self.edit(unit["worktree"], "src/a/x.py", "a = 2\n")
+        self.edit(unit["worktree"], "src/b/y.py", "b = 2\n")
+        self.svc.record_wave(0)
+        # Advance the target branch with a conflicting change.
+        target = self.svc.config["target_branch"]
+        (self.root / "src" / "a" / "x.py").write_text("a = 'target'\n")
+        run("git", "add", "-A", cwd=self.root)
+        run("git", "commit", "-qm", "target change", cwd=self.root)
+        target_head = run("git", "rev-parse", target, cwd=self.root).stdout.strip()
+
+        delivered = self.svc.deliver()
+        self.assertEqual(delivered["results"][0]["status"], "failed")
+        self.assertIn("conflict", delivered["results"][0]["detail"])
+        self.assertEqual(
+            run("git", "rev-parse", target, cwd=self.root).stdout.strip(), target_head
+        )
+
+    def test_deliver_check_failure_resets_target(self):
+        import json
+
+        from sliceme.util import config_path
+
+        cfg = json.loads(config_path(self.root).read_text())
+        cfg["checks"] = [{"name": "needs-OK", "command": "test -f OK", "required": True}]
+        config_path(self.root).write_text(json.dumps(cfg))
+
+        unit = self.svc.create_wave_workspace(0, base="feat/x")
+        self.edit(unit["worktree"], "src/a/x.py", "a = 2\n")
+        self.svc.record_wave(0)
+        target = self.svc.config["target_branch"]
+        target_head = run("git", "rev-parse", target, cwd=self.root).stdout.strip()
+
+        delivered = self.svc.deliver()
+        self.assertEqual(delivered["results"][0]["status"], "failed")
+        self.assertIn("checks failed", delivered["results"][0]["detail"])
+        self.assertEqual(
+            run("git", "rev-parse", target, cwd=self.root).stdout.strip(), target_head
+        )
+        self.assertEqual(self.file_on(target, "src/a/x.py"), "a = 1\n")
 
     def test_report_lists_nodes_for_wave_scope(self):
         unit = self.svc.create_wave_workspace(0, base="feat/x")

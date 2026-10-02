@@ -180,8 +180,8 @@ class CliTests(unittest.TestCase):
             self.assertEqual(out.returncode, 0, out.stderr)
             self.assertEqual(json.loads(out.stdout)["candidate"]["status"], "prepared")
 
-            # The coordinator lands the verified candidate on the feature branch.
-            out = run_cli(["--json", "integrate", "--node", "alpha"], root)
+            # The coordinator delivers the verified candidate to the feature branch.
+            out = run_cli(["--json", "deliver"], root)
             self.assertEqual(out.returncode, 0, out.stderr)
             self.assertEqual(json.loads(out.stdout)["results"][0]["status"], "landed")
             self.assertEqual(
@@ -203,7 +203,7 @@ class CliTests(unittest.TestCase):
             subprocess.run(["git", "commit", "-qm", "init"], cwd=tmp, check=True)
 
             # Campaign bootstrap: check out the feature branch first; `start`
-            # adopts it and never creates one.
+            # records it as the target and never creates one.
             subprocess.run(["git", "checkout", "-q", "-b", "feat/x"], cwd=tmp, check=True)
             out = run_cli(
                 ["--json", "start", "--no-unit", "--check", "ok=true"],
@@ -229,7 +229,7 @@ class CliTests(unittest.TestCase):
                 out = run_cli(["--json", "commit", "-m", name], worktree)
                 self.assertEqual(out.returncode, 0, out.stderr)
 
-            out = run_cli(["--json", "integrate"], root)
+            out = run_cli(["--json", "deliver"], root)
             self.assertEqual(out.returncode, 0, out.stderr)
             results = json.loads(out.stdout)["results"]
             self.assertEqual([r["status"] for r in results], ["landed", "landed"])
@@ -240,8 +240,8 @@ class CliTests(unittest.TestCase):
                 "w1\n",
             )
 
-            # Re-running integrate is a no-op.
-            out = run_cli(["--json", "integrate"], root)
+            # Re-running deliver is a no-op.
+            out = run_cli(["--json", "deliver"], root)
             self.assertEqual(json.loads(out.stdout)["results"], [])
 
             out = run_cli(["--json", "report", "--narrative", "landed both"], root)

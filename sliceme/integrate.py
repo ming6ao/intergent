@@ -49,11 +49,14 @@ from .verifier import (
 __all__ = [
     "LandResult",
     "Wave",
+    "deliver",
     "found_default_branch",
     "integrate",
+    "is_default_branch",
     "plan_waves",
     "record_node_verification",
     "simulate",
+    "target_branch_of",
 ]
 
 
@@ -93,8 +96,21 @@ def checks_output(checks: list[CheckResult]) -> str:
     return "\n".join(lines) or "(no checks configured)"
 
 
-def main_branch_of(config: dict[str, Any]) -> str:
-    return config.get("main_branch") or "main"
+#: Conventional names that can never be a campaign target branch.
+DEFAULT_BRANCH_NAMES = ("main", "master")
+
+
+def target_branch_of(config: dict[str, Any]) -> str:
+    """The campaign's target (feature) branch: where delivery finally lands."""
+    return (
+        config.get("target_branch")
+        or config.get("main_branch")
+        or "main"
+    )
+
+
+# Backwards-compatible name (the target branch used to be called main_branch).
+main_branch_of = target_branch_of
 
 
 def main_worktree(root: Path, branch: str) -> tuple[Path, bool]:
@@ -166,6 +182,25 @@ def _recorded_default(config: dict[str, Any], root: Path, *, exclude: str | None
     if recorded:
         return str(recorded)
     return found_default_branch(root, exclude=exclude)
+
+
+def is_default_branch(
+    root: Path, name: str | None, config: dict[str, Any] | None = None
+) -> bool:
+    """Whether *name* is a branch sliceme must never commit to.
+
+    ``main`` and ``master`` are reserved by convention, and the repository's
+    recorded default branch is reserved outright.  There is deliberately no
+    override: delivery always lands on a feature branch.
+    """
+    if not name:
+        return False
+    if name in DEFAULT_BRANCH_NAMES:
+        return True
+    recorded = (config or {}).get("default_branch")
+    if recorded and name == recorded:
+        return True
+    return name == found_default_branch(root)
 
 
 def _verify_and_record_plane(
@@ -306,13 +341,12 @@ def integrate(
     check_only: bool = False,
     run_checks_flag: bool = True,
 ) -> list[LandResult]:
-    main_branch = main_branch_of(config)
-    default_branch = _recorded_default(config, root, exclude=main_branch)
-    if main_branch == default_branch:
+    main_branch = target_branch_of(config)
+    if is_default_branch(root, main_branch, config):
         raise SlicemeError(
-            f"refusing to integrate onto the plane's default branch '{main_branch}'; "
-            "campaigns must set a feature branch at init "
-            "(`sliceme start --no-unit --main feat/... --base ...`)"
+            f"refusing to integrate onto the default branch '{main_branch}'; "
+            "sliceme never commits to main or master "
+            "(`sliceme start --no-unit --target feat/... --base ...`)"
         )
 
     acceptance = list(acceptance or [])
@@ -489,6 +523,143 @@ def integrate(
             )
         )
     return results
+
+
+# ---------------------------------------------------------------------------
+# Final delivery: merge the campaign worktree into the target branch
+# ---------------------------------------------------------------------------
+def _mark_delivered(store: Store) -> None:
+    """Mark every prepared candidate as landed without rewriting its commit.
+
+    The candidate's ``head_commit`` is provenance (the node's commit on the
+    campaign worktree), so delivery must not overwrite it with the merge commit.
+    """
+    for candidate in store.list_candidates(statuses=["prepared"]):
+        store.update_candidate(int(candidate["id"]), status="landed")
+        unit = store.get_unit(int(candidate["unit_id"]))
+        if unit:
+            store.set_unit_state(int(unit["id"]), "landed")
+    store.conn.commit()
+
+
+def _deliver_branch(
+    store: Store,
+    root: Path,
+    config: dict[str, Any],
+    *,
+    target: str,
+    source: str,
+    no_ff: bool,
+    run_checks_flag: bool,
+) -> list[LandResult]:
+    """Merge a single campaign worktree branch onto the target branch."""
+    wt_path, _created = main_worktree(root, target)
+    if not gitutil.is_clean(wt_path):
+        raise SlicemeError(
+            f"integration worktree {wt_path} is dirty; commit or discard changes before deliver"
+        )
+    source_head = gitutil.rev_parse(root, source)
+    target_head = gitutil.head_commit(wt_path)
+    if gitutil.merge_base(root, target_head, source_head) == source_head:
+        _mark_delivered(store)
+        return [
+            LandResult(
+                candidate_id=0,
+                unit_name="campaign",
+                branch=source,
+                status="landed",
+                detail=f"already contained in {target}",
+                merge_commit=target_head,
+                already_up_to_date=True,
+            )
+        ]
+
+    pre_merge = target_head
+    merge = gitutil.merge_into(
+        wt_path,
+        source,
+        message=f"sliceme deliver {source}",
+        no_ff=no_ff,
+    )
+    if not merge.ok:
+        gitutil.merge_abort(wt_path)
+        return [
+            LandResult(
+                candidate_id=0,
+                unit_name="campaign",
+                branch=source,
+                status="failed",
+                detail="merge conflict: " + conflict_summary(merge),
+            )
+        ]
+
+    merge_commit = gitutil.head_commit(wt_path)
+    checks: list[CheckResult] = []
+    if run_checks_flag:
+        status, checks, _duration = run_checks(root, config, merge_commit)
+        if status != "passed":
+            gitutil.reset_hard(wt_path, pre_merge)
+            return [
+                LandResult(
+                    candidate_id=0,
+                    unit_name="campaign",
+                    branch=source,
+                    status="failed",
+                    detail="combined checks failed; target branch restored",
+                    checks=checks,
+                )
+            ]
+
+    _mark_delivered(store)
+    return [
+        LandResult(
+            candidate_id=0,
+            unit_name="campaign",
+            branch=source,
+            status="landed",
+            detail=f"merged into {target}",
+            merge_commit=merge_commit,
+            checks=checks,
+        )
+    ]
+
+
+def deliver(
+    store: Store,
+    root: Path,
+    config: dict[str, Any],
+    *,
+    target: str | None = None,
+    source: str | None = None,
+    no_ff: bool = True,
+    run_checks_flag: bool = True,
+) -> list[LandResult]:
+    """Merge the campaign worktree into the target feature branch.
+
+    Called once, after every wave is recorded and the user approves delivery.
+    The target branch is never the default branch: there is no override.
+    """
+    target = target or target_branch_of(config)
+    if is_default_branch(root, target, config):
+        raise SlicemeError(
+            f"refusing to merge into the default branch '{target}'; "
+            "sliceme never commits to main or master"
+        )
+    source = source or config.get("worktree_branch")
+    if source and gitutil.branch_exists(root, source):
+        return _deliver_branch(
+            store,
+            root,
+            config,
+            target=target,
+            source=str(source),
+            no_ff=no_ff,
+            run_checks_flag=run_checks_flag,
+        )
+
+    # Non-campaign planes keep the generic per-candidate path.
+    merged = {**config, "target_branch": target, "main_branch": target}
+    return integrate(store, root, merged, run_checks_flag=run_checks_flag)
 
 
 # ---------------------------------------------------------------------------

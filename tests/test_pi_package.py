@@ -157,19 +157,20 @@ class PiPackageTests(unittest.TestCase):
         self.assertIn("docs/", files)
 
     def test_retired_actions_are_gone(self):
-        # The single-agent path (`handoff`, human `review`) and the old
-        # `submit`/`verify` verbs are retired; `integrate` is the landing action.
+        # The single-agent path (`handoff`, human `review`), the old
+        # `submit`/`verify` verbs, and the per-wave `integrate` landing action
+        # are retired; `deliver` is the end-of-campaign merge.
         names = {a.name for a in surface.ACTIONS}
-        for gone in ("submit", "verify", "handoff", "review", "declare"):
+        for gone in ("submit", "verify", "handoff", "review", "declare", "integrate"):
             self.assertNotIn(gone, names)
-        self.assertIn("integrate", names)
+        self.assertIn("deliver", names)
         text = PI_UNIT.read_text(encoding="utf-8")
-        for gone in ("submit", "verify", "handoff", "review", "declare"):
+        for gone in ("submit", "verify", "handoff", "review", "declare", "integrate"):
             self.assertNotIn(f'"{gone}"', text)
 
     def test_campaign_actions_are_in_lockstep(self):
         names = [a.name for a in surface.ACTIONS]
-        self.assertIn("integrate", names)
+        self.assertIn("deliver", names)
         self.assertIn("report", names)
         text = PI_UNIT.read_text(encoding="utf-8")
         match = re.search(r"SLICEME_ACTIONS\s*=\s*\[(.*?)\]\s*as const", text, re.DOTALL)
@@ -177,7 +178,7 @@ class PiPackageTests(unittest.TestCase):
         self.assertEqual(re.findall(r'"([a-z_]+)"', match.group(1)), names)
         # The workflow doc documents the campaign additions.
         workflow = WORKFLOW.read_text(encoding="utf-8")
-        self.assertIn("`integrate`", workflow)
+        self.assertIn("`deliver`", workflow)
         self.assertIn("`report`", workflow)
         self.assertIn("--no-unit", workflow)
 

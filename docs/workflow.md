@@ -5,36 +5,48 @@
 > reference. Start a campaign with `/sliceme [DESIGN.md]` or by asking the model
 > to run one.
 
-Sliceme delivers a design document as a set of components on a **feature
-branch**. A top-level **coordinator** turns the design into a machine-readable
-DAG (`dag.json`) and drives planner, worker, and verifier subagents. The
-`sliceme` engine owns isolation, verification, and integration; all
+Sliceme delivers a design document as a set of components on a **target
+(feature) branch**. A top-level **coordinator** turns the design into a
+machine-readable DAG (`dag.json`) and drives planner, worker, and verifier
+subagents. The `sliceme` engine owns isolation, verification, and delivery; all
 serialization is decided at **plan time** from directory ownership.
 
 ```text
 COORDINATOR (this session)
  ├── PLANNER   reads the design, writes dag.json
- ├── WORKER_*  one-shot per ready DAG node, in its unit worktree
- │               edit owned dirs -> (node scope) acceptance + commit
+ ├── WORKER_*  one-shot pure editor per ready DAG node, in the campaign worktree
+ │               edit only owned dirs -> stop (the coordinator records)
  ├── VERIFIER  read-only per candidate: reviews evidence
  └── EXECUTOR  the single sandboxed runner: drains a check queue
 ```
 
+- At `start` the user chooses the **target branch** once: the current branch, a
+  named existing branch, or a new branch. The target is remembered for the
+  whole campaign and is **never** `main`, `master`, or the repository default
+  branch. There is no override.
+- All waves commit onto one **campaign worktree** branch (for example
+  `sliceme/<campaign>`), forked once from the target. The worktree is never
+  recreated and never rebased; files from an earlier wave are still present for
+  the next wave.
 - The DAG is the **only authored schedule**. Waves are a deterministic
   projection of it: nodes are packed into waves by `owns` **directory-subtree
   overlap** and `depends_on`, capped by `concurrency` (default 3).
   `ready(n) := every d in n.depends_on is done` **and** `n` is in the current
-  wave, where `done` means verified **and integrated** onto the feature branch.
+  wave, where `done` means verified **and recorded** onto the campaign
+  worktree.
 - A node owns **directories, not files**. For each path it will add, modify, or
   delete it declares the deepest directory that contains it (`dir:src/api`).
   Two nodes whose owned directories overlap (equal, ancestor, or descendant)
   are serialized into different waves. There is no runtime declare/lease step.
 - A node starts only in the current wave; a later wave begins after every
-  member of the previous wave is integrated, so its units fork from the updated
-  feature branch.
-- Only the executor runs checks and only the executor may use the GPU. Workers
-  never run the acceptance suite in a shared tree; verifiers delegate to the
-  executor and judge its recorded evidence.
+  member of the previous wave is recorded and verified. It runs in the same
+  worktree, so it already sees the previous wave's files.
+- Workers are **pure editors**: they edit only their owned directories, never
+  run `git`, and never run the test suite. The coordinator runs
+  `exec --record --wave N` to create one commit per node and enforce
+  conformance-by-ownership.
+- Only the executor runs checks and only the executor may use the GPU. Verifiers
+  delegate to the executor and judge its recorded evidence.
 - The executor is a **single serialized runner** (`exec --run`/`--wait`) over a
   SQLite-backed queue. It runs each job in a **sandbox** resolved by
   `sliceme/sandbox.py`; the sandbox digest is part of the verification
@@ -47,7 +59,9 @@ COORDINATOR (this session)
   by resolved path; a project may override the GPU invocation through its
   sandbox manifest. The target repository owns *how to run tests in isolation*,
   not sliceme's GPU locking policy.
-- Cleanup is grouped by wave: the coordinator asks once per completed wave.
+- Nothing is merged per wave. When every wave is done, `deliver` asks the user
+  once for approval, then merges the campaign worktree into the target branch
+  with the trusted checks. Cleanup is offered once, after delivery.
 - `commit` enforces **plan conformance**: a worker whose commit changes a path
   outside its node's owned directories is rejected, and the coordinator widens
   `owns` or adds a `depends_on` edge (the DAG fingerprint changes, so the next
@@ -63,77 +77,79 @@ a worker gets `sliceme-unit` but never `sliceme`, and the verifier gets neither.
 
 ## Hard rules
 
-1. **Workers run inside their unit worktree.** `sliceme-unit` `action: status`
-   (`short: true`) must succeed; otherwise stop. Never edit the main working
-   tree.
+1. **Workers run inside the one campaign worktree.** They edit only their
+   owned directories and never touch the main working tree.
 2. **Edit only your node's owned directories.** Ownership is declared in
-   `dag.json` and enforced by `commit` (node scope) or the wave recorder (wave
-   scope); a rejection means the planner under-declared, not that you should
-   widen your own scope.
-3. **Finish without landing.** Node scope: run acceptance and `commit`. Wave
-   scope: stop after editing. Workers never call `sliceme-unit` `integrate` or
-   `git merge`; the coordinator owns verification and integration.
+   `dag.json` and enforced by the wave recorder (`exec --record --wave N`); a
+   rejection means the planner under-declared, not that you should widen your
+   own scope.
+3. **Finish without landing.** Workers are pure editors: edit only your owned
+   directories and stop. Never run `git`, never commit, never call
+   `sliceme-unit` `deliver`, and never call the `sliceme` coordinator tool; the
+   coordinator owns recording and delivery.
 4. **Ordering is authored in the DAG.** If two nodes would touch the same
    directory, the planner must put them in different waves (disjoint `owns`) or
    add a `depends_on` edge. Never rely on runtime arbitration.
 5. **The GPU is the executor's.** The single executor runs checks and composes
    the sandbox and GPU runner; workers never touch the GPU, and verifiers only
    judge the executor's recorded evidence.
+6. **Never commit to the default branch.** The target is always a feature branch
+   chosen at start; `deliver` refuses `main`, `master`, and the repository
+   default branch with no override.
 
 ## Campaign loop (the coordinator)
 
 Use the `sliceme` tool:
 
 ```
-sliceme start <DESIGN.md>   adopt current branch + planner -> dag.json + waves
-sliceme ready               current-wave nodes whose dependencies are integrated
+sliceme start <DESIGN.md>   choose target branch + planner -> dag.json + waves
+sliceme ready               current-wave nodes whose dependencies are done
 sliceme status              waves + DAG + live child state
-sliceme spawn <node>        one-shot worker in its own worktree
+sliceme spawn <node>        one-shot pure editor in the campaign worktree
+sliceme record              commit the current wave onto the campaign worktree
 sliceme verify <node>       executor runs checks; a read-only verifier judges
-sliceme integrate <node>    land the verified candidate, before spawning dependents
+sliceme deliver             after all waves: ask approval, then merge to target
 sliceme report              deterministic report (`--narrative` appends the summary)
 ```
 
-`start` projects the DAG into waves (directory-subtree overlap, `depends_on`
-barrier, `concurrency` cap; default 3) and stores them in `state.json`. A node
-may only spawn in the current wave; when every member of a wave is integrated
-the next wave opens and its units fork from the updated feature branch. A
-coordinator-added `depends_on` edge changes the DAG fingerprint and the next
-`status`/`ready`/`spawn` automatically replans the waves.
+`start` asks for the target branch, projects the DAG into waves
+(directory-subtree overlap, `depends_on` barrier, `concurrency` cap; default 3)
+and stores them in `state.json`. A node may only spawn in the current wave;
+when every member of a wave is recorded and verified the next wave opens in the
+same worktree. A coordinator-added `depends_on` edge changes the DAG fingerprint
+and the next `status`/`ready`/`spawn` automatically replans the waves.
 
 The coordinator's own checkout is **not** an Sliceme unit; `sliceme start`
-bootstraps the plane with `--no-unit` and adopts the **currently checked-out
-branch** as the campaign feature branch — it never creates one. Starting on the
-repository default branch is refused; promotion from the feature branch to the
-default branch is a human `git` step (`integrate` refuses the plane's recorded
-default branch).
+bootstraps the plane with `--no-unit` and records the chosen target branch. The
+campaign work commits to a separate worktree branch, and `deliver` merges it
+into the target only after every wave is done and the user approves. `main`,
+`master`, and the default branch are refused at both steps.
 
 ## Unit actions (the `sliceme-unit` tool)
 
 | Action | Purpose |
 |---|---|
-| `start` | bootstrap the plane; `no_unit: true` for the coordinator's checkout; `name` + `base` creates a worker unit |
+| `start` | bootstrap the plane; `no_unit: true` for the coordinator's checkout; `target`/`target_mode` chooses the feature branch; `name` + `base` creates a worker unit |
 | `status` | units, candidates, waves; `short`, `unit`, `simulate`, `health`, `gc` |
-| `commit` | commit the worktree, enforce plan conformance, and register the candidate |
-| `integrate` | merge a verified candidate onto the feature branch; `node`, `acceptance`, `gpu`, `check_only`, `cleanup` |
+| `commit` | commit a unit worktree, enforce plan conformance, and register the candidate |
+| `deliver` | merge the campaign worktree into the target feature branch; `target`, `source`, `cleanup`, `no_checks` |
 | `report` | write the deterministic campaign report; `narrative` appends the coordinator's summary |
-| `exec` | the sandboxed executor: `--validate` (sandbox gate), `--open`/`--record --wave N` (shared wave worktree), `--submit`/`--run`/`--wait`/`--cancel` check jobs |
+| `exec` | the sandboxed executor: `--validate` (sandbox gate), `--open` (campaign worktree), `--record --wave N` (per-node commits), `--submit`/`--run`/`--wait`/`--cancel` check jobs |
 
 ## Worker workflow
 
-A spawned worker calls the `sliceme-unit` tool from its own worktree:
+A spawned worker edits the shared campaign worktree and does nothing else:
 
 ```
-sliceme-unit action: status, short: true
 # ... edit only files under your node's owned directories ...
-sliceme-unit action: commit, message: "add scope check to Login", summary: "scope check"
+# no git, no commit, no test run; stop and report
 ```
 
-Under **wave scope** (one shared worktree per wave) workers are pure editors:
-they edit only their owned directories and stop — the coordinator runs
-`exec --record --wave N` to enforce conformance, create per-node commits, and
-run the checks through the single executor. A worker never runs the suite in
-the shared tree, never runs `git`, and never touches the GPU.
+Workers are pure editors: they edit only their owned directories and stop — the
+coordinator runs `exec --record --wave N` to enforce conformance, create
+per-node commits, and run the checks through the single executor. A worker never
+runs the suite, never runs `git`, and never touches the GPU. Nothing is merged
+to the target branch until the coordinator's single `deliver` step.
 
 Ownership syntax is `dir:PATH` (a bare path is also accepted), always a
 directory at the deepest level that contains the paths the node touches:

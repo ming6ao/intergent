@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "sliceme"
 version = "0.3.0"
-description = "Coordination for parallel coding agents: campaign DAG, git worktrees, plan-time directory ownership, verified integration."
+description = "Coordination for parallel coding agents: campaign DAG, git worktrees, plan-time directory ownership, approved delivery."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "Apache-2.0" }

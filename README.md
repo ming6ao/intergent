@@ -3,18 +3,20 @@
 *Slice a design into parallel coding agents.*
 
 Sliceme turns a design document into a DAG of work, runs the non-conflicting
-nodes in parallel, verifies each against a content fingerprint, and lands them
-on a feature branch. Ownership is decided at plan time, so parallel agents never
-author the same files.
+nodes in parallel, verifies each against a content fingerprint, and delivers
+them onto a target feature branch. Ownership is decided at plan time, so
+parallel agents never author the same files.
 
 - **Plan-time ownership** — nodes own directories; overlapping subtrees are
   serialized into waves.
-- **Isolation** — each unit runs in a git worktree; same-wave nodes own disjoint
-  directories, so a wave can share one checkout.
+- **One campaign worktree** — every wave commits onto the same git worktree
+  branch; it is never recreated or rebased between waves, and files persist.
 - **One executor** — a single serialized, sandboxed runner drains a check queue,
   so verifiers judge recorded evidence instead of each running the suite.
-- **Verified integration** — ordered `--no-ff` merges onto the feature branch; a
-  safety rail refuses the default branch.
+- **Approved delivery** — nothing is merged per wave; when every wave is done,
+  the user approves one `--no-ff` merge into the target feature branch. The
+  default branch (`main`, `master`, or the repository default) is refused with
+  no override.
 
 ## Install
 
@@ -33,19 +35,24 @@ In pi, run `/sliceme DESIGN.md`. The coordinator then drives the campaign with
 the `sliceme` tool:
 
 ```text
-sliceme start <DESIGN.md>   planner -> dag.json + waves
-sliceme ready               current-wave nodes whose dependencies are integrated
-sliceme spawn <node>        one-shot worker
+sliceme start <DESIGN.md>   choose target branch; planner -> dag.json + waves
+sliceme ready               current-wave nodes whose dependencies are done
+sliceme spawn <node>        one-shot pure editor in the campaign worktree
+sliceme record               commit the current wave onto the campaign worktree
 sliceme verify <node>       executor runs checks; a read-only verifier judges
-sliceme integrate <node>    land the verified candidate
+sliceme deliver             after all waves: ask approval, then merge to target
 sliceme report              deterministic report
 ```
 
 ## Docs
 
 - [Guide](./docs/guide.md) — model, ownership, orchestration, agent roles.
+- [Architecture](./docs/architecture.md) — layered components, campaign lifecycle, and state (with diagrams).
 - [Reference](./docs/reference.md) — actions, modules, state, verification.
 - [Workflow](./docs/workflow.md) — the campaign loop and worker contract.
+- [Database](./docs/database.md) — the local plane's SQLite schema and lifecycle.
+- [Observability](./docs/observability.md) — proposed design for run visibility and timing/agent metrics.
+- [Sessions](./docs/sessions.md) — proposed design for suspending and resuming sessions and campaign progress.
 - [Publishing](./docs/publishing.md) — packaging and release.
 
 ## Develop

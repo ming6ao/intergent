@@ -15,8 +15,9 @@ plan.
   and `depends_on`, with `concurrency` (default 3) as the per-wave cap. You do
   not write waves; you write the directories and edges they are computed from.
 - `ready(n) := every d in n.depends_on is done`, and `n` is in the current wave.
-  `done` means verified **and integrated** onto the feature branch, so a later
-  wave's base already contains the previous wave's code.
+  `done` means verified **and recorded** onto the campaign worktree; because
+  every wave works in the same worktree, a later wave already sees the previous
+  wave's files without any merge or rebase.
 - **`owns` is a list of directories, never files or symbols.** For every path a
   node will add, modify, or delete, declare the *deepest directory that contains
   it*: a change to `src/api/routes.py` owns `dir:src/api`; a change to
