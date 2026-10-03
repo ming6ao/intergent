@@ -703,6 +703,240 @@ class Service:
             "sandbox": self.sandbox_info(),
         }
 
+    # ------------------------------------------------------------------
+    # Resume / session registry
+    # ------------------------------------------------------------------
+    def resume(self, *, plan_only: bool = False) -> dict[str, Any]:
+        """Reconcile a suspended campaign and return its resume plan.
+
+        Git and ``state.db`` always win over the adapter-written descriptor and
+        ``state.json``.  The plan is a pure computation; unless *plan_only* the
+        ``campaign_sessions`` projection is refreshed as a side effect.
+        """
+        config = self.config
+        branch = (
+            config.get("target_branch") or config.get("main_branch") or "main"
+        )
+        descriptor = campaign.load_session(self.root, branch) or {}
+        descriptor_nodes = descriptor.get("nodes") or {}
+        state = campaign.load_state(self.root, branch)
+        state_nodes: dict[str, Any] = state.get("nodes") or {}
+        dag = campaign.load_dag(self.root, branch) or {}
+        node_ids = [str(n["id"]) for n in dag.get("nodes", []) if n.get("id")]
+        if not node_ids:
+            node_ids = sorted(state_nodes)
+
+        latest: dict[str, dict[str, Any]] = {}
+        for candidate in self.store.list_candidates():
+            node = candidate.get("node")
+            if node:
+                latest[str(node)] = candidate  # ascending id order: last wins
+
+        unit = self.store.get_unit("campaign")
+        worktree = Path(unit["worktree"]) if unit and unit.get("worktree") else None
+        worktree_present = bool(worktree and worktree.exists())
+        worktree_dirty = bool(worktree_present and not gitutil.is_clean(worktree))
+
+        current_wave = state.get("current_wave")
+        if current_wave is None:
+            current_wave = descriptor.get("current_wave")
+        if current_wave is None:
+            current_wave = self._first_open_wave(state)
+
+        plan: dict[str, Any] = {
+            "record_wave": None,
+            "resume": [],
+            "respawn": [],
+            "verify": [],
+            "blocked": [],
+        }
+        statuses: dict[str, str] = {}
+        for node in node_ids:
+            entry = state_nodes.get(node) if isinstance(state_nodes.get(node), dict) else {}
+            desc_node = (
+                descriptor_nodes.get(node)
+                if isinstance(descriptor_nodes.get(node), dict)
+                else {}
+            )
+            recorded_commit = entry.get("commit") or desc_node.get("commit")
+            candidate = latest.get(node)
+            status = self._resume_status(
+                entry, candidate, recorded_commit, worktree_present
+            )
+            statuses[node] = status
+            if status == "done":
+                continue
+            if status == "recorded":
+                plan["verify"].append(node)
+            elif status == "paused":
+                plan["resume"].append(node)
+            elif status == "pending" and (
+                candidate is not None or int(entry.get("attempts") or 0) > 0
+            ):
+                plan["respawn"].append(node)
+        if plan["resume"] or worktree_dirty:
+            plan["record_wave"] = current_wave
+
+        result = {
+            "campaign": descriptor.get("campaign") or dag.get("campaign"),
+            "feature_branch": branch,
+            "worktree_branch": config.get("worktree_branch"),
+            "worktree": str(worktree) if worktree else None,
+            "worktree_present": worktree_present,
+            "worktree_dirty": worktree_dirty,
+            "current_wave": current_wave,
+            "nodes": statuses,
+            "resume_plan": plan,
+            "descriptor": descriptor or None,
+        }
+        if not plan_only:
+            self._sync_campaign_sessions()
+        return result
+
+    @staticmethod
+    def _resume_status(
+        entry: dict[str, Any],
+        candidate: dict[str, Any] | None,
+        recorded_commit: Any,
+        worktree_present: bool,
+    ) -> str:
+        """Map one node to its resume status from plane evidence.
+
+        The commit comparison is essential: a verified-but-undelivered node is
+        ``done`` in ``state.json`` while its candidate is still ``prepared``,
+        so a status-only rule would wrongly re-run it.
+        """
+        candidate_status = candidate.get("status") if candidate else None
+        head = candidate.get("head_commit") if candidate else None
+        if candidate_status == "landed":
+            return "done"
+        if entry.get("status") == "done":
+            if not candidate:
+                return "done"
+            if recorded_commit and head == recorded_commit:
+                return "done"
+        if candidate_status == "prepared":
+            if recorded_commit and head == recorded_commit:
+                return "recorded"
+            return "pending"
+        if entry.get("status") in {"running", "paused", "recorded"}:
+            return "paused" if worktree_present else "pending"
+        return "pending"
+
+    @staticmethod
+    def _first_open_wave(state: dict[str, Any]) -> int | None:
+        waves = state.get("waves") or []
+        for wave in waves:
+            if str(wave.get("status")) != "done":
+                return int(wave.get("index", 0))
+        return None
+
+    def _sync_campaign_sessions(self) -> list[dict[str, Any]]:
+        """Project the adapter-written descriptors into ``campaign_sessions``."""
+        branch = (
+            self.config.get("target_branch")
+            or self.config.get("main_branch")
+            or "main"
+        )
+        rows: list[dict[str, Any]] = []
+        for key, descriptor in campaign.list_sessions(self.root):
+            feature_branch = str(descriptor.get("feature_branch") or key)
+            state = campaign.load_state(self.root, feature_branch)
+            wave = state.get("current_wave")
+            if wave is None:
+                wave = descriptor.get("current_wave")
+            rows.append(
+                self.store.upsert_campaign_session(
+                    feature_branch=feature_branch,
+                    pi_session_id=(descriptor.get("pi") or {}).get("session_id"),
+                    session_file=(descriptor.get("pi") or {}).get("session_file"),
+                    label=descriptor.get("label"),
+                    status=descriptor.get("status") or "suspended",
+                    reason=descriptor.get("reason"),
+                    wave=wave,
+                    suspended_at=descriptor.get("suspended_at"),
+                )
+            )
+        self.store.conn.commit()
+        return rows
+
+    def sessions(self, *, rebuild: bool = False) -> dict[str, Any]:
+        """List every registered campaign from its descriptor and projection."""
+        if rebuild:
+            self._sync_campaign_sessions()
+        branch = (
+            self.config.get("target_branch")
+            or self.config.get("main_branch")
+            or "main"
+        )
+        entries: list[dict[str, Any]] = []
+        for key, descriptor in campaign.list_sessions(self.root):
+            feature_branch = str(descriptor.get("feature_branch") or key)
+            state = campaign.load_state(self.root, feature_branch)
+            state_nodes = state.get("nodes") or {}
+            dag = campaign.load_dag(self.root, feature_branch) or {}
+            total = len([n for n in dag.get("nodes", []) if n.get("id")])
+            done = sum(
+                1
+                for entry in state_nodes.values()
+                if isinstance(entry, dict) and entry.get("status") == "done"
+            )
+            entries.append(
+                {
+                    "feature_branch": feature_branch,
+                    "is_current": feature_branch == branch,
+                    "campaign": descriptor.get("campaign") or dag.get("campaign"),
+                    "label": descriptor.get("label"),
+                    "status": descriptor.get("status") or "suspended",
+                    "reason": descriptor.get("reason"),
+                    "wave": state.get("current_wave")
+                    if state.get("current_wave") is not None
+                    else descriptor.get("current_wave"),
+                    "done": done,
+                    "total": total,
+                    "suspended_at": descriptor.get("suspended_at"),
+                    "session_file": (descriptor.get("pi") or {}).get("session_file"),
+                    "descriptor": str(campaign.session_path(self.root, feature_branch)),
+                }
+            )
+        if rebuild:
+            self.store.conn.commit()
+        return {"root": str(self.root), "sessions": entries}
+
+    # ------------------------------------------------------------------
+    # Attempts (per-subagent fidelity)
+    # ------------------------------------------------------------------
+    def begin_attempt(
+        self,
+        *,
+        node: str,
+        unit: str | None = None,
+        attempt: int = 1,
+        agent: str = "worker",
+        started_at: float | None = None,
+    ) -> dict[str, Any]:
+        attempt_id = self.store.create_attempt(
+            node=node, unit=unit, attempt=attempt, agent=agent, started_at=started_at
+        )
+        self.store.conn.commit()
+        return self.store.get_attempt(attempt_id)  # type: ignore[return-value]
+
+    def end_attempt(
+        self, *, node: str, attempt: int | None = None, **fields: Any
+    ) -> dict[str, Any] | None:
+        """Finish the running attempt for *node* (optionally a specific attempt)."""
+        row = self.store.find_running_attempt(node, attempt)
+        if row is None:
+            return None
+        result = self.store.finish_attempt(int(row["id"]), **fields)
+        self.store.conn.commit()
+        return result
+
+    def attempts(
+        self, *, node: str | None = None, statuses: list[str] | None = None
+    ) -> dict[str, Any]:
+        return {"attempts": self.store.list_attempts(node=node, statuses=statuses)}
+
     def _dag_waves(self, branch: str | None) -> tuple[list[dict[str, Any]], str | None]:
         """Compute the scheduler's wave projection of the campaign DAG.
 

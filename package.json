@@ -25,6 +25,7 @@
   },
   "scripts": {
     "test": "python3 -m unittest discover -s tests",
+    "typecheck": "tsc --noEmit",
     "prepublishOnly": "npm test"
   },
   "files": [
@@ -57,5 +58,8 @@
   },
   "publishConfig": {
     "access": "public"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
   }
 }

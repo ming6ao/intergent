@@ -112,6 +112,14 @@ sliceme deliver             after all waves: ask approval, then merge to target
 sliceme report              deterministic report (`--narrative` appends the summary)
 ```
 
+The coordinator also registers two commands and two lifecycle hooks
+(`docs/sessions.md`):
+
+```
+/suspend [label]            park the campaign and write the resume descriptor
+/campaigns                  list registered campaigns and switch to one
+```
+
 `start` asks for the target branch, projects the DAG into waves
 (directory-subtree overlap, `depends_on` barrier, `concurrency` cap; default 3)
 and stores them in `state.json`. A node may only spawn in the current wave;
@@ -134,6 +142,9 @@ into the target only after every wave is done and the user approves. `main`,
 | `commit` | commit a unit worktree, enforce plan conformance, and register the candidate |
 | `deliver` | merge the campaign worktree into the target feature branch; `target`, `source`, `cleanup`, `no_checks` |
 | `report` | write the deterministic campaign report; `narrative` appends the coordinator's summary |
+| `resume` | reconcile a suspended campaign from git plus `state.db` and return the resume plan |
+| `sessions` | list registered campaigns (`--rebuild` refreshes the projection) |
+| `attempt` | persist a subagent attempt's `--begin`/`--end` and metrics |
 | `exec` | the sandboxed executor: `--validate` (sandbox gate), `--open` (campaign worktree), `--record --wave N` (per-node commits), `--submit`/`--run`/`--wait`/`--cancel` check jobs |
 
 ## Worker workflow

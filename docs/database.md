@@ -330,16 +330,20 @@ and priority and merging each branch.
 - Worker logs are files, one per node.
 - The report is a Markdown file.
 
-## 11. Related proposed work
+## 11. Session suspend/resume and attempts (implemented)
 
-`docs/observability.md` proposes one additional table, `attempts`, to persist
-per-subagent timings and agent metrics (turns, tool calls, tokens, cost, last
-tool, last activity), written through a new `attempt` action. It would follow
-the same additive-migration approach used for `jobs.timeout` and
-`candidates.node`.
+`attempts` persists per-subagent timings and agent metrics (turns, tool calls,
+tokens, cost, last tool, last activity), written through the `attempt --begin` /
+`--end` action. It follows the additive-migration approach used for
+`jobs.timeout` and `candidates.node` (the table is created with
+`CREATE TABLE IF NOT EXISTS`, so an older plane upgrades on open).
 
-`docs/sessions.md` proposes a second table, `campaign_sessions`, to record the
-pi session bound to a campaign (session file, label, status, suspend reason, and
-wave) so a suspended campaign can be listed and resumed. It depends on the
-`attempts` table and heartbeat files for attempt fidelity and follows the same
-additive-migration approach.
+`campaign_sessions` records the pi session bound to a campaign (branch, session
+file, label, status, suspend reason, and wave) so a suspended campaign can be
+listed and resumed.  It is a **rebuildable projection**: the pi adapter writes
+`.sliceme/<branch-key>.session.json` and the engine refreshes the table from
+those descriptor files in `resume`/`sessions --rebuild`.
+
+Both tables live in `.sliceme/state.db`; see `docs/sessions.md` for the
+lifecycle and `docs/reference.md` §1 for the `resume`, `sessions`, and
+`attempt` actions.

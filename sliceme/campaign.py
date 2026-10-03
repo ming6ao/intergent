@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from .store import Store
-from .util import SlicemeError, read_json, state_dir
+from .util import SlicemeError, read_json, state_dir, write_json
 
 
 def branch_key(branch: str) -> str:
@@ -45,6 +45,69 @@ def report_path(root: Path, branch: str) -> Path:
 
 def worker_log_path(root: Path, branch: str, node: str) -> Path:
     return state_dir(root) / f"{branch_key(branch)}.worker_{node}.log"
+
+
+def session_path(root: Path, branch: str) -> Path:
+    """The adapter-written suspend/resume descriptor for a campaign."""
+    return state_dir(root) / f"{branch_key(branch)}.session.json"
+
+
+def control_path(root: Path, branch: str) -> Path:
+    """The cooperative pause flag (``{"pause": true, ...}``) for a campaign."""
+    return state_dir(root) / f"{branch_key(branch)}.control.json"
+
+
+def heartbeat_path(root: Path, branch: str, node: str) -> Path:
+    """The per-node progress heartbeat written by a running subagent."""
+    return state_dir(root) / f"{branch_key(branch)}.progress_{node}.json"
+
+
+def load_session(root: Path, branch: str) -> dict[str, Any] | None:
+    data = read_json(session_path(root, branch))
+    return data if isinstance(data, dict) else None
+
+
+def write_session(root: Path, branch: str, descriptor: dict[str, Any]) -> Path:
+    path = session_path(root, branch)
+    write_json(path, descriptor)
+    return path
+
+
+def load_control(root: Path, branch: str) -> dict[str, Any] | None:
+    data = read_json(control_path(root, branch))
+    return data if isinstance(data, dict) else None
+
+
+def write_control(root: Path, branch: str, control: dict[str, Any] | None) -> Path:
+    path = control_path(root, branch)
+    if control is None:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        return path
+    write_json(path, control)
+    return path
+
+
+def list_sessions(root: Path) -> list[tuple[str, dict[str, Any]]]:
+    """Every readable ``<branch-key>.session.json``, newest activity first.
+
+    Returns ``(branch_key, descriptor)`` pairs so a caller can map a descriptor
+    back to the campaign path even when the descriptor omits its branch.
+    """
+    found: list[tuple[str, dict[str, Any]]] = []
+    for path in sorted(state_dir(root).glob("*.session.json")):
+        data = read_json(path)
+        if not isinstance(data, dict):
+            continue
+        key = path.name[: -len(".session.json")]
+        found.append((key, data))
+    found.sort(
+        key=lambda item: float(item[1].get("suspended_at") or item[1].get("updated_at") or 0.0),
+        reverse=True,
+    )
+    return found
 
 
 def load_dag(root: Path, branch: str) -> dict[str, Any] | None:
@@ -79,16 +142,24 @@ __all__ = [
     "branch_key",
     "build_skeleton",
     "config_branch",
+    "control_path",
     "dag_path",
+    "heartbeat_path",
+    "list_sessions",
+    "load_control",
     "load_dag",
+    "load_session",
     "load_state",
     "node_by_id",
     "node_status",
     "render",
     "report_path",
+    "session_path",
     "state_path",
     "worker_log_path",
+    "write_control",
     "write_report",
+    "write_session",
 ]
 
 

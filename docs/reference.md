@@ -6,7 +6,7 @@ deliberate gaps. For the model and workflow, see [guide.md](./guide.md).
 ## 1. Actions
 
 The CLI, the pi `sliceme-unit` tool, and the pi `sliceme` coordinator tool all
-derive from one action registry (`sliceme/surface.py`). Six engine verbs:
+derive from one action registry (`sliceme/surface.py`). Nine engine verbs:
 
 | Action | Purpose |
 |---|---|
@@ -16,6 +16,9 @@ derive from one action registry (`sliceme/surface.py`). Six engine verbs:
 | `deliver` | Merge the campaign worktree into the target feature branch after approval. |
 | `report` | Write the deterministic campaign report plus an optional narrative. |
 | `exec` | The single sandboxed executor queue: `submit`/`run`/`wait`/`cancel` check jobs. |
+| `resume` | Reconcile a suspended campaign from git plus `state.db` and return its resume plan. |
+| `sessions` | List registered campaigns (the suspend/resume discovery surface). |
+| `attempt` | Record one subagent attempt's `--begin`/`--end` and its metrics. |
 
 The pi `sliceme` coordinator tool adds orchestration verbs (`ready`, `spawn`,
 `record`, `verify`, `deliver`) on top; those drive the engine and the DAG rather
@@ -157,6 +160,43 @@ resolved sandbox (§4).  The result (status, exit code, output, duration,
 fingerprint) is stored in the `jobs` table.  `--run` first recovers any
 `running` job whose lease expired.
 
+### `resume`
+
+```bash
+sliceme resume [--plan-only]
+```
+
+Reads the adapter-written `.sliceme/<branch-key>.session.json`, reconciles it
+with git and `state.db` (which win over both the descriptor and `state.json`),
+and returns the resume plan (`record_wave`, `resume`, `respawn`, `verify`,
+`blocked`).  `--plan-only` reports without refreshing the `campaign_sessions`
+projection.  A node that was verified but not yet delivered is `done` while its
+candidate is still `prepared`, so the plan is commit-based, never status-only.
+
+### `sessions`
+
+```bash
+sliceme sessions [--rebuild]
+```
+
+Lists the registered campaigns (branch, label, status, wave, done/total,
+session file).  `--rebuild` regenerates the `campaign_sessions` projection from
+the descriptor files.
+
+### `attempt`
+
+```bash
+sliceme attempt --begin --node w1 [--unit U] [--attempt N] [--agent worker]
+sliceme attempt --end   --node w1 [--attempt N] --status ok [--exit-code 0] \
+                        [--turns 7] [--tool-calls 23] [--tokens-in 45210] \
+                        [--tokens-out 3120] [--cost 0.42] [--tools '{"bash":6}']
+```
+
+Persists one subagent run for one node: a planner, a worker, or a verifier.
+The coordinator calls `--begin` before `runSubagent` and `--end` after, and the
+same stream feeds a debounced per-node heartbeat file.  `--end` finds the
+latest running attempt for the node.
+
 ### Sandbox manifests
 
 The target repository provides how to run checks in isolation as a tracked
@@ -208,18 +248,24 @@ Let `branch-key` replace `/` with `--` (`feat/x` → `feat--x`):
   feat--x.dag.json                 # canonical plan (never committed)
   feat--x.state.json               # executor progress (node -> status)
   feat--x.report.md                # final report (kept on cleanup)
+  feat--x.session.json             # adapter-written suspend/resume descriptor
+  feat--x.control.json             # cooperative pause flag
+  feat--x.progress_<node>.json     # per-node subagent heartbeat
   feat--x.worker_<id>.log          # one log per worker id
+  feat--x.events.jsonl             # audit log (wave replans, verdicts, resume)
   worktrees/                       # the single campaign worktree (+ transient unit worktrees)
   scratch/                         # detached simulation worktrees (transient)
 ```
 
 `state.json` holds only what git and `state.db` cannot express quickly: per-node
-`pending|running|recorded|done|failed`, the last verdict, and attempt counts. On
-conflict, git and `state.db` are authoritative; `state.json` is a rebuildable
-cache.
+`pending|running|recorded|done|failed|paused`, the last verdict, and attempt
+counts. On conflict, git and `state.db` are authoritative; `state.json` is a
+rebuildable cache.  The `.session.json` descriptor is written only by the pi
+adapter; the engine reads it (`resume`) and projects it into
+`campaign_sessions`.
 
 SQLite tables: `sessions`, `units`, `candidates`, `fingerprints`,
-`verifications`, `jobs`.
+`verifications`, `jobs`, `campaign_sessions`, `attempts`.
 
 ## 4. Verification
 

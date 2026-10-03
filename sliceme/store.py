@@ -110,6 +110,48 @@ CREATE TABLE IF NOT EXISTS jobs (
 
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
 CREATE INDEX IF NOT EXISTS idx_jobs_fingerprint ON jobs(fingerprint, status);
+
+CREATE TABLE IF NOT EXISTS campaign_sessions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  feature_branch TEXT,
+  pi_session_id TEXT,
+  session_file TEXT,
+  label TEXT,
+  status TEXT NOT NULL DEFAULT 'active',
+  reason TEXT,
+  wave INTEGER,
+  created_at REAL NOT NULL,
+  updated_at REAL NOT NULL,
+  suspended_at REAL
+);
+
+CREATE INDEX IF NOT EXISTS idx_campaign_sessions_branch
+  ON campaign_sessions(feature_branch);
+
+CREATE TABLE IF NOT EXISTS attempts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  node TEXT NOT NULL,
+  unit TEXT,
+  attempt INTEGER NOT NULL DEFAULT 1,
+  agent TEXT NOT NULL DEFAULT 'worker',
+  status TEXT NOT NULL DEFAULT 'running',
+  started_at REAL NOT NULL,
+  finished_at REAL,
+  duration REAL,
+  exit_code INTEGER,
+  turns INTEGER NOT NULL DEFAULT 0,
+  tool_calls INTEGER NOT NULL DEFAULT 0,
+  tools TEXT,
+  tokens_in INTEGER NOT NULL DEFAULT 0,
+  tokens_out INTEGER NOT NULL DEFAULT 0,
+  cost REAL NOT NULL DEFAULT 0,
+  last_tool TEXT,
+  last_activity_at REAL,
+  error TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_attempts_node ON attempts(node);
+CREATE INDEX IF NOT EXISTS idx_attempts_status ON attempts(status);
 """
 
 
@@ -533,3 +575,181 @@ class Store:
             "SELECT status, COUNT(*) AS c FROM jobs GROUP BY status"
         ).fetchall()
         return {str(r["status"]): int(r["c"]) for r in rows}
+
+    # ---- campaign sessions (resume registry projection) ---------------
+    CAMPAIGN_SESSION_FIELDS = frozenset(
+        {
+            "feature_branch",
+            "pi_session_id",
+            "session_file",
+            "label",
+            "status",
+            "reason",
+            "wave",
+            "suspended_at",
+        }
+    )
+
+    def upsert_campaign_session(
+        self, *, feature_branch: str, **fields: Any
+    ) -> dict[str, Any]:
+        """Insert or update the discovery row for one campaign branch."""
+        unknown = set(fields) - self.CAMPAIGN_SESSION_FIELDS
+        if unknown:
+            raise SlicemeError(
+                f"unknown campaign_session fields: {', '.join(sorted(unknown))}"
+            )
+        ts = now()
+        existing = self.get_campaign_session(feature_branch)
+        if existing is None:
+            columns = ["feature_branch", "created_at", "updated_at", *fields]
+            placeholders = ",".join("?" for _ in columns)
+            values: list[Any] = [feature_branch, ts, ts, *fields.values()]
+            with self.tx() as c:
+                c.execute(
+                    f"INSERT INTO campaign_sessions({','.join(columns)}) "
+                    f"VALUES({placeholders})",
+                    values,
+                )
+                row = c.execute(
+                    "SELECT * FROM campaign_sessions WHERE feature_branch=?",
+                    (feature_branch,),
+                ).fetchone()
+                return _dict(row)  # type: ignore[return-value]
+        sets = ["updated_at=?"]
+        params: list[Any] = [ts]
+        for name, value in fields.items():
+            sets.append(f"{name}=?")
+            params.append(value)
+        params.append(int(existing["id"]))
+        self.conn.execute(
+            f"UPDATE campaign_sessions SET {', '.join(sets)} WHERE id=?", params
+        )
+        return self.get_campaign_session(feature_branch)  # type: ignore[return-value]
+
+    def get_campaign_session(self, feature_branch: str) -> dict[str, Any] | None:
+        return _dict(
+            self.conn.execute(
+                "SELECT * FROM campaign_sessions WHERE feature_branch=?"
+                " ORDER BY id DESC LIMIT 1",
+                (feature_branch,),
+            ).fetchone()
+        )
+
+    def list_campaign_sessions(self) -> list[dict[str, Any]]:
+        return _dicts(
+            self.conn.execute(
+                "SELECT * FROM campaign_sessions ORDER BY updated_at DESC, id DESC"
+            ).fetchall()
+        )
+
+    def delete_campaign_session(self, feature_branch: str) -> int:
+        with self.tx() as c:
+            cursor = c.execute(
+                "DELETE FROM campaign_sessions WHERE feature_branch=?", (feature_branch,)
+            )
+            return int(cursor.rowcount)
+
+    # ---- attempts (per-subagent fidelity) ----------------------------
+    ATTEMPT_FIELDS = frozenset(
+        {
+            "node",
+            "unit",
+            "attempt",
+            "agent",
+            "status",
+            "started_at",
+            "finished_at",
+            "duration",
+            "exit_code",
+            "turns",
+            "tool_calls",
+            "tools",
+            "tokens_in",
+            "tokens_out",
+            "cost",
+            "last_tool",
+            "last_activity_at",
+            "error",
+        }
+    )
+
+    def create_attempt(
+        self,
+        *,
+        node: str,
+        unit: str | None = None,
+        attempt: int = 1,
+        agent: str = "worker",
+        started_at: float | None = None,
+    ) -> int:
+        ts = now() if started_at is None else float(started_at)
+        with self.tx() as c:
+            c.execute(
+                "INSERT INTO attempts(node, unit, attempt, agent, status, started_at,"
+                " last_activity_at) VALUES(?,?,?,?,?,?,?)",
+                (node, unit, int(attempt), agent, "running", ts, ts),
+            )
+            return int(c.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
+
+    def finish_attempt(self, attempt_id: int, **fields: Any) -> dict[str, Any] | None:
+        unknown = set(fields) - self.ATTEMPT_FIELDS
+        if unknown:
+            raise SlicemeError(f"unknown attempt fields: {', '.join(sorted(unknown))}")
+        ts = now()
+        row = _dict(
+            self.conn.execute("SELECT * FROM attempts WHERE id=?", (int(attempt_id),)).fetchone()
+        )
+        if row is None:
+            return None
+        fields.setdefault("status", "ok")
+        fields.setdefault("finished_at", ts)
+        started = float(row.get("started_at") or ts)
+        fields.setdefault("duration", ts - started)
+        sets = ", ".join(f"{name}=?" for name in fields)
+        params = list(fields.values()) + [int(attempt_id)]
+        self.conn.execute(f"UPDATE attempts SET {sets} WHERE id=?", params)
+        return _dict(
+            self.conn.execute("SELECT * FROM attempts WHERE id=?", (int(attempt_id),)).fetchone()
+        )
+
+    def get_attempt(self, attempt_id: str | int) -> dict[str, Any] | None:
+        return _dict(
+            self.conn.execute("SELECT * FROM attempts WHERE id=?", (int(attempt_id),)).fetchone()
+        )
+
+    def list_attempts(
+        self, *, node: str | None = None, statuses: Sequence[str] | None = None
+    ) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM attempts"
+        clauses: list[str] = []
+        params: list[Any] = []
+        if node:
+            clauses.append("node=?")
+            params.append(node)
+        if statuses:
+            placeholders = ",".join("?" for _ in statuses)
+            clauses.append(f"status IN ({placeholders})")
+            params.extend(statuses)
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY id ASC"
+        return _dicts(self.conn.execute(sql, params).fetchall())
+
+    def latest_attempt(self, node: str) -> dict[str, Any] | None:
+        return _dict(
+            self.conn.execute(
+                "SELECT * FROM attempts WHERE node=? ORDER BY id DESC LIMIT 1", (node,)
+            ).fetchone()
+        )
+
+    def find_running_attempt(
+        self, node: str, attempt: int | None = None
+    ) -> dict[str, Any] | None:
+        sql = "SELECT * FROM attempts WHERE node=? AND status='running'"
+        params: list[Any] = [node]
+        if attempt is not None:
+            sql += " AND attempt=?"
+            params.append(int(attempt))
+        sql += " ORDER BY id DESC LIMIT 1"
+        return _dict(self.conn.execute(sql, params).fetchone())

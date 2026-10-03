@@ -8,6 +8,8 @@ structure regresses.
 
 import json
 import re
+import shutil
+import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -190,6 +192,71 @@ class PiPackageTests(unittest.TestCase):
             self.assertIn(needle, coordinator_text)
         self.assertTrue((REPO_ROOT / "sliceme" / "ownership.py").is_file())
         self.assertTrue((REPO_ROOT / "tests" / "test_waves.py").is_file())
+
+    def test_session_suspend_resume_contract(self):
+        # The adapter writes the descriptor, pauses cooperatively, resumes on the
+        # pi session_start hook, and never shadows pi's `/resume`.
+        coordinator = PI_COORDINATOR.read_text(encoding="utf-8")
+        common = PI_COMMON.read_text(encoding="utf-8")
+
+        # Descriptor / pause / heartbeat helpers live in common.ts.
+        for needle in ("export function sessionPath", "export function controlPath", "export function heartbeatPath"):
+            self.assertIn(needle, common)
+        self.assertIn("heartbeat?: string", common)
+
+        # Commands and lifecycle hooks.
+        self.assertIn('pi.registerCommand("suspend"', coordinator)
+        self.assertIn('pi.registerCommand("campaigns"', coordinator)
+        self.assertIn('pi.on("session_start"', coordinator)
+        self.assertIn('pi.on("session_shutdown"', coordinator)
+        self.assertNotIn('pi.registerCommand("resume"', coordinator)
+        self.assertIn("writeSessionDescriptor", coordinator)
+        self.assertIn("controlPath(ctx.cwd, branch)", coordinator)
+        self.assertIn("sessionPath(ctx.cwd, branch)", coordinator)
+        self.assertIn("heartbeatPath(ctx.cwd, branch", coordinator)
+
+        # Cooperative stop: wait for idle, steer, and clear the flag on resume.
+        self.assertIn("waitForIdle", coordinator)
+        self.assertIn('deliverAs: "steer"', coordinator)
+        self.assertIn("clearPause", coordinator)
+        self.assertIn("isPaused", coordinator)
+        self.assertIn('event.reason === "resume"', coordinator)
+
+        # The pause flag gates every work-performing path.
+        for action in ("spawn", "record", "verify", "ready"):
+            self.assertIn(f'pausedResult("{action}")', coordinator)
+
+        # Attempts and switchSession are wired.
+        self.assertIn('"--begin"', coordinator)
+        self.assertIn('"--end"', coordinator)
+        self.assertIn("switchSession", coordinator)
+
+    def test_typescript_extensions_type_check(self):
+        # `tsc --noEmit` must pass on the pi extensions. Skipped when the dev
+        # tooling is not installed (no node_modules), so CI stays green while
+        # `npm install` gives a real report.
+        tsc = REPO_ROOT / "node_modules" / ".bin" / "tsc"
+        node = shutil.which("node")
+        if not tsc.exists() or node is None:
+            self.skipTest("node + node_modules/.bin/tsc not installed; run `npm install`")
+        result = subprocess.run(
+            [node, str(tsc), "--noEmit"],
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_docs_document_the_session_actions(self):
+        names = {a.name for a in surface.ACTIONS}
+        for name in ("resume", "sessions", "attempt"):
+            self.assertIn(name, names)
+        reference = (REPO_ROOT / "docs" / "reference.md").read_text(encoding="utf-8")
+        for name in ("`resume`", "`sessions`", "`attempt`"):
+            self.assertIn(name, reference)
+        database = (REPO_ROOT / "docs" / "database.md").read_text(encoding="utf-8")
+        self.assertIn("campaign_sessions", database)
+        self.assertIn("attempts", database)
 
 
 if __name__ == "__main__":

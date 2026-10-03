@@ -131,6 +131,50 @@ ACTIONS: tuple[Action, ...] = (
             Param("limit", "int", "with --run: at most this many jobs"),
         ),
     ),
+    Action(
+        name="resume",
+        summary="reconcile a suspended campaign and return its resume plan",
+        params=(
+            Param(
+                "plan_only",
+                "boolean",
+                "report the plan without refreshing the session registry",
+            ),
+        ),
+    ),
+    Action(
+        name="sessions",
+        summary="list registered campaigns (the suspend/resume discovery surface)",
+        params=(
+            Param(
+                "rebuild",
+                "boolean",
+                "rebuild the campaign_sessions projection from descriptors",
+            ),
+        ),
+    ),
+    Action(
+        name="attempt",
+        summary="record a subagent attempt's begin/end and metrics",
+        params=(
+            Param("begin", "boolean", "start an attempt"),
+            Param("end", "boolean", "finish the running attempt for --node"),
+            Param("node", "string", "node id"),
+            Param("unit", "string", "unit name"),
+            Param("agent", "string", "worker | planner | verifier"),
+            Param("attempt", "int", "attempt number (default 1)"),
+            Param("status", "string", "end: status, e.g. ok | failed | cancelled"),
+            Param("exit_code", "int", "end: process exit code"),
+            Param("turns", "int", "end: turn count"),
+            Param("tool_calls", "int", "end: tool call count"),
+            Param("tools", "string", "end: JSON tool histogram"),
+            Param("tokens_in", "int", "end: input tokens"),
+            Param("tokens_out", "int", "end: output tokens"),
+            Param("cost", "string", "end: approximate cost"),
+            Param("last_tool", "string", "end: last tool name"),
+            Param("error", "string", "end: error text"),
+        ),
+    ),
 )
 
 ACTION_BY_NAME: dict[str, Action] = {a.name: a for a in ACTIONS}
@@ -256,6 +300,57 @@ def _dispatch_report(service: "Service", p: dict[str, Any]) -> Any:
     return service.report(narrative=p.get("narrative"), design=p.get("design"))
 
 
+def _dispatch_resume(service: "Service", p: dict[str, Any]) -> Any:
+    return service.resume(plan_only=bool(p.get("plan_only")))
+
+
+def _dispatch_sessions(service: "Service", p: dict[str, Any]) -> Any:
+    return service.sessions(rebuild=bool(p.get("rebuild")))
+
+
+def _dispatch_attempt(service: "Service", p: dict[str, Any]) -> Any:
+    node = p.get("node")
+    if not node:
+        raise SlicemeError("attempt requires --node")
+    attempt_number = int(p["attempt"]) if p.get("attempt") is not None else None
+    if p.get("begin"):
+        return service.begin_attempt(
+            node=str(node),
+            unit=p.get("unit"),
+            attempt=attempt_number or 1,
+            agent=p.get("agent") or "worker",
+        )
+    if p.get("end"):
+        fields: dict[str, Any] = {}
+        for key in (
+            "status",
+            "exit_code",
+            "turns",
+            "tool_calls",
+            "tools",
+            "tokens_in",
+            "tokens_out",
+            "cost",
+            "last_tool",
+            "error",
+        ):
+            value = p.get(key)
+            if value is None:
+                continue
+            if key in {"exit_code", "turns", "tool_calls", "tokens_in", "tokens_out"}:
+                value = int(value)
+            elif key == "cost":
+                value = float(value)
+            fields[key] = value
+        result = service.end_attempt(
+            node=str(node), attempt=attempt_number, **fields
+        )
+        if result is None:
+            raise SlicemeError(f"no running attempt for node '{node}'")
+        return result
+    return service.attempts(node=str(node))
+
+
 def _dispatch_exec(service: "Service", p: dict[str, Any]) -> Any:
     executor = service.executor()
     if p.get("validate"):
@@ -305,6 +400,9 @@ _HANDLERS = {
     "commit": _dispatch_commit,
     "deliver": _dispatch_deliver,
     "report": _dispatch_report,
+    "resume": _dispatch_resume,
+    "sessions": _dispatch_sessions,
+    "attempt": _dispatch_attempt,
     "exec": _dispatch_exec,
 }
 

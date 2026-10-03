@@ -47,16 +47,20 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import {
 	branchKey,
+	controlPath,
 	dagPath,
+	heartbeatPath,
 	logEvent,
 	logPath,
 	readJson,
 	runSliceme,
 	runSubagent,
+	sessionPath,
 	stateDir,
 	statePath,
 	writeJson,
 } from "./common.ts";
+import type { SubagentResult } from "./common.ts";
 
 export const CAMPAIGN_ACTIONS = [
 	"start",
@@ -157,6 +161,15 @@ function nodeIds(dag: Dag): string[] {
 
 function nodeStatus(state: CampaignState, id: string): string {
 	return state.nodes?.[id]?.status ?? "pending";
+}
+
+/** Seconds after which a leftover pause flag is ignored on resume. */
+const PAUSE_TTL_SECONDS = 3600;
+
+/** The campaign branch recorded in an existing plane's config, without a subprocess. */
+function configuredBranch(cwd: string): string | undefined {
+	const cfg = readJson<any>(path.join(stateDir(cwd), "config.json"), undefined);
+	return cfg?.target_branch ?? cfg?.main_branch;
 }
 
 function readyNodes(dag: Dag, state: CampaignState): string[] {
@@ -367,6 +380,208 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
 		};
 	}
 
+	// ------------------------------------------------------------------
+	// Suspend / resume (docs/sessions.md)
+	// ------------------------------------------------------------------
+	function readControl(ctx: ExtensionContext, branch: string): any | null {
+		try {
+			const file = controlPath(ctx.cwd, branch);
+			if (!fs.existsSync(file)) return null;
+			return JSON.parse(fs.readFileSync(file, "utf8"));
+		} catch {
+			return null;
+		}
+	}
+
+	/** True when a fresh pause flag is set for the campaign. */
+	function isPaused(ctx: ExtensionContext, branch: string): boolean {
+		const control = readControl(ctx, branch);
+		if (!control?.pause) return false;
+		const requested = Number(control.requested_at ?? 0);
+		if (requested && Date.now() / 1000 - requested > PAUSE_TTL_SECONDS) return false;
+		return true;
+	}
+
+	function clearPause(ctx: ExtensionContext, branch: string): void {
+		try {
+			fs.rmSync(controlPath(ctx.cwd, branch), { force: true });
+		} catch {
+			/* best-effort */
+		}
+	}
+
+	function pausedResult(action: string): any {
+		return {
+			content: [
+				{ type: "text" as const, text: `sliceme: paused before ${action}; resume when ready.` },
+			],
+			details: { paused: true, action },
+		};
+	}
+
+	function buildSessionDescriptor(
+		ctx: ExtensionContext,
+		branch: string,
+		over: { status?: string; reason?: string; label?: string } = {},
+	): any {
+		const { dag, state } = load(ctx, branch);
+		let sessionId: string | undefined;
+		let sessionFile: string | undefined;
+		try {
+			sessionId = ctx.sessionManager.getSessionId();
+			sessionFile = ctx.sessionManager.getSessionFile();
+		} catch {
+			/* ephemeral (--no-session) runs have no session manager entry */
+		}
+		const nodes: Record<string, any> = {};
+		for (const [id, raw] of Object.entries(state.nodes ?? {})) {
+			const node = raw as NodeState;
+			nodes[id] = {
+				status: node.status,
+				attempt: node.attempts ?? 0,
+				candidate: node.candidate ?? null,
+				commit: node.commit ?? null,
+				last_heartbeat: heartbeatPath(ctx.cwd, branch, id),
+			};
+		}
+		return {
+			campaign: dag.campaign ?? state.campaign,
+			feature_branch: branch,
+			worktree_branch: state.worktree_branch,
+			design: dag.design,
+			pi: { session_id: sessionId, session_file: sessionFile, cwd: ctx.cwd },
+			label: over.label ?? (state as any).label,
+			status: over.status ?? "suspended",
+			reason: over.reason ?? "user",
+			suspended_at: Date.now() / 1000,
+			current_wave: state.current_wave ?? null,
+			waves: state.waves ?? [],
+			nodes,
+			resume_plan: (state as any).resume_plan ?? {},
+		};
+	}
+
+	function writeSessionDescriptor(
+		ctx: ExtensionContext,
+		branch: string,
+		over: { status?: string; reason?: string; label?: string } = {},
+	): any {
+		const descriptor = buildSessionDescriptor(ctx, branch, over);
+		writeJson(sessionPath(ctx.cwd, branch), descriptor);
+		return descriptor;
+	}
+
+	function resumePrompt(branch: string, descriptor: any): string {
+		const campaign = descriptor?.campaign ?? branch;
+		const recordWave = descriptor?.resume_plan?.record_wave;
+		return (
+			`Resume the suspended Sliceme campaign "${campaign}" on branch "${branch}". ` +
+			`Use the sliceme tool: action "status" to see the plan, then continue the ` +
+			`current wave (spawn ready nodes, record, verify). ` +
+			(recordWave !== undefined && recordWave !== null
+				? `A wave record is pending: run exec --record --wave ${recordWave} first. `
+				: "") +
+			`Do not restart completed nodes.`
+		);
+	}
+
+	/** Run a subagent with attempt bookkeeping and a per-node heartbeat. */
+	async function runTracked(
+		ctx: ExtensionContext,
+		branch: string,
+		opts: {
+			agent: string;
+			node: string;
+			unit?: string;
+			attempt?: number;
+			task: string;
+			cwd: string;
+			log?: string;
+			signal?: AbortSignal;
+		},
+	): Promise<SubagentResult> {
+		const attempt = opts.attempt ?? 1;
+		const begin = ["attempt", "--begin", "--node", opts.node, "--attempt", String(attempt)];
+		if (opts.unit) begin.push("--unit", opts.unit);
+		begin.push("--agent", opts.agent);
+		try {
+			await sliceme(ctx, begin, opts.signal);
+		} catch {
+			/* attempt bookkeeping must never block a worker */
+		}
+		const result = await runSubagent({
+			agent: opts.agent,
+			task: opts.task,
+			cwd: opts.cwd,
+			log: opts.log,
+			signal: opts.signal,
+			node: opts.node,
+			unit: opts.unit,
+			attempt,
+			heartbeat: heartbeatPath(ctx.cwd, branch, opts.node),
+		});
+		try {
+			await sliceme(
+				ctx,
+				[
+					"attempt",
+					"--end",
+					"--node",
+					opts.node,
+					"--attempt",
+					String(attempt),
+					"--status",
+					result.exitCode === 0 ? "ok" : "failed",
+					"--exit-code",
+					String(result.exitCode),
+				],
+				opts.signal,
+			);
+		} catch {
+			/* best-effort */
+		}
+		return result;
+	}
+
+	/** Extra prompt material for a node whose worker was interrupted mid-node. */
+	async function continuationContext(
+		ctx: ExtensionContext,
+		branch: string,
+		worktree: string,
+		node: string,
+		state: any,
+	): Promise<string> {
+		const resumeList: string[] = state?.resume_plan?.resume ?? [];
+		const paused =
+			state.nodes?.[node]?.status === "paused" || resumeList.includes(node);
+		if (!paused) return "";
+		const parts: string[] = [
+			"\nThis node's previous worker was interrupted. Its edits are preserved in the " +
+				"shared campaign worktree; continue from the current state, do not start over.",
+		];
+		try {
+			const status = await pi.exec("git", ["status", "--porcelain"], { cwd: worktree });
+			const diff = await pi.exec("git", ["diff", "--stat"], { cwd: worktree });
+			const statusText = status.stdout?.trim();
+			const diffText = diff.stdout?.trim();
+			if (statusText) parts.push(`\nWorking-tree changes:\n${statusText.slice(0, 1200)}`);
+			if (diffText) parts.push(`\nDiff stat:\n${diffText.slice(0, 800)}`);
+		} catch {
+			/* the worktree may be gone; the caller then falls back to a fresh spawn */
+		}
+		const heartbeat = readJson<any>(heartbeatPath(ctx.cwd, branch, node), undefined);
+		if (heartbeat) {
+			parts.push(
+				`\nPrevious attempt: ${heartbeat.attempt ?? "?"}, turns ${heartbeat.turns ?? 0}, ` +
+					`tools ${heartbeat.toolCalls ?? 0}, last tool "${heartbeat.last_tool ?? "?"}".`,
+			);
+			if (heartbeat.last_text) {
+				parts.push(`\nLast assistant text: ${String(heartbeat.last_text).slice(0, 280)}`);
+			}
+		}
+		return parts.join("");
+	}
+
 	/**
 	 * Ensure `state.waves` matches the current DAG.  Waves are the engine's
 	 * deterministic projection (`sliceme status` -> `dag_waves`); a coordinator-added
@@ -380,6 +595,7 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
 		dag: Dag,
 		state: CampaignState,
 	): Promise<void> {
+		if (isPaused(ctx, branch)) return;
 		const fingerprint = dagFingerprint(dag);
 		if (state.waves?.length && state.dag_fingerprint === fingerprint) return;
 		const { json } = await sliceme(ctx, ["status"]);
@@ -568,7 +784,6 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
 		);
 		const plane = (await sliceme(ctx, ["status"], signal)).json;
 		const worktreeBranch = String(plane?.worktree_branch ?? "");
-		await ensureCampaignWorktree(ctx, signal);
 
 		const dagFile = dagPath(ctx.cwd, branch);
 		const stateFile = statePath(ctx.cwd, branch);
@@ -581,6 +796,20 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
 				const state: any = readJson(stateFile, { nodes: {} });
 				const status = (await sliceme(ctx, ["status"], signal)).json;
 				const candidates = status?.candidates ?? [];
+				// Consult the engine's resume plan so a worker interrupted with
+				// edits preserved in the shared worktree is continued, not restarted.
+				let resumePlan: any = null;
+				if (fs.existsSync(sessionPath(ctx.cwd, branch))) {
+					try {
+						// Read the plan before --open recreates a hand-deleted worktree,
+						// so a lost worktree still maps to a fresh spawn, not a pause.
+						resumePlan = (await sliceme(ctx, ["resume", "--plan-only"], signal)).json;
+					} catch {
+						resumePlan = null;
+					}
+				}
+				await ensureCampaignWorktree(ctx, signal);
+				clearPause(ctx, branch);
 				for (const node of nodeIds(existing)) {
 					const entry = state.nodes[node] ?? { status: "pending", attempts: 0 };
 					const candidate = candidates
@@ -591,8 +820,14 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
 						entry.commit = candidate.head_commit;
 						entry.branch = candidate.branch;
 					}
-					if (candidate?.status === "landed") {
+					const planned = resumePlan?.nodes?.[node];
+					if (planned === "done" || candidate?.status === "landed") {
 						entry.status = "done";
+					} else if (planned === "paused") {
+						// The worker was interrupted with edits preserved; continue it.
+						entry.status = "paused";
+					} else if (planned === "recorded") {
+						entry.status = "recorded";
 					} else if (
 						entry.status === "running" ||
 						entry.status === "recorded"
@@ -602,6 +837,7 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
 					}
 					state.nodes[node] = entry;
 				}
+				state.resume_plan = resumePlan?.resume_plan ?? null;
 				state.campaign = existing.campaign ?? campaign;
 				state.feature_branch = branch;
 				state.target_branch = branch;
@@ -609,6 +845,23 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
 				state.base = existing.base ?? params.base ?? branch;
 				writeJson(stateFile, state);
 				await ensureWaves(ctx, branch, existing, state);
+				const pendingWave = resumePlan?.resume_plan?.record_wave;
+				if (
+					pendingWave !== undefined &&
+					pendingWave !== null &&
+					resumePlan?.worktree_dirty
+				) {
+					try {
+						await sliceme(
+							ctx,
+							["exec", "--record", "--wave", String(pendingWave)],
+							signal,
+						);
+						logEvent(ctx.cwd, branch, "wave.record_on_resume", { wave: pendingWave });
+					} catch {
+						/* unowned or ambiguous edits: leave the record for a human/CLI */
+					}
+				}
 				const resumeGateError = await sandboxGate(ctx, branch, state, stateFile, signal);
 				if (resumeGateError) {
 					return {
@@ -634,6 +887,7 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
 		}
 
 		// 2b. Planner writes dag.json (plane state, never committed).
+		await ensureCampaignWorktree(ctx, signal);
 		const task =
 			`Read the design at ${design}. Produce a machine-readable execution DAG as the file ` +
 			`${dagFile}. Use ONLY the Write tool for that file. The JSON shape is: ` +
@@ -654,8 +908,11 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
 			`devcontainer, CI) but has no manifest, set "sandbox_required": true; the ` +
 			`campaign then fails until a human adds a manifest. Never invent a sandbox. ` +
 			`Feature/target branch: ${branch}. Base: ${params.base ?? branch}. Design: ${design}.`;
-		const planner = await runSubagent({
+		const planner = await runTracked(ctx, branch, {
 			agent: "planner",
+			node: "planner",
+			unit: "planner",
+			attempt: 1,
 			task,
 			cwd: ctx.cwd,
 			log: path.join(stateDir(ctx.cwd), `${branchKey(branch)}.worker_planner.log`),
@@ -720,6 +977,7 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
 		const stateFile = statePath(ctx.cwd, branch);
 		const dag = readJson<Dag>(dagPath(ctx.cwd, branch), { nodes: [] });
 		const state: any = readJson(stateFile, { nodes: {} });
+		if (isPaused(ctx, branch)) return pausedResult("spawn");
 		const spec = (dag.nodes ?? []).find((n) => n.id === node);
 		if (!spec) throw new Error(`spawn: unknown node '${node}'`);
 		await ensureWaves(ctx, branch, dag, state);
@@ -768,6 +1026,7 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
 		const previousEvidence = state.nodes[node]?.lastError
 			? `\nA previous attempt failed with this verifier evidence:\n${state.nodes[node].lastError}`
 			: "";
+		const continuation = await continuationContext(ctx, branch, worktree, node, state);
 		const task =
 			`You are a one-shot worker for DAG node "${node}" (${spec.label ?? ""}). ` +
 			`Goal: ${spec.goal ?? ""}. You own these directories: ${(spec.owns ?? []).join(", ")}. ` +
@@ -775,9 +1034,13 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
 			`not commit, and do not run the test suite: the coordinator records the wave and ` +
 			`the single executor runs the checks. Never use the GPU and never touch another ` +
 			`node.` +
-			previousEvidence;
-		const result = await runSubagent({
+			previousEvidence +
+			continuation;
+		const result = await runTracked(ctx, branch, {
 			agent: "worker",
+			node,
+			unit: String(unit.name ?? "campaign"),
+			attempt,
 			task,
 			cwd: worktree,
 			log: logPath(ctx.cwd, branch, node),
@@ -804,6 +1067,7 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
 		signal?: AbortSignal,
 	): Promise<any> {
 		const branch = await featureBranch(ctx);
+		if (isPaused(ctx, branch)) return pausedResult("record");
 		const stateFile = statePath(ctx.cwd, branch);
 		const dag = readJson<Dag>(dagPath(ctx.cwd, branch), { nodes: [] });
 		const state: any = readJson(stateFile, { nodes: {} });
@@ -851,6 +1115,7 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
 		const node = String(params.node ?? "");
 		if (!node) throw new Error("verify requires --node <id>");
 		const branch = await featureBranch(ctx);
+		if (isPaused(ctx, branch)) return pausedResult("verify");
 		const dag = readJson<Dag>(dagPath(ctx.cwd, branch), { nodes: [] });
 		const stateFile = statePath(ctx.cwd, branch);
 		const state: any = readJson(stateFile, { nodes: {} });
@@ -897,8 +1162,11 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
 			`vector: ${(spec.acceptance ?? []).join(" ; ")}. GPU tier: ${spec.gpu ?? "none"}.\n\n` +
 			`${evidence}\n\nReport a single line starting with "VERDICT: PASS" or ` +
 			`"VERDICT: FAIL", then your reasoning grounded in the evidence.`;
-		const result = await runSubagent({
+		const result = await runTracked(ctx, branch, {
 			agent: "verifier",
+			node,
+			unit: `verify:${node}`,
+			attempt: Number(state.nodes[node]?.attempts ?? 1),
 			task,
 			cwd: ctx.cwd,
 			log: path.join(stateDir(ctx.cwd), `${branchKey(branch)}.worker_verify_${node}.log`),
@@ -1134,6 +1402,7 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
 				}
 				case "ready": {
 					const branch = await featureBranch(ctx);
+					if (isPaused(ctx, branch)) return pausedResult("ready");
 					const { dag, state } = load(ctx, branch);
 					await ensureWaves(ctx, branch, dag, state);
 					const wave = currentWave(state);
@@ -1187,6 +1456,126 @@ export default function coordinatorExtension(pi: ExtensionAPI) {
 					throw new Error(`sliceme: unknown action '${params.action}'`);
 			}
 		},
+	});
+
+	// ------------------------------------------------------------------
+	// Session suspend / resume (docs/sessions.md)
+	// ------------------------------------------------------------------
+	pi.registerCommand("suspend", {
+		description: "Suspend the current Sliceme campaign and register it for resume",
+		handler: async (args, ctx) => {
+			const branch = configuredBranch(ctx.cwd);
+			if (!branch || !fs.existsSync(dagPath(ctx.cwd, branch))) {
+				ctx.ui.notify("sliceme: no campaign in this directory", "warning");
+				return;
+			}
+			const label = args.trim() || undefined;
+			writeJson(controlPath(ctx.cwd, branch), {
+				pause: true,
+				requested_at: Date.now() / 1000,
+				label,
+			});
+			if (!ctx.isIdle()) {
+				pi.sendUserMessage(
+					"Sliceme: a suspend was requested. Finish the current node, then stop " +
+						"without starting new work.",
+					{ deliverAs: "steer" },
+				);
+				await ctx.waitForIdle();
+			}
+			clearPause(ctx, branch);
+			const descriptor = writeSessionDescriptor(ctx, branch, { reason: "user", label });
+			pi.appendEntry("sliceme.session", {
+				campaign: descriptor.campaign,
+				feature_branch: branch,
+				status: descriptor.status,
+				resume_plan: descriptor.resume_plan,
+			});
+			if (ctx.hasUI) {
+				ctx.ui.notify(
+					`sliceme: suspended '${descriptor.campaign ?? branch}'; ` +
+						`resume with pi --continue, /resume, or /campaigns`,
+					"info",
+				);
+			}
+		},
+	});
+
+	pi.registerCommand("campaigns", {
+		description: "List suspended Sliceme campaigns and resume one",
+		handler: async (_args, ctx) => {
+			let sessions: any[] = [];
+			try {
+				sessions = (await sliceme(ctx, ["sessions"])).json?.sessions ?? [];
+			} catch (error) {
+				ctx.ui.notify(`sliceme: ${String((error as Error)?.message ?? error)}`, "error");
+				return;
+			}
+			if (!sessions.length) {
+				ctx.ui.notify("sliceme: no registered campaigns", "info");
+				return;
+			}
+			if (!ctx.hasUI) return;
+			const labels = sessions.map(
+				(s) =>
+					`${s.label ?? s.feature_branch} — wave ${s.wave ?? "?"} ` +
+					`${s.done}/${s.total} ${s.status}`,
+			);
+			const choice = await ctx.ui.select("Sliceme campaigns", labels);
+			if (!choice) return;
+			const selected = sessions[labels.indexOf(choice)];
+			if (!selected?.session_file) {
+				ctx.ui.notify("sliceme: no pi session file recorded for that campaign", "warning");
+				return;
+			}
+			if (selected.is_current) {
+				ctx.ui.notify("sliceme: that campaign is already the current session", "info");
+				return;
+			}
+			await ctx.switchSession(selected.session_file);
+		},
+	});
+
+	pi.on("session_start", async (event, ctx) => {
+		try {
+			if (event.reason !== "resume" && event.reason !== "startup") return;
+			const branch = configuredBranch(ctx.cwd);
+			if (!branch) return;
+			const descriptor = readJson<any>(sessionPath(ctx.cwd, branch), undefined);
+			if (!descriptor || descriptor.status !== "suspended") return;
+			clearPause(ctx, branch);
+			const text = resumePrompt(branch, descriptor);
+			// Mark it active so a reload/restart does not inject the prompt twice.
+			writeJson(sessionPath(ctx.cwd, branch), {
+				...descriptor,
+				status: "active",
+				resumed_at: Date.now() / 1000,
+			});
+			if (event.reason === "resume") {
+				pi.sendUserMessage(text);
+				return;
+			}
+			if (!ctx.hasUI || !ctx.isIdle()) return;
+			const ok = await ctx.ui.confirm("Resume Sliceme campaign?", text);
+			if (ok) pi.sendUserMessage(text);
+		} catch {
+			/* a resume hook must never break session startup */
+		}
+	});
+
+	pi.on("session_shutdown", (event, ctx) => {
+		// Fast, idempotent, and subprocess-free: only the descriptor is written.
+		try {
+			const branch = configuredBranch(ctx.cwd);
+			if (!branch || !fs.existsSync(dagPath(ctx.cwd, branch))) return;
+			const { state } = load(ctx, branch);
+			writeSessionDescriptor(ctx, branch, {
+				status: state.delivered ? "completed" : "suspended",
+				reason: event.reason === "reload" ? "reload" : "user",
+			});
+		} catch {
+			/* never block shutdown */
+		}
 	});
 }
 

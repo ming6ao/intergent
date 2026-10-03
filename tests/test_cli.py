@@ -250,6 +250,79 @@ class CliTests(unittest.TestCase):
             self.assertTrue(Path(report["path"]).name == "feat--x.report.md")
             self.assertIn("landed both", report["content"])
 
+    def test_cli_resume_sessions_and_attempt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subprocess.run(["git", "init", "-q", "-b", "main"], cwd=tmp, check=True)
+            subprocess.run(["git", "config", "user.email", "t@e.com"], cwd=tmp, check=True)
+            subprocess.run(["git", "config", "user.name", "T"], cwd=tmp, check=True)
+            (root / "a.txt").write_text("hi\n")
+            subprocess.run(["git", "add", "-A"], cwd=tmp, check=True)
+            subprocess.run(["git", "commit", "-qm", "init"], cwd=tmp, check=True)
+            subprocess.run(["git", "checkout", "-q", "-b", "feat/x"], cwd=tmp, check=True)
+            run_cli(["--json", "start", "--no-unit", "--check", "ok=true"], root)
+
+            state_dir = root / ".sliceme"
+            (state_dir / "feat--x.dag.json").write_text(
+                json.dumps(
+                    {
+                        "campaign": "cli",
+                        "feature_branch": "feat/x",
+                        "nodes": [{"id": "w1", "owns": ["dir:src"]}],
+                    }
+                )
+            )
+            (state_dir / "feat--x.state.json").write_text(
+                json.dumps({"nodes": {"w1": {"status": "running", "attempts": 1}}})
+            )
+            (state_dir / "feat--x.session.json").write_text(
+                json.dumps(
+                    {
+                        "campaign": "cli",
+                        "feature_branch": "feat/x",
+                        "pi": {"session_id": "s1", "session_file": "/tmp/s1.jsonl"},
+                        "label": "cli",
+                        "status": "suspended",
+                        "reason": "user",
+                        "suspended_at": 1.0,
+                    }
+                )
+            )
+
+            out = run_cli(["--json", "resume", "--plan-only"], root)
+            self.assertEqual(out.returncode, 0, out.stderr)
+            plan = json.loads(out.stdout)
+            self.assertEqual(plan["feature_branch"], "feat/x")
+            self.assertIn("w1", plan["nodes"])
+
+            out = run_cli(["--json", "sessions"], root)
+            self.assertEqual(out.returncode, 0, out.stderr)
+            entries = json.loads(out.stdout)["sessions"]
+            self.assertEqual(entries[0]["feature_branch"], "feat/x")
+            self.assertEqual(entries[0]["session_file"], "/tmp/s1.jsonl")
+
+            out = run_cli(["--json", "attempt", "--begin", "--node", "w1"], root)
+            self.assertEqual(out.returncode, 0, out.stderr)
+            self.assertEqual(json.loads(out.stdout)["status"], "running")
+            out = run_cli(
+                [
+                    "--json",
+                    "attempt",
+                    "--end",
+                    "--node",
+                    "w1",
+                    "--attempt",
+                    "1",
+                    "--status",
+                    "ok",
+                    "--turns",
+                    "3",
+                ],
+                root,
+            )
+            self.assertEqual(out.returncode, 0, out.stderr)
+            self.assertEqual(json.loads(out.stdout)["turns"], 3)
+
     def test_cli_surface_matches_registry(self):
         """The CLI subcommands are exactly the registry (plus aliases)."""
         import argparse

@@ -1,6 +1,9 @@
 # Sliceme runtime state (local to this machine)
 .sliceme/
 
+# Node tooling (typescript + type-checking; see package.json "typecheck")
+node_modules/
+
 # Python
 __pycache__/
 *.py[cod]

@@ -35,6 +35,9 @@ export const SLICEME_ACTIONS = [
 	"deliver",
 	"report",
 	"exec",
+	"resume",
+	"sessions",
+	"attempt",
 ] as const;
 
 /** The `sliceme` tool exposes exactly the agent surface. */

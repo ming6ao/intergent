@@ -123,6 +123,21 @@ export function eventsPath(cwd: string, branch: string): string {
 	return path.join(stateDir(cwd), `${branchKey(branch)}.events.jsonl`);
 }
 
+/** The adapter-written suspend/resume descriptor (`docs/sessions.md`). */
+export function sessionPath(cwd: string, branch: string): string {
+	return path.join(stateDir(cwd), `${branchKey(branch)}.session.json`);
+}
+
+/** The cooperative pause flag for a campaign. */
+export function controlPath(cwd: string, branch: string): string {
+	return path.join(stateDir(cwd), `${branchKey(branch)}.control.json`);
+}
+
+/** The per-node progress heartbeat written while a subagent runs. */
+export function heartbeatPath(cwd: string, branch: string, node: string): string {
+	return path.join(stateDir(cwd), `${branchKey(branch)}.progress_${node}.json`);
+}
+
 export function readJson<T>(file: string, fallback: T): T {
 	try {
 		return JSON.parse(fs.readFileSync(file, "utf8")) as T;
@@ -194,13 +209,40 @@ function agentFrontmatterValue(raw: string, key: string): string | undefined {
  * Spawn a one-shot `pi` subagent, tee its raw output to `log`, return the final
  * assistant text. The child is a direct child of the coordinator and is not
  * detached, so a coordinator crash kills it.
+ *
+ * When `heartbeat` is set, a small progress snapshot is written atomically at
+ * most once per second (and once more on close) so a resumed campaign can
+ * describe what the paused worker was doing.
  */
+export interface SubagentProgress {
+	node?: string;
+	unit?: string;
+	attempt?: number;
+	agent?: string;
+	turns: number;
+	toolCalls: number;
+	tools: Record<string, number>;
+	lastTool?: string;
+	lastToolArgs?: string;
+	lastText?: string;
+	tokensIn: number;
+	tokensOut: number;
+	cost: number;
+	startedAt: number;
+	updatedAt: number;
+}
+
 export async function runSubagent(options: {
 	agent: string;
 	task: string;
 	cwd: string;
 	log?: string;
 	signal?: AbortSignal;
+	node?: string;
+	unit?: string;
+	attempt?: number;
+	heartbeat?: string;
+	onProgress?: (progress: SubagentProgress) => void;
 }): Promise<SubagentResult> {
 	const agentFile = findAgentFile(options.agent);
 	const args = ["--mode", "json", "-p", "--no-session"];
@@ -248,6 +290,54 @@ export async function runSubagent(options: {
 			stream = fs.createWriteStream(options.log, { flags: "a" });
 		}
 
+		const nowSeconds = () => Date.now() / 1000;
+		const progress: SubagentProgress = {
+			node: options.node,
+			unit: options.unit,
+			attempt: options.attempt ?? 1,
+			agent: options.agent,
+			turns: 0,
+			toolCalls: 0,
+			tools: {},
+			tokensIn: 0,
+			tokensOut: 0,
+			cost: 0,
+			startedAt: nowSeconds(),
+			updatedAt: nowSeconds(),
+		};
+		let pendingUsage: any;
+		let lastHeartbeatWrite = 0;
+		const flushHeartbeat = (force = false) => {
+			if (!options.heartbeat) return;
+			const now = nowSeconds();
+			if (!force && now - lastHeartbeatWrite < 1) return;
+			lastHeartbeatWrite = now;
+			const snapshot: SubagentProgress = {
+				...progress,
+				tools: { ...progress.tools },
+				updatedAt: now,
+			};
+			try {
+				writeJson(options.heartbeat, snapshot);
+			} catch {
+				/* the heartbeat is best-effort; never fail the run for it */
+			}
+			options.onProgress?.(snapshot);
+		};
+		const summariseArgs = (args: any): string | undefined => {
+			if (args && typeof args === "object") {
+				if (typeof args.command === "string") return args.command;
+				if (typeof args.path === "string") return args.path;
+				if (typeof args.file === "string") return args.file;
+			}
+			try {
+				const text = JSON.stringify(args);
+				return text && text !== "{}" ? text.slice(0, 120) : undefined;
+			} catch {
+				return undefined;
+			}
+		};
+
 		const processLine = (line: string) => {
 			if (!line.trim()) return;
 			stream?.write(line + "\n");
@@ -257,11 +347,43 @@ export async function runSubagent(options: {
 			} catch {
 				return;
 			}
-			if (event.type === "message_end" && event.message?.role === "assistant") {
-				for (const part of event.message.content ?? []) {
-					if (part.type === "text") output = part.text;
-				}
+			switch (event.type) {
+				case "turn_start":
+					progress.turns += 1;
+					break;
+				case "tool_execution_start":
+					progress.toolCalls += 1;
+					progress.lastTool = String(event.toolName ?? "");
+					progress.lastToolArgs = summariseArgs(event.args);
+					progress.tools[progress.lastTool] =
+						(progress.tools[progress.lastTool] ?? 0) + 1;
+					break;
+				case "tool_execution_end":
+					if (event.toolName) progress.lastTool = String(event.toolName);
+					break;
+				case "message_update":
+					if (event.usage) pendingUsage = event.usage;
+					break;
+				case "message_end":
+					if (event.message?.role === "assistant") {
+						for (const part of event.message.content ?? []) {
+							if (part.type === "text") output = part.text;
+						}
+						const usage = event.message?.usage ?? pendingUsage;
+						if (usage) {
+							progress.tokensIn += usage.input ?? 0;
+							progress.tokensOut += usage.output ?? 0;
+							progress.cost += usage.cost?.total ?? 0;
+						}
+						pendingUsage = undefined;
+						const text = output.trim();
+						if (text) progress.lastText = text.slice(-280);
+					}
+					break;
+				default:
+					return;
 			}
+			flushHeartbeat();
 		};
 
 		proc.stdout.on("data", (data) => {
@@ -277,11 +399,13 @@ export async function runSubagent(options: {
 		proc.on("close", (code) => {
 			if (buffer.trim()) processLine(buffer);
 			stream?.end();
+			flushHeartbeat(true);
 			cleanup();
 			resolve({ exitCode: code ?? 0, output, stderr });
 		});
 		proc.on("error", (err) => {
 			stream?.end();
+			flushHeartbeat(true);
 			cleanup();
 			resolve({ exitCode: 1, output, stderr: String(err) });
 		});
