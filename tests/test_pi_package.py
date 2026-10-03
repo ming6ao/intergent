@@ -232,19 +232,21 @@ class PiPackageTests(unittest.TestCase):
         self.assertIn("switchSession", coordinator)
 
     def test_typescript_extensions_type_check(self):
-        # `tsc --noEmit` must pass on the pi extensions. Skipped when the dev
-        # tooling is not installed (no node_modules), so CI stays green while
-        # `npm install` gives a real report.
-        tsc = REPO_ROOT / "node_modules" / ".bin" / "tsc"
+        # `npm run typecheck` must pass on the pi extensions. It resolves the pi
+        # type declarations from the running pi runtime and exits 3 when neither
+        # that nor TypeScript is available, which this test treats as a skip.
+        script = REPO_ROOT / "tools" / "typecheck.mjs"
         node = shutil.which("node")
-        if not tsc.exists() or node is None:
-            self.skipTest("node + node_modules/.bin/tsc not installed; run `npm install`")
+        if node is None or not script.is_file():
+            self.skipTest("node is not installed")
         result = subprocess.run(
-            [node, str(tsc), "--noEmit"],
+            [node, str(script)],
             cwd=str(REPO_ROOT),
             capture_output=True,
             text=True,
         )
+        if result.returncode == 3:
+            self.skipTest(result.stderr.strip() or "pi runtime or typescript not available")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_docs_document_the_session_actions(self):

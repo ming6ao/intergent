@@ -3,6 +3,7 @@
 
 # Node tooling (typescript + type-checking; see package.json "typecheck")
 node_modules/
+.tsconfig.typecheck.json
 
 # Python
 __pycache__/

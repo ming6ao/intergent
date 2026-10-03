@@ -25,7 +25,7 @@
   },
   "scripts": {
     "test": "python3 -m unittest discover -s tests",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "node tools/typecheck.mjs",
     "prepublishOnly": "npm test"
   },
   "files": [
@@ -40,7 +40,8 @@
     "integrations/pi/unit.ts",
     "integrations/pi/coordinator.ts",
     "!sliceme/__pycache__",
-    "!sliceme/**/*.pyc"
+    "!sliceme/**/*.pyc",
+    "!tools/typecheck.mjs"
   ],
   "pi": {
     "extensions": [
@@ -60,6 +61,7 @@
     "access": "public"
   },
   "devDependencies": {
+    "@types/node": "^22.20.5",
     "typescript": "^5.9.3"
   }
 }
